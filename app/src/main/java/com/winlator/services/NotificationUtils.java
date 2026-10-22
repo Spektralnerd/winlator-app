@@ -103,9 +103,9 @@ public class NotificationUtils {
         if (serviceClass != null && exitAction != null) {
             Intent stopIntent = new Intent(context, serviceClass);
             stopIntent.setAction(exitAction);
-            PendingIntent stopPendingIntent = PendingIntent.getForegroundService(
-                    context, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE
-            );
+            PendingIntent stopPendingIntent = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ?
+                PendingIntent.getForegroundService(context, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE) :
+                PendingIntent.getService(context, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE);
             builder.addAction(0, "Exit", stopPendingIntent);
         }
 

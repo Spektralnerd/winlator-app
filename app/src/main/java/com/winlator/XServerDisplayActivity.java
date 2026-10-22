@@ -22,6 +22,7 @@ import android.widget.Spinner;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
@@ -300,7 +301,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         super.onWindowFocusChanged(hasFocus);
 
         if (hasFocus) {
-            if (capturePointerOnExternalMouse) {
+            if (capturePointerOnExternalMouse && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 // Captured events are delivered to the focused view.
                 View captureView = inputControlsView.getVisibility() == View.VISIBLE ? inputControlsView : touchpadView;
                 if (captureView.requestFocus()) captureView.requestPointerCapture();
@@ -335,10 +336,18 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.O)
     @Override
     public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
         ForegroundService.setPipMode(isInPictureInPictureMode);
+    }
+
+    // Android 7 kennt nur diese Form (ab 8.0 ruft die obige sie über super auf)
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) ForegroundService.setPipMode(isInPictureInPictureMode);
     }
 
     @Override
@@ -405,10 +414,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 drawerLayout.closeDrawers();
                 break;
             case R.id.menu_item_pip_mode:
-                PictureInPictureParams pipParams = (new PictureInPictureParams.Builder())
-                    .setAspectRatio(screenInfo.aspectRatio())
-                    .build();
-                enterPictureInPictureMode(pipParams);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    PictureInPictureParams pipParams = (new PictureInPictureParams.Builder())
+                        .setAspectRatio(screenInfo.aspectRatio())
+                        .build();
+                    enterPictureInPictureMode(pipParams);
+                }
+                else {
+                    // Android 7: Bild-in-Bild nur, wo das Gerät es anbietet (meist nur Android TV)
+                    try {
+                        enterPictureInPictureMode();
+                    }
+                    catch (IllegalStateException e) {}
+                }
                 drawerLayout.closeDrawers();
                 break;
             case R.id.menu_item_logs:
@@ -607,7 +625,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsView = new InputControlsView(this);
         inputControlsView.setOverlayOpacity(preferences.getFloat("overlay_opacity", InputControlsView.DEFAULT_OVERLAY_OPACITY));
         inputControlsView.setTouchpadView(touchpadView);
-        if (capturePointerOnExternalMouse) {
+        if (capturePointerOnExternalMouse && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             inputControlsView.setOnCapturedPointerListener((view, event) ->
                 touchpadView.isEnabled() && touchpadView.onCapturedPointer(view, event));
         }

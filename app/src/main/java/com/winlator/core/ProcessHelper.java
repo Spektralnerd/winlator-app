@@ -1,5 +1,6 @@
 package com.winlator.core;
 
+import android.os.Build;
 import android.os.Process;
 import android.system.Os;
 import android.system.OsConstants;
@@ -71,7 +72,12 @@ public abstract class ProcessHelper {
         int pid = -1;
         try {
             ProcessBuilder processBuilder = (new ProcessBuilder(splitCommand(command))).directory(workingDir);
-            if (debugCallbacks.isEmpty()) processBuilder.redirectOutput(new File("/dev/null")).redirectErrorStream(true);
+            final boolean discardOutput = debugCallbacks.isEmpty();
+            if (discardOutput) {
+                // ProcessBuilder.Redirect gibt es erst ab Android 8.0; davor wird die Ausgabe selbst verworfen
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) processBuilder.redirectOutput(new File("/dev/null"));
+                processBuilder.redirectErrorStream(true);
+            }
 
             Map<String, String> environment = processBuilder.environment();
             for (String name : envVars) environment.put(name, envVars.get(name));
@@ -82,15 +88,27 @@ public abstract class ProcessHelper {
             pid = pidField.getInt(process);
             pidField.setAccessible(false);
 
-            if (!debugCallbacks.isEmpty()) {
+            if (!discardOutput) {
                 createDebugThread(process.getInputStream());
                 createDebugThread(process.getErrorStream());
             }
+            else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) createDiscardThread(process.getInputStream());
 
             if (terminationCallback != null) createWaitForThread(process, terminationCallback);
         }
         catch (Exception e) {}
         return pid;
+    }
+
+    /** liest die Ausgabe eines Prozesses und wirft sie weg (sonst blockiert er bei vollem Puffer) */
+    private static void createDiscardThread(final InputStream inputStream) {
+        Executors.newSingleThreadExecutor().execute(() -> {
+            byte[] buffer = new byte[8192];
+            try (InputStream in = inputStream) {
+                while (in.read(buffer) != -1);
+            }
+            catch (IOException e) {}
+        });
     }
 
     private static void createDebugThread(final InputStream inputStream) {
