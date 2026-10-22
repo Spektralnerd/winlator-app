@@ -93,6 +93,12 @@ GST_PLUGIN_SCANNER_1_0=@ROOT@/usr/libexec/gstreamer-1.0/gst-plugin-scanner
 PULSE_CLIENTCONFIG=@ROOT@/etc/pulse/client.conf
 EOF
 
+# Kennung dieses Root-FS-Builds, im Root-FS und daneben in den Assets: die App entpackt das
+# Root-FS neu, wenn die mitgelieferte Kennung nicht zur installierten passt
+ROOTFS_ID="${ROOTFS_KEY:-lokal}-$(date -u +%Y%m%d%H%M)"
+echo "$ROOTFS_ID" > "$R/.winlator/rootfs-id"
+log "Root-FS-Kennung: $ROOTFS_ID"
+
 log "Root-FS prüfen"
 # (CHECK_ROOTFS=warn: Fehler nur melden, z. B. für Testläufe mit unvollständigen Teilen)
 python3 -I "$ARMV7_DIR/scripts/check-rootfs.py" "$R" "$OUT_DIR/box86-wrapped.txt" "$OUT_DIR/wine-sonames.txt" \
@@ -120,6 +126,7 @@ pack "$R" "$ASSETS/rootfs.tzst"
 pack "$P" "$ASSETS/rootfs_patches.tzst"
 pack "$STAGE_DIR/pattern" "$ASSETS/container_pattern.tzst" .wine
 cp "$OUT_DIR/common_dlls.json" "$ASSETS/common_dlls.json"
+echo "$ROOTFS_ID" > "$ASSETS/rootfs-id.txt"
 mkdir -p "$ASSETS/box86" && cp "$OUT_DIR/box86-$BOX86_VERSION.tzst" "$ASSETS/box86/"
 pack "$STAGE_DIR/mesa-virgl" "$ASSETS/graphics_driver/virgl-$VIRGL.tzst"
 pack "$STAGE_DIR/mesa-zink" "$ASSETS/graphics_driver/zink-$ZINK.tzst"

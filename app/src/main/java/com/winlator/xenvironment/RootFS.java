@@ -9,6 +9,7 @@ import com.winlator.core.FileUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 
 public class RootFS {
@@ -45,6 +46,21 @@ public class RootFS {
      */
     public boolean matchesArch() {
         return new File(rootDir, Arch.X86_ONLY ? "/lib/ld-linux-armhf.so.3" : "/lib/ld-linux-aarch64.so.1").exists();
+    }
+
+    /**
+     * Stammt das installierte Root-FS aus demselben Build wie das mitgelieferte? Die armv7-Builds
+     * legen eine Kennung in beide (assets/rootfs-id.txt und rootfs/.winlator/rootfs-id), damit
+     * ein neuer Unterbau auch ohne neue Versionsnummer entpackt wird. Ohne Kennung in der App
+     * (Original) gilt das Root-FS als passend.
+     */
+    public boolean matchesBundledBuild(Context context) {
+        byte[] bundled = FileUtils.read(context, "rootfs-id.txt");
+        if (bundled == null) return true;
+        File installedFile = new File(getImageInfoDir(), "rootfs-id");
+        byte[] installed = installedFile.isFile() ? FileUtils.read(installedFile) : null;
+        return installed != null && new String(installed, StandardCharsets.UTF_8).trim()
+            .equals(new String(bundled, StandardCharsets.UTF_8).trim());
     }
 
     public int getVersion() {

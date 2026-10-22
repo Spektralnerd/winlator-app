@@ -69,6 +69,24 @@ Die 32-Bit-Builds laufen ab **Android 7.0** (API 24, das Original ab 8.0):
 - Pointer-Capture, Benachrichtigungskanäle, Vibrationsstärke und der AudioTrack-Leistungsmodus
   nur ab Android 8
 
+**Android 8 und 9 (seccomp):** Android legt jedem App-Prozess einen seccomp-Filter an, der für
+32-Bit-ARM alle Systemaufrufe ab Linux 4.14 (darunter die time64-Aufrufe) und einige alte
+(`link`, `lchown32`, `pause`, SysV-Semaphoren …) mit SIGSYS beantwortet, statt ENOSYS zu liefern.
+Erst Android 10/11 erlauben die time64-Aufrufe. Die glibc des Root-FS
+- ruft `link`, `lchown32` und `pause` gar nicht mehr auf (sie nimmt `linkat`, `fchownat`, `ppoll`),
+- richtet in jedem Prozess einen SIGSYS-Handler ein (`patches/glibc/android_seccomp.c`), der
+  gesperrte Aufrufe auf erlaubte umlenkt oder mit ENOSYS zurückkehren lässt, damit glibc wie bei
+  einem alten Kernel auf ältere Aufrufe ausweicht. Jeder Fall steht einmal pro Prozess in der
+  Ausgabe (`winlator-seccomp: …`, landet in `start.txt`).
+
+`scripts/check-syscalls.py` prüft beim Bauen, dass ld.so nichts Gesperrtes aufruft (es läuft vor
+dem Handler) und libc die drei alten Aufrufe nicht mehr nutzt. Die Sperrliste stammt aus bionic
+(LineageOS 15.1/16.0, `libc/seccomp/arm_*policy.cpp`).
+
+Das Root-FS trägt eine Build-Kennung (`.winlator/rootfs-id`, daneben `assets/rootfs-id.txt`);
+weicht die installierte von der mitgelieferten ab, entpackt die App das Root-FS neu (Container
+in `home/` bleiben erhalten).
+
 Bildausgabe mit **OpenGL ES 2.0** (z. B. Mali-400): Hat das Gerät kein ES 3, nimmt die App einen
 ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekommen dann
 „Software“ als OpenGL-Treiber und, ohne Vulkan-Treiber, WineD3D statt DXVK (alles umstellbar).

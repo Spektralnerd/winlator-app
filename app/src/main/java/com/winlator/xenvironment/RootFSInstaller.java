@@ -80,7 +80,7 @@ public abstract class RootFSInstaller {
 
     public static void installIfNeeded(final MainActivity activity) {
         RootFS rootFS = RootFS.find(activity);
-        if (!rootFS.isValid() || rootFS.getVersion() < LATEST_VERSION) install(activity);
+        if (!rootFS.isValid() || rootFS.getVersion() < LATEST_VERSION || !rootFS.matchesBundledBuild(activity)) install(activity);
     }
 
     private static void clearOptDir(File optDir) {

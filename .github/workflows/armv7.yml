@@ -156,6 +156,8 @@ jobs:
           merge-multiple: true
 
       - name: Assets zusammenstellen
+        env:
+          ROOTFS_KEY: ${{ needs.plan.outputs.key }}
         run: |
           mkdir -p armv7/work
           tar -C armv7/work -xf /tmp/stage/armhf-stage.tar

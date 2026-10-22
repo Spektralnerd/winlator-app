@@ -49,6 +49,23 @@ for i in aarch64 arm i386 x86_64/64; do
     } >> "sysdeps/unix/sysv/linux/${i}/disabled-syscall.h"
 done
 
+log "armv7: von Android gesperrte Systemaufrufe (seccomp, Android 8/9)"
+# Android 8 und 9 sperren für 32-Bit-ARM zusätzlich link, lchown32 und pause; ohne diese
+# Nummern weicht glibc auf linkat, fchownat und ppoll aus. Was sonst noch gesperrt ist (die
+# time64-Aufrufe, SysV-Semaphoren usw.), fängt android_seccomp.c zur Laufzeit ab.
+for j in link lchown lchown32 pause; do
+    grep "#define __NR_${j} " sysdeps/unix/sysv/linux/arm/arch-syscall.h \
+        >> sysdeps/unix/sysv/linux/arm/disabled-syscall.h || true
+    sed -i "/#define __NR_${j} /d" sysdeps/unix/sysv/linux/arm/arch-syscall.h
+done
+install -m644 "$ARMV7_DIR/patches/glibc/android_seccomp.c" sysdeps/unix/sysv/linux/arm/android_seccomp.c
+cat >> sysdeps/unix/sysv/linux/arm/Makefile <<'MAKE'
+
+ifeq ($(subdir),misc)
+sysdep_routines += android_seccomp
+endif
+MAKE
+
 log "Winlator-Patch: SysV-Shared-Memory über den Winlator-Server (ANDROID_SYSVSHM_SERVER)"
 cp "$WINLATOR"/glibc_patches/sysdeps/unix/sysv/linux/*.[ch] sysdeps/unix/sysv/linux/
 # android_sysvshm.c ist eine eigene Übersetzungseinheit und muss in libc landen
@@ -130,6 +147,13 @@ fi
 # Entwicklerdateien braucht das Gerät nicht (bleiben für Cross-Builds im Sysroot unten)
 mkdir -p "$OUT_DIR"
 tar -C "$DEST" -cf "$OUT_DIR/glibc-sysroot.tar" usr/include usr/lib/*.a usr/lib/*.o usr/lib/libc.so usr/lib/libm.so usr/lib/libpthread.so 2>/dev/null || true
+
+log "Prüfen: von Android gesperrte Systemaufrufe"
+grep -q "winlator-seccomp" "$DEST/usr/lib/libc.so.6" || { echo "android_seccomp fehlt in libc.so.6"; exit 1; }
+# ld.so läuft, bevor libc den SIGSYS-Handler einrichtet: dort darf nichts Gesperrtes vorkommen;
+# libc darf link, lchown32 und pause nicht mehr direkt aufrufen (der Rest sind Hinweise)
+python3 "$ARMV7_DIR/scripts/check-syscalls.py" --objdump "$TARGET-objdump" --strict "$DEST/usr/lib/ld-linux-armhf.so.3"
+python3 "$ARMV7_DIR/scripts/check-syscalls.py" --objdump "$TARGET-objdump" --forbid 9,198,29 "$DEST/usr/lib/libc.so.6"
 
 log "fertig: $DEST"
 file -L "$DEST/usr/lib/ld-linux-armhf.so.3" "$DEST/usr/lib/libc.so.6"
