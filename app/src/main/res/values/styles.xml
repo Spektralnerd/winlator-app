@@ -27,7 +27,8 @@
         <item name="colorControlNormal">#e0e0e0</item>
         <item name="colorPrimaryText">#424242</item>
         <item name="colorSecondaryText">#757575</item>
-        <item name="colorPrimarySurface">#fafafa</item>
+        <item name="colorPrimarySurface">@color/primary_surface_light</item>
+        <item name="android:windowBackground">@color/primary_surface_light</item>
         <item name="colorSecondarySurface">#ffffff</item>
         <item name="colorPrimaryVariant">#607d8b</item>
         <item name="colorSecondaryVariant">#d3dce0</item>
@@ -45,7 +46,8 @@
         <item name="colorControlNormal">#616161</item>
         <item name="colorPrimaryText">#fafafa</item>
         <item name="colorSecondaryText">#9e9e9e</item>
-        <item name="colorPrimarySurface">#1b1e21</item>
+        <item name="colorPrimarySurface">@color/primary_surface_dark</item>
+        <item name="android:windowBackground">@color/primary_surface_dark</item>
         <item name="colorSecondarySurface">#2d3238</item>
         <item name="colorPrimaryVariant">#56677a</item>
         <item name="colorSecondaryVariant">#37424f</item>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fensterhintergrund als Farbressource: Android 9 und älter lesen android:windowBackground nur
+         als Ressourcen-ID (PhoneWindow: getResourceId); eine reine Farbe über ?attr ergibt dort
+         keinen Hintergrund, beim Scrollen bleiben dann alte Bildinhalte stehen -->
+    <color name="primary_surface_light">#fafafa</color>
+    <color name="primary_surface_dark">#1b1e21</color>
+</resources>

@@ -28,9 +28,6 @@ android {
         versionCode 33
         versionName "11.2" + (winlatorArch == 'arm64' ? '' : "-${winlatorArch}")
 
-        // 32 Bit: Oberfläche nur mit OpenGL ES 3 hardwarebeschleunigt (siehe AppUtils.setupHardwareAcceleration)
-        manifestPlaceholders = [uiHardwareAccelerated: appAbi == 'arm64-v8a' ? 'true' : 'false']
-
         buildConfigField "String", "WINLATOR_ARCH", "\"${winlatorArch}\""
         buildConfigField "boolean", "X86_ONLY", "${x86Only}"
 
