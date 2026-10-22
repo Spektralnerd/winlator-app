@@ -90,6 +90,20 @@ public abstract class AppUtils {
         else imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0);
     }
 
+    /**
+     * 32-Bit-Builds: Im Manifest ist die Hardwarebeschleunigung der Oberfläche aus und wird hier
+     * nur auf Geräten mit OpenGL ES 3 eingeschaltet. Alte ES-2-GPUs (Mali-400 unter neueren
+     * Android-Versionen) hinterlassen beim Scrollen sonst Bildreste. Die Bildausgabe des
+     * X-Servers (GLSurfaceView) hat ihren eigenen GL-Kontext und ist davon nicht betroffen.
+     * Original (arm64): unverändert.
+     */
+    public static void setupHardwareAcceleration(Activity activity) {
+        if (Arch.APP_IS_64BIT) return;
+        if (GPUHelper.getGLESMajorVersion(activity) >= 3) {
+            activity.getWindow().setFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED, WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED);
+        }
+    }
+
     public static void hideSystemUI(final Activity activity) {
         Window window = activity.getWindow();
         final View decorView = window.getDecorView();
@@ -376,6 +390,7 @@ public abstract class AppUtils {
     }
 
     public static void setActivityTheme(Activity activity) {
+        setupHardwareAcceleration(activity);
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(activity);
         int appTheme = preferences.getInt("app_theme", SettingsFragment.APP_THEME_DARK);
         if (appTheme == SettingsFragment.APP_THEME_LIGHT) {
