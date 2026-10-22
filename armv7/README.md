@@ -80,8 +80,21 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
 2. Beim ersten Start wird das Root-FS entpackt (einige Minuten), danach einen Container anlegen
    (Vorgaben passen sich an: ohne OpenGL ES 3 „Software“, ohne Vulkan WineD3D)
 3. Container starten: es sollte der Wine-Desktop mit dem Dateimanager (wfm) erscheinen
-4. Klappt etwas nicht: in den Einstellungen „Enable Wine debug“ und „Box86 Logs“ einschalten,
-   „Save logs to file“ aktivieren; das Protokoll liegt dann in `Documents/Winlator/logs.txt`
+4. Klappt etwas nicht, schreiben die 32-Bit-Builds ohne weitere Einstellungen nach
+   `Documents/Winlator` (ohne Speicherberechtigung nach `Android/data/com.winlator/files`):
+   - `start.txt`: jeder Containerstart mit Gerät, CPU-Merkmalen, OpenGL ES, Speicher,
+     Einstellungen, Befehl, Ausgabe des Gastprogramms und Endstatus (Signale ausgeschrieben)
+   - `crash.txt`: Java-Abstürze der App
+   - `logcat.txt`: das Android-Protokoll der App, gesichert, wenn das Gastprogramm endet, und beim
+     nächsten App-Start, falls die App während eines Containers verschwunden ist (nativer Absturz,
+     vom System beendet)
+
+   Mehr Ausgabe: in den Einstellungen „Enable Wine debug“ und „Box86 Logs“ einschalten.
+   Mit „Save logs to file“ landet das Protokoll zusätzlich in `Documents/Winlator/logs.txt`.
+
+Die Oberfläche der 32-Bit-Builds zeichnet auf Geräten ohne OpenGL ES 3 ohne GPU (die alten
+ES-2-Treiber hinterlassen beim Scrollen sonst Bildreste); die Bildausgabe des X-Servers bleibt
+auf der GPU.
 
 Beide APKs haben dieselbe Paketkennung und lassen sich übereinander installieren. Beim Wechsel
 der Variante entpackt die App ihr Root-FS neu; Container aus der anderen Variante (WoW64- statt

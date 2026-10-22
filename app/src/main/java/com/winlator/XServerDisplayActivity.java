@@ -455,6 +455,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     }
 
     private void exit() {
+        StartLog.end();
         winHandler.stop();
         if (environment != null) environment.stopEnvironmentComponents();
 
