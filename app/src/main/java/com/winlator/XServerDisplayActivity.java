@@ -19,6 +19,7 @@ import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
 import android.widget.Spinner;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -49,6 +50,7 @@ import com.winlator.contentdialog.WineD3DConfigDialog;
 import com.winlator.core.StartLog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.Arch;
+import com.winlator.core.GPUHelper;
 import com.winlator.core.DefaultVersion;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
@@ -236,6 +238,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
             this.graphicsDriver = GraphicsDrivers.parseIdentifiers(graphicsDriver);
             this.graphicsDriverConfig = GraphicsDrivers.parseConfigs(graphicsDriver, graphicsDriverConfig);
+            warnIfOpenGLDriverNeedsES3(this.graphicsDriver[1]);
             this.dxwrapper = DXWrappers.parseIdentifier(dxwrapper);
             this.dxwrapperConfig = DXWrappers.parseConfigs(dxwrapper, dxwrapperConfig);
         }
@@ -452,6 +455,23 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     public SharedPreferences getPreferences() {
         return preferences;
+    }
+
+    /**
+     * 32 Bit: Gladio und VirGL rendern auf der Android-Seite mit OpenGL ES 3. Auf ES-2-Geräten
+     * (Mali-400 usw.) bleiben OpenGL-Programme damit schwarz oder stürzen ab; nur ein Hinweis,
+     * die Auswahl bleibt frei.
+     */
+    private void warnIfOpenGLDriverNeedsES3(String openGLDriver) {
+        if (!Arch.X86_ONLY) return;
+        boolean needsES3 = GraphicsDrivers.GLADIO.equals(openGLDriver) || GraphicsDrivers.VIRGL.equals(openGLDriver);
+        int glesVersion = GPUHelper.getGLESMajorVersion(this);
+        if (!needsES3 || glesVersion >= 3) return;
+        String name = GraphicsDrivers.getName(openGLDriver);
+        StartLog.add("Hinweis: OpenGL-Treiber " + name + " braucht OpenGL ES 3, das Gerät hat ES " + glesVersion +
+            ".x; OpenGL-Programme bleiben schwarz. In den Container-Einstellungen \"Software\" wählen.");
+        Toast.makeText(this, name + " braucht OpenGL ES 3 – dieses Gerät hat ES " + glesVersion +
+            ". Für OpenGL-Programme in den Container-Einstellungen „Software“ wählen.", Toast.LENGTH_LONG).show();
     }
 
     private void exit() {

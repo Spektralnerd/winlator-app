@@ -238,11 +238,22 @@ public final class StartLog {
         if (dir != null) saveLogcat(dir, "Gastprogramm beendet, Status " + describeStatus(status));
     }
 
-    /** Container wird regulär verlassen (Menü „Beenden“ oder nach dem Ende des Gastprogramms) */
-    public static synchronized void end() {
-        if (!ENABLED || startFile == null) return;
-        if (markerFile != null) markerFile.delete();
-        add("Container verlassen");
+    /**
+     * Container wird regulär verlassen (Menü „Beenden“ oder nach dem Ende des Gastprogramms).
+     * Beim Verlassen über das Menü wird hier auch das Android-Protokoll gesichert (sonst nur,
+     * wenn das Gastprogramm von selbst endet); dauert knapp eine Sekunde.
+     */
+    public static void end() {
+        File dir;
+        boolean saveLog;
+        synchronized (StartLog.class) {
+            if (!ENABLED || startFile == null) return;
+            if (markerFile != null) markerFile.delete();
+            add("Container verlassen");
+            dir = startFile.getParentFile();
+            saveLog = !guestDone;
+        }
+        if (saveLog && dir != null) saveLogcat(dir, "Container verlassen");
     }
 
     /** Die eigenen Einträge der App aus dem Android-Protokoll nach logcat.txt (ohne adb, ohne Rechte) */

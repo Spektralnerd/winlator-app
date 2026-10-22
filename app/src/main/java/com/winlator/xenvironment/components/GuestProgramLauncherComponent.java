@@ -182,6 +182,10 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
             }
         }
 
+        // 32 Bit: Box86 schreibt sein Protokoll sonst nach stdout, und das schließt Wine bei
+        // Programmen ohne Konsole (z. B. aus dem Dateimanager gestartet); stderr bleibt erhalten
+        if (Arch.X86_ONLY && box64Logs >= 1 && !envVars.has(p+"TRACE_FILE")) envVars.put(p+"TRACE_FILE", "stderr");
+
         envVars.putAll(Box64PresetManager.getEnvVars(context, box64Preset));
 
         File box64RCFile = new File(rootFS.getRootDir(), "/etc/config."+Arch.BOX+"rc");
