@@ -73,6 +73,20 @@ Bildausgabe mit **OpenGL ES 2.0** (z. B. Mali-400): Hat das Gerät kein ES 3, ni
 ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekommen dann
 „Software“ als OpenGL-Treiber und, ohne Vulkan-Treiber, WineD3D statt DXVK (alles umstellbar).
 
+## Testen auf dem Gerät
+
+1. APK aus dem Release `armv7-apk` installieren: `Winlator-11.2-armv7.apk` für alle 32-Bit-Geräte,
+   `Winlator-11.2-armv7hybrid.apk` nur bei 64-Bit-Kernel (`uname -m` zeigt `armv8l` oder `aarch64`)
+2. Beim ersten Start wird das Root-FS entpackt (einige Minuten), danach einen Container anlegen
+   (Vorgaben passen sich an: ohne OpenGL ES 3 „Software“, ohne Vulkan WineD3D)
+3. Container starten: es sollte der Wine-Desktop mit dem Dateimanager (wfm) erscheinen
+4. Klappt etwas nicht: in den Einstellungen „Enable Wine debug“ und „Box86 Logs“ einschalten,
+   „Save logs to file“ aktivieren; das Protokoll liegt dann in `Documents/Winlator/logs.txt`
+
+Beide APKs haben dieselbe Paketkennung und lassen sich übereinander installieren. Beim Wechsel
+der Variante entpackt die App ihr Root-FS neu; Container aus der anderen Variante (WoW64- statt
+Win32-Präfix) funktionieren dann nicht mehr und sollten neu angelegt werden.
+
 ## Grenzen
 
 - Nur 32-Bit-Windows-Programme (es gibt kein 64-Bit-Wine auf 32-Bit-ARM)

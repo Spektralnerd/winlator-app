@@ -4,6 +4,7 @@ import android.content.Context;
 
 import androidx.annotation.NonNull;
 
+import com.winlator.core.Arch;
 import com.winlator.core.FileUtils;
 
 import java.io.File;
@@ -35,7 +36,15 @@ public class RootFS {
     }
 
     public boolean isValid() {
-        return rootDir.isDirectory() && getRFSVersionFile().exists();
+        return rootDir.isDirectory() && getRFSVersionFile().exists() && matchesArch();
+    }
+
+    /**
+     * Passt das installierte Root-FS zur Variante der App? (Wechsel zwischen dem 32-Bit-Build
+     * mit armhf-Root-FS und den Builds mit dem originalen aarch64-Root-FS)
+     */
+    public boolean matchesArch() {
+        return new File(rootDir, Arch.X86_ONLY ? "/lib/ld-linux-armhf.so.3" : "/lib/ld-linux-aarch64.so.1").exists();
     }
 
     public int getVersion() {
