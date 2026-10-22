@@ -29,6 +29,13 @@ for patch in $(cd "$PKG" && LC_ALL=C ls *.patch); do
         || { echo "Patch $patch passt nicht"; exit 1; }
 done
 
+# eigene Korrekturen (armv7/patches/glibc/*.patch, u. a. aus dem 2.39-Wartungszweig)
+for patch in "$ARMV7_DIR"/patches/glibc/*.patch; do
+    [ -f "$patch" ] || continue
+    log "Patch $(basename "$patch")"
+    patch -s -p1 --no-backup-if-mismatch < "$patch" || { echo "Patch $(basename "$patch") passt nicht"; exit 1; }
+done
+
 # termux_step_pre_configure aus build.sh (Stand 2.39, Revision 4)
 for i in shmem-android.h shmat.c shmctl.c shmdt.c shmget.c mprotect.c syscall.c fake-syscall.h; do
     install -Dm644 "$PKG/$i" "sysdeps/unix/sysv/linux/$i"

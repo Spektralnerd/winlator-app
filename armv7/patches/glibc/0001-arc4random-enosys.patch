@@ -1,0 +1,17 @@
+arc4random: bei fehlendem getrandom (Kernel vor 3.17) auf /dev/urandom ausweichen
+
+Aus glibc release/2.39/master (BZ 31612): __getrandom_nocancel liefert -1 und errno,
+nicht -ENOSYS; ohne die Korrektur bricht jedes Programm mit "Fatal glibc error: cannot get
+entropy for arc4random" ab (Galaxy Note 8.0, Kernel 3.0).
+
+--- a/stdlib/arc4random.c	2026-10-22 22:42:38.817942717 +0200
++++ b/stdlib/arc4random.c	2026-10-22 22:42:38.819845098 +0200
+@@ -51,7 +51,7 @@
+ 	  n -= l;
+ 	  continue; /* Interrupted by a signal; keep going.  */
+ 	}
+-      else if (l == -ENOSYS)
++      else if (l < 0 && errno == ENOSYS)
+ 	break; /* No syscall, so fallback to /dev/urandom.  */
+       arc4random_getrandom_failure ();
+     }

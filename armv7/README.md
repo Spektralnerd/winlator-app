@@ -58,6 +58,9 @@ Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
   `check-rootfs.py` prüft seitdem jede glibc-Funktion, die Wine importiert, gegen die Wrapper
   von Box86 (`box86-libc-symbols.txt` aus `build-box86.sh`).
 - `glibc/android_seccomp.c`: siehe „Android 8 und 9“ unten
+- `glibc/0001-arc4random-enosys.patch` (aus dem 2.39-Wartungszweig, BZ 31612): ohne
+  `getrandom` (Kernel vor 3.17, z. B. 3.0 auf dem Galaxy Note 8.0) weicht arc4random auf
+  /dev/urandom aus, statt jedes Programm mit „cannot get entropy for arc4random“ abzubrechen
 
 Schlägt ein Schritt fehl, stehen die letzten Protokollzeilen als Annotation am Lauf und die
 vollständigen Protokolle im Release `armv7-ci-logs`.
