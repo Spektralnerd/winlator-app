@@ -46,6 +46,7 @@ import com.winlator.contentdialog.TurnipConfigDialog;
 import com.winlator.contentdialog.VKD3DConfigDialog;
 import com.winlator.contentdialog.VirGLConfigDialog;
 import com.winlator.contentdialog.WineD3DConfigDialog;
+import com.winlator.core.StartLog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.Arch;
 import com.winlator.core.DefaultVersion;
@@ -142,6 +143,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        StartLog.installCrashHandler(this);
         AppUtils.setActivityTheme(this);
         super.onCreate(savedInstanceState);
         AppUtils.hideSystemUI(this);
@@ -197,6 +199,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
             String shortcutPath = getIntent().getStringExtra("shortcut_path");
             if (shortcutPath != null && !shortcutPath.isEmpty()) shortcut = new Shortcut(container, new File(shortcutPath));
+
+            StartLog.begin(this, "Containerstart: "+container.getName()+(shortcut != null ? ", Verknüpfung "+shortcutPath : ""));
+            StartLog.add("Einstellungen: Grafik "+container.getGraphicsDriver()+", DX "+container.getDXWrapper()+
+                ", Box-Preset "+container.getBox64Preset()+", Bildschirm "+container.getScreenSize()+
+                ", Audio "+container.getAudioDriver()+", Wine "+container.getWineVersion());
 
             String graphicsDriver = container.getGraphicsDriver();
             audioDriver = container.getAudioDriver();

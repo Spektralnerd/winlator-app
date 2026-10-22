@@ -14,6 +14,7 @@ import com.winlator.core.Bitmask;
 import com.winlator.core.Callback;
 import com.winlator.core.GPUHelper;
 import com.winlator.core.ImageUtils;
+import com.winlator.core.StartLog;
 import com.winlator.math.Mathf;
 import com.winlator.math.XForm;
 import com.winlator.renderer.material.CursorMaterial;
@@ -85,6 +86,8 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
         GPUHelper.setGlobalEGLContext();
+        StartLog.add("OpenGL-ES-Kontext "+glesVersion+": "+GLES20.glGetString(GLES20.GL_VERSION)+" / "+
+            GLES20.glGetString(GLES20.GL_RENDERER)+" / GLSL "+GLES20.glGetString(GLES20.GL_SHADING_LANGUAGE_VERSION));
 
         GLES20.glFrontFace(GLES20.GL_CCW);
         GLES20.glDisable(GLES20.GL_CULL_FACE);

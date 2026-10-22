@@ -513,9 +513,10 @@ public class SettingsFragment extends Fragment {
     private void loadMIDIInputDeviceSpinner(final Spinner sMIDIInputDevice, final String selectedValue) {
         Context context = getContext();
         MidiManager mm = (MidiManager)context.getSystemService(Context.MIDI_SERVICE);
-        MidiDeviceInfo[] infos = mm.getDevices();
+        // Geräte ohne MIDI-Dienst (Feature android.software.midi fehlt, z. B. manche Custom-ROMs)
+        MidiDeviceInfo[] infos = mm != null ? mm.getDevices() : new MidiDeviceInfo[0];
 
-        if (!midiDeviceCallbackRegistered) {
+        if (mm != null && !midiDeviceCallbackRegistered) {
             midiDeviceCallbackRegistered = true;
             mm.registerDeviceCallback(new MidiManager.DeviceCallback() {
                 @Override

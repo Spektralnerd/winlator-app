@@ -8,6 +8,7 @@ import androidx.preference.PreferenceManager;
 
 import com.winlator.box64.Box64Preset;
 import com.winlator.box64.Box64PresetManager;
+import com.winlator.core.StartLog;
 import com.winlator.core.Arch;
 import com.winlator.core.Callback;
 import com.winlator.core.DefaultVersion;
@@ -109,12 +110,21 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         String command = rootDir+"/usr/local/bin/"+Arch.BOX+" "+guestExecutable;
 
-        return ProcessHelper.exec(command, envVars, rootDir, (status) -> {
+        if (StartLog.ENABLED) {
+            StartLog.add("Gastprogramm: "+command);
+            StartLog.add("Umgebung: "+envVars);
+            ProcessHelper.addDebugCallback(StartLog.GUEST_OUTPUT);
+        }
+
+        int newPid = ProcessHelper.exec(command, envVars, rootDir, (status) -> {
             synchronized (lock) {
                 pid = -1;
             }
+            StartLog.guestExited(status);
             if (terminationCallback != null) terminationCallback.call(status);
         });
+        StartLog.add(newPid > 0 ? "Gastprogramm gestartet, PID "+newPid : "Gastprogramm konnte nicht gestartet werden");
+        return newPid;
     }
 
     private void extractBox64File() {

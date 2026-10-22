@@ -3,6 +3,7 @@ package com.winlator.renderer.material;
 import android.graphics.Color;
 import android.opengl.GLES20;
 
+import com.winlator.core.StartLog;
 import com.winlator.renderer.GLRenderer;
 
 public abstract class ShaderMaterial {
@@ -47,7 +48,9 @@ public abstract class ShaderMaterial {
 
         GLES20.glGetShaderiv(vertexShaderId, GLES20.GL_COMPILE_STATUS, compiled, 0);
         if (compiled[0] == 0) {
-            throw new RuntimeException("Could not compile vertex shader: \n" + GLES20.glGetShaderInfoLog(vertexShaderId));
+            String log = GLES20.glGetShaderInfoLog(vertexShaderId);
+            StartLog.add("Vertex-Shader nicht übersetzbar: "+log+"\n"+vertexShader);
+            throw new RuntimeException("Could not compile vertex shader: \n" + log);
         }
         GLES20.glAttachShader(programId, vertexShaderId);
 
@@ -57,11 +60,16 @@ public abstract class ShaderMaterial {
 
         GLES20.glGetShaderiv(fragmentShaderId, GLES20.GL_COMPILE_STATUS, compiled, 0);
         if (compiled[0] == 0) {
-            throw new RuntimeException("Could not compile fragment shader: \n" + GLES20.glGetShaderInfoLog(fragmentShaderId));
+            String log = GLES20.glGetShaderInfoLog(fragmentShaderId);
+            StartLog.add("Fragment-Shader nicht übersetzbar: "+log+"\n"+fragmentShader);
+            throw new RuntimeException("Could not compile fragment shader: \n" + log);
         }
         GLES20.glAttachShader(programId, fragmentShaderId);
 
         GLES20.glLinkProgram(programId);
+        int[] linked = new int[1];
+        GLES20.glGetProgramiv(programId, GLES20.GL_LINK_STATUS, linked, 0);
+        if (linked[0] == 0) StartLog.add("Shader-Programm nicht linkbar: "+GLES20.glGetProgramInfoLog(programId));
 
         GLES20.glDeleteShader(vertexShaderId);
         GLES20.glDeleteShader(fragmentShaderId);

@@ -77,6 +77,7 @@ public class MIDIHandler {
         if (selectedDevice.equals("none")) return;
 
         MidiManager mm = (MidiManager)winHandler.activity.getSystemService(Context.MIDI_SERVICE);
+        if (mm == null) return; // Gerät ohne MIDI-Dienst
         MidiDeviceInfo[] infos = mm.getDevices();
 
         for (MidiDeviceInfo info : infos) {
