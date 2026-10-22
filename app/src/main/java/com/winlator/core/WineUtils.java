@@ -167,13 +167,16 @@ public abstract class WineUtils {
         }
         else if (identifier.equals("wmdecoder")) {
             try (WineRegistryEditor registryEditor = new WineRegistryEditor(systemRegFile)) {
+                // Win32-Präfix: 32-Bit-COM-Klassen ohne Wow6432Node, DLLs in system32
+                final String classes32 = Arch.X86_ONLY ? "Software\\Classes\\CLSID" : "Software\\Classes\\Wow6432Node\\CLSID";
+                final String dir32 = "C:\\windows\\"+Arch.sys32DirName()+"\\";
                 if (useNative) {
-                    registryEditor.setStringValue("Software\\Classes\\Wow6432Node\\CLSID\\{2EEB4ADF-4578-4D10-BCA7-BB955F56320A}\\InprocServer32", null, "C:\\windows\\syswow64\\wmadmod.dll");
-                    registryEditor.setStringValue("Software\\Classes\\Wow6432Node\\CLSID\\{82D353DF-90BD-4382-8BC2-3F6192B76E34}\\InprocServer32", null, "C:\\windows\\syswow64\\wmvdecod.dll");
+                    registryEditor.setStringValue(classes32+"\\{2EEB4ADF-4578-4D10-BCA7-BB955F56320A}\\InprocServer32", null, dir32+"wmadmod.dll");
+                    registryEditor.setStringValue(classes32+"\\{82D353DF-90BD-4382-8BC2-3F6192B76E34}\\InprocServer32", null, dir32+"wmvdecod.dll");
                 }
                 else {
-                    registryEditor.setStringValue("Software\\Classes\\Wow6432Node\\CLSID\\{2EEB4ADF-4578-4D10-BCA7-BB955F56320A}\\InprocServer32", null, "C:\\windows\\syswow64\\winegstreamer.dll");
-                    registryEditor.setStringValue("Software\\Classes\\Wow6432Node\\CLSID\\{82D353DF-90BD-4382-8BC2-3F6192B76E34}\\InprocServer32", null, "C:\\windows\\syswow64\\winegstreamer.dll");
+                    registryEditor.setStringValue(classes32+"\\{2EEB4ADF-4578-4D10-BCA7-BB955F56320A}\\InprocServer32", null, dir32+"winegstreamer.dll");
+                    registryEditor.setStringValue(classes32+"\\{82D353DF-90BD-4382-8BC2-3F6192B76E34}\\InprocServer32", null, dir32+"winegstreamer.dll");
                 }
             }
         }

@@ -5,8 +5,9 @@ import com.winlator.container.GraphicsDrivers;
 import java.util.Locale;
 
 public abstract class DefaultVersion {
-    public static final String BOX64 = "0.4.4";
-    public static final String TURNIP = "26.2.0";
+    // In der 32-Bit-Variante (Arch.X86_ONLY) steht BOX64 für die Box86-Version
+    public static final String BOX64 = Arch.X86_ONLY ? "0.3.9" : "0.4.4";
+    public static final String TURNIP = Arch.X86_ONLY ? "26.1.0" : "26.2.0";
     public static final String VORTEK = "2.1";
     public static final String ZINK = "22.2.5";
     public static final String VIRGL = "23.1.9";

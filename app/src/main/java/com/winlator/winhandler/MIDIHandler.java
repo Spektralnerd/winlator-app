@@ -53,8 +53,23 @@ public class MIDIHandler {
         this.winHandler = winHandler;
     }
 
+    private static final boolean AVAILABLE;
+
     static {
-        System.loadLibrary("midihandler");
+        boolean available;
+        try {
+            System.loadLibrary("midihandler");
+            available = true;
+        }
+        catch (UnsatisfiedLinkError e) {
+            // ohne FluidSynth-Bibliotheken (z. B. eigener armv7-Build ohne MIDI) bleibt MIDI stumm
+            available = false;
+        }
+        AVAILABLE = available;
+    }
+
+    public static boolean isAvailable() {
+        return AVAILABLE;
     }
 
     public void outputPortConnect() {
@@ -91,6 +106,7 @@ public class MIDIHandler {
     }
 
     public boolean init() {
+        if (!AVAILABLE) return false;
         if (nativePtr != 0) return true;
         long nativePtr = nativeAllocate();
         if (nativePtr != 0) {
@@ -167,6 +183,7 @@ public class MIDIHandler {
     }
 
     private void processData(byte status, byte param1, byte param2) {
+        if (nativePtr == 0) return;
         int command = (status & 0xf0);
         int channel = (status & 0x0f);
 
@@ -193,18 +210,22 @@ public class MIDIHandler {
     }
 
     public void noteOn(int channel, int note, int velocity) {
+        if (nativePtr == 0) return;
         noteOn(nativePtr, channel, note, velocity);
     }
 
     public void noteOff(int channel, int note) {
+        if (nativePtr == 0) return;
         noteOff(nativePtr, channel, note);
     }
 
     public void loadSoundFont(String soundfontPath) {
+        if (nativePtr == 0) return;
         loadSoundFont(nativePtr, soundfontPath);
     }
 
     public void programChange(int channel, int program) {
+        if (nativePtr == 0) return;
         programChange(nativePtr, channel, program);
     }
 

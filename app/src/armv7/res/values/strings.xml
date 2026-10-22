@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Nur im 32-Bit-Build (-PwinlatorArch=armv7): Box86 statt Box64 -->
+<resources>
+    <string name="box64" translatable="false">Box86</string>
+    <string name="box64_preset">Box86 Preset</string>
+    <string name="box64_version">Box86 Version</string>
+    <string name="box64_logs">Box86 Logs</string>
+</resources>

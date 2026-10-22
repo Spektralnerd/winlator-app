@@ -15,6 +15,7 @@ import androidx.annotation.NonNull;
 import com.winlator.R;
 import com.winlator.contentdialog.ContentDialog;
 import com.winlator.core.AppUtils;
+import com.winlator.core.Arch;
 import com.winlator.core.ArrayUtils;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
@@ -83,7 +84,7 @@ public class Box64EditPresetDialog extends ContentDialog {
         try {
             LinearLayout parent = findViewById(R.id.LLContent);
             LayoutInflater inflater = LayoutInflater.from(context);
-            JSONArray data = new JSONArray(FileUtils.readString(context, "box64/env_vars.json"));
+            JSONArray data = new JSONArray(FileUtils.readString(context, Arch.BOX+"/env_vars.json"));
             EnvVars envVars = preset != null ? Box64PresetManager.getEnvVars(context, preset.id) : null;
 
             for (int i = 0; i < data.length(); i++) {
@@ -93,7 +94,7 @@ public class Box64EditPresetDialog extends ContentDialog {
                 ((TextView)child.findViewById(R.id.TextView)).setText(name);
 
                 child.findViewById(R.id.BTHelp).setOnClickListener((v) -> {
-                    String suffix = name.replace("BOX64_", "").toLowerCase(Locale.ENGLISH);
+                    String suffix = name.replace(Arch.BOX_ENV_PREFIX, "").toLowerCase(Locale.ENGLISH);
                     String value = StringUtils.getString(context, "box64_env_var_help__"+suffix);
                     AppUtils.showHelpBox(context, v, value);
                 });

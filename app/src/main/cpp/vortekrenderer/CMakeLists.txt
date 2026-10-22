@@ -22,7 +22,11 @@ add_library(vortekrenderer SHARED
             src/timeline_semaphore.c)
 
 target_link_libraries(vortekrenderer
-                      adrenotools
                       winlator
                       log
                       android)
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    target_link_libraries(vortekrenderer adrenotools)
+    target_compile_definitions(vortekrenderer PRIVATE HAVE_ADRENOTOOLS=1)
+endif()

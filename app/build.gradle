@@ -1,5 +1,20 @@
 apply plugin: 'com.android.application'
 
+// Zielarchitektur, wählbar mit -PwinlatorArch=...
+//   arm64        Original: arm64-v8a-App, Box64 + WoW64-Wine (Standard, unverändert)
+//   armv7hybrid  armeabi-v7a-App mit dem originalen 64-Bit-Unterbau
+//                (für 32-Bit-Android auf einem 64-Bit-Kernel)
+//   armv7        alles 32 Bit: armeabi-v7a-App, Box86 + i386-Wine, Win32-Präfix
+def winlatorArch = (project.findProperty('winlatorArch') ?: 'arm64').toString()
+if (!['arm64', 'armv7hybrid', 'armv7'].contains(winlatorArch)) {
+    throw new GradleException("Unbekannte winlatorArch '${winlatorArch}' (erlaubt: arm64, armv7hybrid, armv7)")
+}
+def appAbi = winlatorArch == 'arm64' ? 'arm64-v8a' : 'armeabi-v7a'
+def x86Only = winlatorArch == 'armv7'
+// Für 32 Bit vorgebaute JNI-Bibliotheken (FluidSynth, PulseAudio) und Assets liegen getrennt
+// vom Original, damit dessen Dateien unverändert bleiben (siehe armv7/README.md).
+def armv7Dir = file('src/armv7')
+
 android {
     namespace 'com.winlator'
     compileSdk 35
@@ -9,7 +24,35 @@ android {
         minSdkVersion 26
         targetSdkVersion 28
         versionCode 33
-        versionName "11.2"
+        versionName "11.2" + (winlatorArch == 'arm64' ? '' : "-${winlatorArch}")
+
+        buildConfigField "String", "WINLATOR_ARCH", "\"${winlatorArch}\""
+        buildConfigField "boolean", "X86_ONLY", "${x86Only}"
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DWINLATOR_ARCH=${winlatorArch}",
+                          "-DWINLATOR_JNILIBS_DIR=" + (appAbi == 'arm64-v8a' ? file('src/main/jniLibs').path : new File(armv7Dir, 'jniLibs').path)
+            }
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    // Fester Schlüssel für die 32-Bit-Builds aus GitHub Actions, damit sich neue APKs über alte
+    // installieren lassen (sonst erzeugt jeder Bauhost einen eigenen Debug-Schlüssel)
+    def armv7Keystore = rootProject.file('armv7/signing/debug.keystore')
+    signingConfigs {
+        debug {
+            if (appAbi != 'arm64-v8a' && armv7Keystore.isFile()) {
+                storeFile armv7Keystore
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
+        }
     }
 
     buildTypes {
@@ -18,8 +61,28 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
 
             ndk {
-                abiFilters 'arm64-v8a'
+                abiFilters appAbi
             }
+        }
+    }
+
+    sourceSets {
+        debug {
+            if (appAbi != 'arm64-v8a') {
+                jniLibs.srcDirs += new File(armv7Dir, 'jniLibs').path
+            }
+            if (x86Only) {
+                // Assets aus src/armv7/assets überdecken gleichnamige Dateien aus src/main/assets
+                assets.srcDirs += new File(armv7Dir, 'assets').path
+                res.srcDirs += new File(armv7Dir, 'res').path
+            }
+        }
+    }
+
+    androidResources {
+        if (x86Only) {
+            // reine 64-Bit-Bestandteile nicht ins 32-Bit-APK packen
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!box64:!turnip-26.2.0.tzst'
         }
     }
 

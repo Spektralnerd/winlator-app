@@ -2,11 +2,13 @@ package com.winlator.contentdialog;
 
 import android.content.Context;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Spinner;
 
 import com.winlator.R;
 import com.winlator.core.AppUtils;
 import com.winlator.core.GPUHelper;
+import com.winlator.core.Arch;
 import com.winlator.core.GeneralComponents;
 import com.winlator.core.KeyValueSet;
 import com.winlator.core.StringUtils;
@@ -49,6 +51,14 @@ public class VortekConfigDialog extends ContentDialog {
 
         String adrenotoolsDriver = config.get("adrenotoolsDriver");
         GeneralComponents.initViews(GeneralComponents.Type.ADRENOTOOLS_DRIVER, findViewById(R.id.AdrenotoolsDriverToolbox), sAdrenotoolsDriver, adrenotoolsDriver, "System");
+        if (!Arch.APP_IS_64BIT) {
+            // adrenotools gibt es nur für arm64, eigene Qualcomm-Treiber lassen sich in 32 Bit nicht laden
+            View row = (View)sAdrenotoolsDriver.getParent();
+            ViewGroup parent = (ViewGroup)row.getParent();
+            int index = parent.indexOfChild(row);
+            if (index > 0) parent.getChildAt(index-1).setVisibility(View.GONE);
+            row.setVisibility(View.GONE);
+        }
 
         AppUtils.setSpinnerSelectionFromValue(sVkMaxVersion, config.get("vkMaxVersion", DEFAULT_VK_MAX_VERSION));
         AppUtils.setSpinnerSelectionFromMemorySize(sMaxDeviceMemory, config.get("maxDeviceMemory", "0"));

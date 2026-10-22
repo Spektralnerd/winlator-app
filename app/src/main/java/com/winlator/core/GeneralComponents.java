@@ -31,13 +31,14 @@ public abstract class GeneralComponents {
         BOX64, TURNIP, DXVK, VKD3D, WINED3D, SOUNDFONT, ADRENOTOOLS_DRIVER;
 
         private String lowerName() {
+            if (this == BOX64) return Arch.BOX;
             return name().toLowerCase(Locale.ENGLISH);
         }
 
         private String title() {
             switch (this) {
                 case BOX64:
-                    return "Box64";
+                    return Arch.BOX_TITLE;
                 case TURNIP:
                     return "Turnip";
                 case DXVK:
@@ -58,7 +59,7 @@ public abstract class GeneralComponents {
         private String assetFolder() {
             switch (this) {
                 case BOX64:
-                    return "box64";
+                    return Arch.BOX;
                 case TURNIP:
                     return "graphics_driver";
                 case WINED3D:
@@ -107,6 +108,10 @@ public abstract class GeneralComponents {
             }
             else if (this == Type.WINED3D || this == Type.DXVK || this == Type.VKD3D) {
                 installMode = InstallMode.BOTH;
+            }
+            else if (Arch.X86_ONLY && (this == BOX64 || this == TURNIP)) {
+                // die Download-Liste von brunodev85 enthält nur arm64-Builds
+                installMode = InstallMode.FILE;
             }
             else installMode = InstallMode.DOWNLOAD;
             return installMode;
@@ -208,6 +213,9 @@ public abstract class GeneralComponents {
 
     public static void extractFile(Type type, Context context, String identifier, String defaultVersion, TarCompressorUtils.OnExtractFileListener onExtractFileListener) {
         File destination = type.getDestination(context);
+        if (type == Type.DXVK || type == Type.VKD3D || type == Type.WINED3D) {
+            onExtractFileListener = Arch.win32Remap(onExtractFileListener);
+        }
 
         if (isBuiltinComponent(type, identifier)) {
             String sourcePath = type.assetFolder()+"/"+type.lowerName()+"-"+identifier+".tzst";

@@ -8,13 +8,16 @@
 #include "vulkan_helper.h"
 #include "jni_utils.h"
 
+#ifdef HAVE_ADRENOTOOLS
 #include "adrenotools/driver.h"
+#endif
 
 VulkanWrapper vulkanWrapper = {0};
 bool vortekSerializerCastVkObject = true;
 
 static void* openVulkanLibrary(JNIEnv* env, jstring nativeLibraryDir, jstring libvulkanPath) {
     void* libvulkan;
+#ifdef HAVE_ADRENOTOOLS
     if (libvulkanPath) {
         const char* nativeLibraryDirC = (*env)->GetStringUTFChars(env, nativeLibraryDir, NULL);
         const char* libvulkanPathC = (*env)->GetStringUTFChars(env, libvulkanPath, NULL);
@@ -34,6 +37,11 @@ static void* openVulkanLibrary(JNIEnv* env, jstring nativeLibraryDir, jstring li
         (*env)->ReleaseStringUTFChars(env, libvulkanPath, libvulkanPathC);
     }
     else libvulkan = dlopen(LIBVULKAN_PATH, RTLD_NOW | RTLD_LOCAL);
+#else
+    // ohne adrenotools (32 Bit): immer den Vulkan-Treiber des Systems nehmen
+    (void)nativeLibraryDir; (void)libvulkanPath;
+    libvulkan = dlopen(LIBVULKAN_PATH, RTLD_NOW | RTLD_LOCAL);
+#endif
 
     if (!libvulkan) println("vortek: unable to open libvulkan: %s", dlerror());
     return libvulkan;

@@ -136,14 +136,15 @@ public abstract class WineInstaller {
         }
 
         final boolean is64Bit = (wineBin64.isFile() && ElfHelper.is64Bit(wineBin64)) || ElfHelper.is64Bit(wineBin);
-        if (!is64Bit) {
+        // Box64 braucht ein 64-Bit-Wine (WoW64), Box86 ein reines 32-Bit-Wine
+        if (Arch.X86_ONLY ? (is64Bit || !ElfHelper.is32Bit(wineBin)) : !is64Bit) {
             callback.call(null);
             return;
         }
 
         RootFS rootFS = RootFS.find(context);
         File rootDir = rootFS.getRootDir();
-        String wineBinPath = wineBin64.isFile() ? wineBin64.getPath() : wineBin.getPath();
+        String wineBinPath = !Arch.X86_ONLY && wineBin64.isFile() ? wineBin64.getPath() : wineBin.getPath();
         final String winePath = wineDir.getPath();
 
         final AtomicReference<WineInfo> wineInfoRef = new AtomicReference<>();

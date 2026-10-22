@@ -12,6 +12,7 @@ import android.widget.TextView;
 
 import com.winlator.R;
 import com.winlator.box64.Box64Utils;
+import com.winlator.core.Arch;
 import com.winlator.core.CPUStatus;
 import com.winlator.core.StringUtils;
 
@@ -130,7 +131,7 @@ public class FrameRating extends FrameLayout implements Runnable {
             ((TextView)ramPanel.getChildAt(1)).setText(ramText);
 
             if (cpuInfo == null) {
-                cpuInfo = "Box64 v"+ Box64Utils.extractBinVersion(cpuPanel.getContext());
+                cpuInfo = Arch.BOX_TITLE+" v"+ Box64Utils.extractBinVersion(cpuPanel.getContext());
             }
 
             short[] clockSpeeds = CPUStatus.getCurrentClockSpeeds();

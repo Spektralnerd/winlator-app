@@ -2,7 +2,17 @@ cmake_minimum_required(VERSION 3.22.1)
 
 project(MIDIHandler)
 
-set(JNILIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../jniLibs/arm64-v8a)
+# Vorgebaute FluidSynth-Bibliotheken je ABI (arm64: src/main/jniLibs, armv7: src/armv7/jniLibs)
+if(DEFINED WINLATOR_JNILIBS_DIR)
+    set(JNILIBS_DIR ${WINLATOR_JNILIBS_DIR}/${ANDROID_ABI})
+else()
+    set(JNILIBS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../jniLibs/${ANDROID_ABI})
+endif()
+
+if(NOT EXISTS ${JNILIBS_DIR}/libfluidsynth.so)
+    message(WARNING "midihandler: ${JNILIBS_DIR}/libfluidsynth.so fehlt, MIDI-Ausgabe wird ohne FluidSynth gebaut (deaktiviert)")
+    return()
+endif()
 
 add_library(libc++_shared SHARED IMPORTED)
 set_target_properties(libc++_shared PROPERTIES IMPORTED_LOCATION ${JNILIBS_DIR}/libc++_shared.so)

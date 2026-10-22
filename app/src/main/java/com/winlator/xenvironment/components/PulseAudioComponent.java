@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Process;
 
 import com.winlator.contentdialog.AudioDriverConfigDialog;
+import com.winlator.core.Arch;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
 import com.winlator.core.ProcessHelper;
@@ -75,7 +76,7 @@ public class PulseAudioComponent extends EnvironmentComponent {
 
         File modulesDir = new File(workingDir, "modules");
         EnvVars envVars = new EnvVars();
-        envVars.put("LD_LIBRARY_PATH", "/system/lib64:"+nativeLibraryDir+":"+modulesDir);
+        envVars.put("LD_LIBRARY_PATH", Arch.SYSTEM_LIB_DIR+":"+nativeLibraryDir+":"+modulesDir);
         envVars.put("HOME", workingDir);
         envVars.put("TMPDIR", environment.getTmpDir());
 

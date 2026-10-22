@@ -32,8 +32,8 @@ void ArrayBuffer_putInt(ArrayBuffer* arrayBuffer, int value) {
     ARRAY_BUFFER_PUT_TYPE(arrayBuffer, int, value);
 }
 
-void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value) {
-    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, long, value);
+void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value) {
+    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, int64_t, value);
 }
 
 void ArrayBuffer_putFloat(ArrayBuffer* arrayBuffer, float value) {
@@ -107,8 +107,8 @@ int ArrayBuffer_getInt(ArrayBuffer* arrayBuffer) {
     ARRAY_BUFFER_GET_TYPE(arrayBuffer, int);
 }
 
-long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {
-    ARRAY_BUFFER_GET_TYPE(arrayBuffer, long);
+int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {
+    ARRAY_BUFFER_GET_TYPE(arrayBuffer, int64_t);
 }
 
 float ArrayBuffer_getFloat(ArrayBuffer* arrayBuffer) {

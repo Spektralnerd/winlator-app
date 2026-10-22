@@ -389,7 +389,7 @@ void gd_handle_glClientActiveTexture(GLContext* context) {
 }
 
 void gd_handle_glClientWaitSync(GLContext* context) {
-    GLsync sync = (GLsync)ArrayBuffer_getLong(&context->inputBuffer);
+    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&context->inputBuffer);
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint64 timeout = ArrayBuffer_getLong(&context->inputBuffer);
 
@@ -684,9 +684,9 @@ void gd_handle_glDeleteShader(GLContext* context) {
 }
 
 void gd_handle_glDeleteSync(GLContext* context) {
-    long sync = ArrayBuffer_getLong(&context->inputBuffer);
+    int64_t sync = ArrayBuffer_getLong(&context->inputBuffer);
 
-    glDeleteSync((GLsync)sync);
+    glDeleteSync((GLsync)(intptr_t)sync);
 }
 
 void gd_handle_glDeleteTextures(GLContext* context) {
@@ -1031,7 +1031,8 @@ void gd_handle_glFenceSync(GLContext* context) {
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLsync sync = glFenceSync(condition, flags);
-    gl_send(context->clientRing, REQUEST_CODE_GL_FENCE_SYNC, &sync, sizeof(long));
+    int64_t syncValue = (int64_t)(intptr_t)sync;
+    gl_send(context->clientRing, REQUEST_CODE_GL_FENCE_SYNC, &syncValue, sizeof(int64_t));
 }
 
 void gd_handle_glFinish(GLContext* context) {
@@ -1839,7 +1840,7 @@ void gd_handle_glIsShader(GLContext* context) {
 }
 
 void gd_handle_glIsSync(GLContext* context) {
-    GLsync sync = (GLsync)ArrayBuffer_getLong(&context->inputBuffer);
+    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&context->inputBuffer);
 
     GLboolean result = glIsSync(sync);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_SYNC, &result, sizeof(GLboolean));
@@ -3351,7 +3352,7 @@ void gd_handle_glViewport(GLContext* context) {
 }
 
 void gd_handle_glWaitSync(GLContext* context) {
-    GLsync sync = (GLsync)ArrayBuffer_getLong(&context->inputBuffer);
+    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&context->inputBuffer);
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint64 timeout = ArrayBuffer_getLong(&context->inputBuffer);
 

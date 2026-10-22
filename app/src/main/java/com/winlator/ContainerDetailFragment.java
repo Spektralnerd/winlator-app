@@ -41,6 +41,7 @@ import com.winlator.contentdialog.AudioDriverConfigDialog;
 import com.winlator.contentdialog.ContentDialog;
 import com.winlator.contentdialog.VortekConfigDialog;
 import com.winlator.core.AppUtils;
+import com.winlator.core.Arch;
 import com.winlator.core.Callback;
 import com.winlator.container.DXWrapperPicker;
 import com.winlator.core.EnvVars;
@@ -171,6 +172,13 @@ public class ContainerDetailFragment extends Fragment {
 
         cpuListView.setCheckedCPUList(isEditMode() ? container.getCPUList(true) : Container.getFallbackCPUList());
         cpuListViewWoW64.setCheckedCPUList(isEditMode() ? container.getCPUListWoW64(true) : Container.getFallbackCPUList());
+        if (Arch.X86_ONLY) {
+            // reines 32-Bit-Wine: es gibt keine WoW64-Prozesse, die eigene Zuordnung entfällt
+            ViewGroup parent = (ViewGroup)cpuListViewWoW64.getParent();
+            int index = parent.indexOfChild(cpuListViewWoW64);
+            if (index > 0) parent.getChildAt(index-1).setVisibility(View.GONE);
+            cpuListViewWoW64.setVisibility(View.GONE);
+        }
 
         createWineConfigurationTab(view);
         final EnvVarsView envVarsView = createEnvVarsTab(view);

@@ -8,6 +8,7 @@ import androidx.preference.PreferenceManager;
 
 import com.winlator.box64.Box64Preset;
 import com.winlator.box64.Box64PresetManager;
+import com.winlator.core.Arch;
 import com.winlator.core.Callback;
 import com.winlator.core.DefaultVersion;
 import com.winlator.core.EnvVars;
@@ -97,15 +98,16 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         envVars.put("DISPLAY", ":0");
         envVars.put("PATH", rootDir+rootFS.getWinePath()+"/bin:"+rootDir+"/usr/local/bin:"+rootDir+"/usr/bin");
         envVars.put("LD_LIBRARY_PATH", rootFS.getLibDir().getPath());
-        envVars.put("BOX64_LD_LIBRARY_PATH", rootDir+"/lib/x86_64-linux-gnu");
+        envVars.put(Arch.BOX_ENV_PREFIX+"LD_LIBRARY_PATH", rootDir+Arch.BOX_LD_LIBRARY_DIR);
         envVars.put("ANDROID_SYSVSHM_SERVER", rootDir+UnixSocketConfig.SYSVSHM_SERVER_PATH);
+        addRootFSEnvVars(envVars, rootDir);
 
         if (this.envVars != null) envVars.putAll(this.envVars);
 
         File shmDir = new File(rootDir, "/tmp/shm");
         if (!shmDir.isDirectory()) shmDir.mkdirs();
 
-        String command = rootDir+"/usr/local/bin/box64 "+guestExecutable;
+        String command = rootDir+"/usr/local/bin/"+Arch.BOX+" "+guestExecutable;
 
         return ProcessHelper.exec(command, envVars, rootDir, (status) -> {
             synchronized (lock) {
@@ -130,7 +132,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
     private void copyDefaultBox64RCFile() {
         Context context = environment.getContext();
         RootFS rootFS = environment.getRootFS();
-        FileUtils.copy(context, "box64/default.box64rc", new File(rootFS.getRootDir(), "/etc/config.box64rc"));
+        FileUtils.copy(context, Arch.BOX+"/default."+Arch.BOX+"rc", new File(rootFS.getRootDir(), "/etc/config."+Arch.BOX+"rc"));
     }
 
     private void addBox64EnvVars(EnvVars envVars) {
@@ -140,19 +142,22 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
         int box64Logs = preferences.getInt("box64_logs", 0);
         boolean saveToFile = preferences.getBoolean("save_logs_to_file", false);
 
-        envVars.put("BOX64_NOBANNER", box64Logs >= 1 ? "0" : "1");
-        envVars.put("BOX64_DYNAREC", "1");
-        envVars.put("BOX64_UNITYPLAYER", "0");
-        envVars.put("BOX64_DYNACACHE", "0");
+        final String p = Arch.BOX_ENV_PREFIX;
+        envVars.put(p+"NOBANNER", box64Logs >= 1 ? "0" : "1");
+        envVars.put(p+"DYNAREC", "1");
+        if (!Arch.X86_ONLY) {
+            envVars.put("BOX64_UNITYPLAYER", "0");
+            envVars.put("BOX64_DYNACACHE", "0");
+        }
 
         if (box64Logs >= 1) {
-            envVars.put("BOX64_LOG", "1");
-            envVars.put("BOX64_DYNAREC_MISSING", "1");
+            envVars.put(p+"LOG", "1");
+            envVars.put(p+"DYNAREC_MISSING", "1");
 
             if (box64Logs == 2) {
-                envVars.put("BOX64_SHOWSEGV", "1");
-                envVars.put("BOX64_DLSYM_ERROR", "1");
-                envVars.put("BOX64_TRACE_FILE", "stderr");
+                envVars.put(p+"SHOWSEGV", "1");
+                envVars.put(p+"DLSYM_ERROR", "1");
+                envVars.put(p+"TRACE_FILE", "stderr");
 
                 if (saveToFile) {
                     File parent = (new File(preferences.getString("log_file", LogView.getLogFile().getPath()))).getParentFile();
@@ -161,7 +166,7 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
                         if (!traceDir.isDirectory()) traceDir.mkdirs();
                         FileUtils.clear(traceDir);
 
-                        envVars.put("BOX64_TRACE_FILE", traceDir+"/box64-%pid.txt");
+                        envVars.put(p+"TRACE_FILE", traceDir+"/"+Arch.BOX+"-%pid.txt");
                     }
                 }
             }
@@ -169,8 +174,25 @@ public class GuestProgramLauncherComponent extends EnvironmentComponent {
 
         envVars.putAll(Box64PresetManager.getEnvVars(context, box64Preset));
 
-        File box64RCFile = new File(rootFS.getRootDir(), "/etc/config.box64rc");
-        envVars.put("BOX64_RCFILE", box64RCFile.getPath());
+        File box64RCFile = new File(rootFS.getRootDir(), "/etc/config."+Arch.BOX+"rc");
+        envVars.put(p+"RCFILE", box64RCFile.getPath());
+    }
+
+    /**
+     * Zusätzliche Umgebungsvariablen, die das Root-FS selbst mitbringt (rootfs/.winlator/env,
+     * Zeilen "NAME=Wert", "@ROOT@" wird durch den Root-FS-Pfad ersetzt). Das 32-Bit-Root-FS nutzt
+     * das für Pfade von Bibliotheken, die nicht für den Winlator-Präfix gebaut sind.
+     */
+    private static void addRootFSEnvVars(EnvVars envVars, File rootDir) {
+        File envFile = new File(rootDir, "/.winlator/env");
+        if (!envFile.isFile()) return;
+        for (String line : FileUtils.readLines(envFile)) {
+            line = line.trim();
+            if (line.isEmpty() || line.startsWith("#")) continue;
+            int index = line.indexOf('=');
+            if (index <= 0) continue;
+            envVars.put(line.substring(0, index).trim(), line.substring(index+1).trim().replace("@ROOT@", rootDir.getPath()));
+        }
     }
 
     @Override

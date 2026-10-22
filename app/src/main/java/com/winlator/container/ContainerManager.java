@@ -5,6 +5,7 @@ import android.os.Handler;
 
 import com.winlator.R;
 import com.winlator.core.Callback;
+import com.winlator.core.Arch;
 import com.winlator.core.FileUtils;
 import com.winlator.core.TarCompressorUtils;
 import com.winlator.core.WineInfo;
@@ -235,7 +236,8 @@ public class ContainerManager {
 
     private void copyCommonDlls(String srcName, String dstName, JSONObject commonDlls, File containerDir) throws JSONException {
         File srcDir = new File(RootFS.find(context).getRootDir(), "/opt/wine/lib/wine/"+srcName);
-        JSONArray dlnames = commonDlls.getJSONArray(dstName);
+        JSONArray dlnames = commonDlls.optJSONArray(dstName);
+        if (dlnames == null) return;
 
         for (int i = 0; i < dlnames.length(); i++) {
             String dlname = dlnames.getString(i);
@@ -251,8 +253,14 @@ public class ContainerManager {
             if (result) {
                 try {
                     JSONObject commonDlls = new JSONObject(FileUtils.readString(context, "common_dlls.json"));
-                    copyCommonDlls("x86_64-windows", "system32", commonDlls, containerDir);
-                    copyCommonDlls("i386-windows", "syswow64", commonDlls, containerDir);
+                    if (Arch.X86_ONLY) {
+                        // Win32-Präfix: nur 32-Bit-DLLs, und die gehören nach system32
+                        copyCommonDlls("i386-windows", "system32", commonDlls, containerDir);
+                    }
+                    else {
+                        copyCommonDlls("x86_64-windows", "system32", commonDlls, containerDir);
+                        copyCommonDlls("i386-windows", "syswow64", commonDlls, containerDir);
+                    }
                 }
                 catch (JSONException e) {
                     return false;

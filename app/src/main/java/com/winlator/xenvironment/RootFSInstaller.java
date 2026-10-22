@@ -10,6 +10,7 @@ import com.winlator.SettingsFragment;
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.core.AppUtils;
+import com.winlator.core.Arch;
 import com.winlator.core.DownloadProgressDialog;
 import com.winlator.core.FileUtils;
 import com.winlator.core.PreloaderDialog;
@@ -118,7 +119,7 @@ public abstract class RootFSInstaller {
         Executors.newSingleThreadExecutor().execute(() -> {
             File[] srcFiles, dstFiles;
             File rootDir = RootFS.find(activity).getRootDir();
-            File wineSystem32Dir = new File(rootDir, "/opt/wine/lib/wine/x86_64-windows");
+            File wineSystem32Dir = new File(rootDir, "/opt/wine/lib/wine/"+Arch.WINE_SYSTEM32_ARCH);
             File wineSysWoW64Dir = new File(rootDir, "/opt/wine/lib/wine/i386-windows");
 
             File containerPatternDir = new File(activity.getCacheDir(), "container_pattern");
@@ -145,6 +146,7 @@ public abstract class RootFSInstaller {
 
             dstFiles = containerSysWoW64Dir.listFiles();
             srcFiles = wineSysWoW64Dir.listFiles();
+            if (dstFiles == null) dstFiles = new File[0]; // Win32-Präfix hat kein syswow64
 
             for (File dstFile : dstFiles) {
                 for (File srcFile : srcFiles) {

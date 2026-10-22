@@ -3,6 +3,7 @@
 
 #include <malloc.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct ArrayBuffer {
     int size;
@@ -14,7 +15,7 @@ typedef struct ArrayBuffer {
 extern void ArrayBuffer_put(ArrayBuffer* arrayBuffer, char value);
 extern void ArrayBuffer_putShort(ArrayBuffer* arrayBuffer, short value);
 extern void ArrayBuffer_putInt(ArrayBuffer* arrayBuffer, int value);
-extern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value);
+extern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value);
 extern void ArrayBuffer_putFloat(ArrayBuffer* arrayBuffer, float value);
 extern float* ArrayBuffer_putFloat2(ArrayBuffer* arrayBuffer, float x, float y);
 extern float* ArrayBuffer_putFloat3(ArrayBuffer* arrayBuffer, float x, float y, float z);
@@ -25,7 +26,7 @@ extern void ArrayBuffer_putBytes(ArrayBuffer* arrayBuffer, const void* bytes, in
 extern char ArrayBuffer_get(ArrayBuffer* arrayBuffer);
 extern short ArrayBuffer_getShort(ArrayBuffer* arrayBuffer);
 extern int ArrayBuffer_getInt(ArrayBuffer* arrayBuffer);
-extern long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);
+extern int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);
 extern float ArrayBuffer_getFloat(ArrayBuffer* arrayBuffer);
 extern double ArrayBuffer_getDouble(ArrayBuffer* arrayBuffer);
 extern void* ArrayBuffer_getBytes(ArrayBuffer* arrayBuffer, int size);

@@ -45,6 +45,7 @@ import com.winlator.contentdialog.VKD3DConfigDialog;
 import com.winlator.contentdialog.VirGLConfigDialog;
 import com.winlator.contentdialog.WineD3DConfigDialog;
 import com.winlator.core.AppUtils;
+import com.winlator.core.Arch;
 import com.winlator.core.DefaultVersion;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
@@ -778,6 +779,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
                 if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
                 break;
+            case GraphicsDrivers.SOFTWARE:
+                // Software-Rendering auf der CPU (32-Bit-Build: in der VirGL-Mesa-Bibliothek enthalten).
+                // Ohne GALLIUM_DRIVER nimmt Mesa den besten eingebauten Software-Treiber (llvmpipe, sonst softpipe).
+                if (!envVars.has("LP_NUM_THREADS")) envVars.put("LP_NUM_THREADS", Runtime.getRuntime().availableProcessors());
+
+                if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
+                break;
             case GraphicsDrivers.GLADIO:
                 envVars.put("GLADIO_NO_ERROR", "1");
 
@@ -857,14 +865,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             });
 
             if (!hasD3D8DllFile[0]) {
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "dxwrapper/d8vk-"+DefaultVersion.D8VK+".tzst", windowsDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "dxwrapper/d8vk-"+DefaultVersion.D8VK+".tzst", windowsDir, Arch.win32Remap(null));
             }
             if (!hasD3D10DllFile[0]) restoreBuiltinDllFiles("d3d10.dll", "d3d10_1.dll");
         }
 
         GeneralComponents.extractFile(GeneralComponents.Type.VKD3D, this, dxwrapperConfig[1].get("version"), DefaultVersion.VKD3D);
 
-        File containerSysWoW64Dir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows/syswow64");
+        File containerSysWoW64Dir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows/"+Arch.sys32DirName());
         FileUtils.delete(new File(containerSysWoW64Dir, "ddraw_.dll"));
 
         switch (ddrawWrapper) {
@@ -875,12 +883,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 File shadersDir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/ProgramData/cnc-ddraw/Shaders");
                 FileUtils.delete(shadersDir);
                 FileUtils.copy(this, assetDir+"/Shaders", shadersDir);
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, assetDir+"/ddraw.tzst", windowsDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, assetDir+"/ddraw.tzst", windowsDir, Arch.win32Remap(null));
                 break;
             case DXWrappers.D7VK:
                 restoreBuiltinDllFiles("ddraw.dll");
                 (new File(containerSysWoW64Dir, "ddraw.dll")).renameTo(new File(containerSysWoW64Dir, "ddraw_.dll"));
-                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "dxwrapper/d7vk-"+DefaultVersion.D7VK+".tzst", windowsDir);
+                TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "dxwrapper/d7vk-"+DefaultVersion.D7VK+".tzst", windowsDir, Arch.win32Remap(null));
                 break;
             default:
                 restoreBuiltinDllFiles("ddraw.dll");
@@ -905,7 +913,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 boolean useNative = wincomponent[1].equals("1");
 
                 if (useNative) {
-                    TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "wincomponents/"+identifier+".tzst", windowsDir);
+                    TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "wincomponents/"+identifier+".tzst", windowsDir, Arch.win32Remap(null));
                 }
                 else {
                     JSONObject wincomponentJSONObject = wincomponentsJSONObject.getJSONObject(identifier);
@@ -917,11 +925,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                         }
                     }
                     else {
-                        TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "wincomponents/"+identifier+".tzst", windowsDir, (destination, size) -> {
+                        TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "wincomponents/"+identifier+".tzst", windowsDir, Arch.win32Remap((destination, size) -> {
                             String name = destination.getName();
                             if (name.endsWith(".dll") || name.endsWith(".manifest") || name.endsWith("_deadbeef")) FileUtils.delete(destination);
                             return null;
-                        });
+                        }));
                     }
                 }
 
@@ -943,6 +951,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         File containerSysWoW64Dir = new File(rootDir, RootFS.WINEPREFIX+"/drive_c/windows/syswow64");;
 
         for (String dll : dlls) {
+            if (Arch.X86_ONLY) {
+                // Win32-Präfix: die 32-Bit-DLLs liegen in system32
+                FileUtils.copy(new File(wineSysWoW64Dir, dll), new File(containerSystem32Dir, dll));
+                continue;
+            }
             FileUtils.copy(new File(wineSysWoW64Dir, dll), new File(containerSysWoW64Dir, dll));
             FileUtils.copy(new File(wineSystem32Dir, dll), new File(containerSystem32Dir, dll));
         }

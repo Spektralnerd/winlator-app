@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+# Winlator armv7: Bauordner und von GitHub Actions erzeugte Dateien
+/armv7/work/
+/app/src/armv7/jniLibs/
+/app/src/armv7/assets/*
+!/app/src/armv7/assets/box86/
+/app/src/armv7/assets/box86/*.tzst
+!/app/src/armv7/assets/wine_startmenu.json

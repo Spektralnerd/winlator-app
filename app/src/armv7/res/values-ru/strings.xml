@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="box64_preset">Предустановка Box86</string>
+    <string name="box64_version">Версия Box86</string>
+    <string name="box64_logs">Логи Box86</string>
+</resources>

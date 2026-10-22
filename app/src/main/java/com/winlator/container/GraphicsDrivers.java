@@ -2,6 +2,7 @@ package com.winlator.container;
 
 import android.content.Context;
 
+import com.winlator.core.Arch;
 import com.winlator.core.GPUHelper;
 import com.winlator.core.KeyValueSet;
 
@@ -11,6 +12,8 @@ public abstract class GraphicsDrivers {
     public static final String ZINK = "zink";
     public static final String VIRGL = "virgl";
     public static final String GLADIO = "gladio";
+    /** Software-Rendering auf der CPU (Mesa llvmpipe/softpipe), nur im 32-Bit-Build; steckt in der VirGL-Bibliothek */
+    public static final String SOFTWARE = "software";
     public static final String DEFAULT_VULKAN_DRIVER = VORTEK;
     public static final String DEFAULT_OPENGL_DRIVER = GLADIO;
 
@@ -21,6 +24,7 @@ public abstract class GraphicsDrivers {
             case ZINK: return "Zink";
             case VIRGL: return "VirGL";
             case GLADIO: return "Gladio";
+            case SOFTWARE: return "Software";
             default: return "None";
         }
     }
@@ -30,7 +34,7 @@ public abstract class GraphicsDrivers {
     }
 
     public static boolean isOpenGLDriver(String identifier) {
-        return identifier != null && (identifier.equals(ZINK) || identifier.equals(VIRGL) || identifier.equals(GLADIO));
+        return identifier != null && (identifier.equals(ZINK) || identifier.equals(VIRGL) || identifier.equals(GLADIO) || identifier.equals(SOFTWARE));
     }
 
     public static String[] getItems(String apiName) {
@@ -38,6 +42,7 @@ public abstract class GraphicsDrivers {
             return new String[]{getName(TURNIP), getName(VORTEK)};
         }
         else if (apiName.equalsIgnoreCase("OPENGL")) {
+            if (Arch.X86_ONLY) return new String[]{getName(ZINK), getName(VIRGL), getName(GLADIO), getName(SOFTWARE)};
             return new String[]{getName(ZINK), getName(VIRGL), getName(GLADIO)};
         }
         else return new String[0];
@@ -79,6 +84,8 @@ public abstract class GraphicsDrivers {
     }
 
     public static String getDefaultDriver(Context context) {
+        // Turnip gibt es für 32 Bit nur als experimentellen Eigenbau, daher dort Vortek als Vorgabe
+        if (Arch.X86_ONLY) return VORTEK+","+DEFAULT_OPENGL_DRIVER;
         return GPUHelper.getAdrenoModelId(context) > 0 ? GraphicsDrivers.TURNIP+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER : GraphicsDrivers.VORTEK+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER;
     }
 }

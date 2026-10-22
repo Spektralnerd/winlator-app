@@ -9,6 +9,7 @@ import android.widget.SpinnerAdapter;
 import androidx.preference.PreferenceManager;
 
 import com.winlator.R;
+import com.winlator.core.Arch;
 import com.winlator.core.EnvVars;
 
 import java.util.ArrayList;
@@ -16,6 +17,24 @@ import java.util.Iterator;
 
 public abstract class Box64PresetManager {
     public static EnvVars getEnvVars(Context context, String id) {
+        EnvVars envVars = getBox64EnvVars(context, id);
+        if (!Arch.X86_ONLY) return envVars;
+
+        // Box86: gleiche Optionen mit BOX86_-Präfix, reine Box64-Optionen entfallen
+        EnvVars result = new EnvVars();
+        for (String name : envVars) {
+            String box64Name = name.startsWith("BOX86_") ? "BOX64_"+name.substring(6) : name;
+            if (!Arch.isBoxEnvSupported(box64Name)) continue;
+            String value = envVars.get(name);
+            // Box86 kennt BIGBLOCK nur bis 2 und FASTROUND nur als 0/1
+            if (box64Name.equals("BOX64_DYNAREC_BIGBLOCK") && value.equals("3")) value = "2";
+            if (box64Name.equals("BOX64_DYNAREC_FASTROUND") && value.equals("2")) value = "1";
+            result.put(Arch.boxEnv(box64Name), value);
+        }
+        return result;
+    }
+
+    private static EnvVars getBox64EnvVars(Context context, String id) {
         EnvVars envVars = new EnvVars();
 
         if (id.equals(Box64Preset.STABILITY)) {

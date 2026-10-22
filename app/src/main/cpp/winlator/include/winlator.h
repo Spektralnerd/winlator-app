@@ -12,7 +12,11 @@
 #define GETEXP(x) (31 - __builtin_clz(x))
 
 #define APP_CACHE_DIR "/data/data/com.winlator/cache"
+#if defined(__LP64__)
 #define LIBVULKAN_PATH "/system/lib64/libvulkan.so"
+#else
+#define LIBVULKAN_PATH "/system/lib/libvulkan.so"
+#endif
 
 #define CLOSEFD(x) \
     do { \
