@@ -3,32 +3,197 @@ name: Winlator armv7
 # Baut die 32-Bit-Varianten von Winlator:
 #   armv7hybrid  32-Bit-App + originaler 64-Bit-Unterbau (für 32-Bit-Android auf 64-Bit-Kernel)
 #   armv7        alles 32 Bit: Box86 + i386-Wine + armhf-Root-FS
-# Der 32-Bit-Unterbau liegt im Release "armv7-rootfs" (siehe armv7/README.md),
-# die APKs landen im Release "armv7-apk" (Vorabversion).
+#
+# Ablauf:
+#   plan      prüft, ob sich die Quellen des 32-Bit-Unterbaus geändert haben
+#   armhf     glibc, Box86, alsa-lib, Gladio/Vortek, Mesa, Debian-Bibliotheken, Hilfsprogramme
+#   wine      i386-Wine 10.10 + Win32-Präfix
+#   assemble  Assets zusammenstellen -> Release "armv7-rootfs" (armv7-assets.tar)
+#   apk       beide APKs bauen -> Release "armv7-apk" (Vorabversion)
+#   logs      bei Fehlern die Protokolle -> Release "armv7-ci-logs"
 
 on:
   push:
     branches: [armv7]
   workflow_dispatch:
+    inputs:
+      rootfs:
+        description: '32-Bit-Unterbau neu bauen, auch ohne Änderungen'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
+# neue Läufe warten, statt einen laufenden (langen) Unterbau-Bau abzubrechen
 concurrency:
   group: armv7-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
-  apk:
+  plan:
     runs-on: ubuntu-24.04
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    outputs:
+      rootfs: ${{ steps.plan.outputs.rootfs }}
+      key: ${{ steps.plan.outputs.key }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: armv7
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-java@v4
+      - name: Muss der 32-Bit-Unterbau neu gebaut werden?
+        id: plan
+        env:
+          FORCE: ${{ inputs.rootfs }}
+        run: |
+          KEY="$(git ls-files -s armv7/scripts armv7/winhandler armv7/winpreexec armv7/patches \
+                 app/src/main/assets/rootfs.tzst app/src/main/assets/rootfs_patches.tzst \
+                 app/src/main/java/com/winlator/core/DefaultVersion.java | sha256sum | cut -c1-16)"
+          REL="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/armv7-rootfs" 2>/dev/null || echo '{}')"
+          OLD="$(echo "$REL" | jq -r '.body // ""' | sed -n 's/.*Schlüssel: \([0-9a-f]*\).*/\1/p' | head -1)"
+          HAVE="$(echo "$REL" | jq -r '[.assets[]?.name] | index("armv7-assets.tar") != null')"
+          if [ "$FORCE" = true ] || [ "$OLD" != "$KEY" ] || [ "$HAVE" != true ]; then R=1; else R=0; fi
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "rootfs=$R" >> "$GITHUB_OUTPUT"
+          echo "Schlüssel $KEY, im Release: ${OLD:-keiner} (Datei vorhanden: $HAVE) -> neu bauen: $R"
+
+  armhf:
+    needs: plan
+    if: needs.plan.outputs.rootfs == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container: debian:bookworm
+    steps:
+      - name: git
+        run: apt-get update -q && apt-get install -y -q --no-install-recommends git ca-certificates > /dev/null
+
+      - uses: actions/checkout@v5
+
+      - name: armhf-Teile bauen
+        run: |
+          mkdir -p armv7/work
+          bash armv7/scripts/ci-armhf.sh 2>&1 | tee armv7/work/armhf.log
+
+      - name: Fehlerbericht
+        if: failure()
+        run: bash armv7/scripts/ci-report.sh armv7/work/armhf.log "armhf-Bau"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: armhf-stage
+          path: armv7/work/armhf-stage.tar
+          retention-days: 3
+          compression-level: 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-armhf
+          path: |
+            armv7/work/*.log
+            armv7/work/build/**/config.log
+            armv7/work/build/**/meson-logs/meson-log.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
+  wine:
+    needs: plan
+    if: needs.plan.outputs.rootfs == '1'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: i386-Wine und Win32-Präfix bauen
+        run: |
+          mkdir -p armv7/work
+          docker run --rm -v "$PWD:/w" -w /w i386/debian:bookworm \
+              linux32 bash armv7/scripts/ci-wine.sh 2>&1 | tee armv7/work/wine.log
+
+      - name: Fehlerbericht
+        if: failure()
+        run: |
+          bash armv7/scripts/ci-report.sh armv7/work/wine.log "Wine-Bau"
+          [ -f armv7/work/build/wine/make.log ] && bash armv7/scripts/ci-report.sh armv7/work/build/wine/make.log "Wine make" 60 || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-stage
+          path: armv7/work/wine-stage.tar
+          retention-days: 3
+          compression-level: 1
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-wine
+          path: |
+            armv7/work/*.log
+            armv7/work/build/wine/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  assemble:
+    needs: [plan, armhf, wine]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-stage'
+          path: /tmp/stage
+          merge-multiple: true
+
+      - name: Assets zusammenstellen
+        run: |
+          mkdir -p armv7/work
+          tar -C armv7/work -xf /tmp/stage/armhf-stage.tar
+          tar -C armv7/work -xf /tmp/stage/wine-stage.tar
+          rm -rf /tmp/stage
+          bash armv7/scripts/assemble.sh 2>&1 | tee armv7/work/assemble.log
+
+      - name: Fehlerbericht
+        if: failure()
+        run: bash armv7/scripts/ci-report.sh armv7/work/assemble.log "Zusammenstellen"
+
+      - name: Release armv7-rootfs aktualisieren
+        run: |
+          TAG=armv7-rootfs
+          NOTES="Assets für app/src/armv7/assets (siehe armv7/README.md).
+          Gebaut aus $(git rev-parse --short HEAD) am $(date -u '+%Y-%m-%d %H:%M UTC').
+          Schlüssel: ${{ needs.plan.outputs.key }}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" armv7/work/out/armv7-assets.tar --clobber
+            gh release edit "$TAG" --notes "$NOTES"
+          else
+            gh release create "$TAG" armv7/work/out/armv7-assets.tar --prerelease \
+              --title "Winlator armv7: 32-Bit-Unterbau" --notes "$NOTES" --target "$GITHUB_SHA"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-assemble
+          path: armv7/work/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  apk:
+    needs: [plan, armhf, wine, assemble]
+    if: always() && needs.plan.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -47,7 +212,7 @@ jobs:
       - name: APK armv7hybrid
         run: |
           mkdir -p out
-          bash ./gradlew --no-daemon --stacktrace assembleDebug -PwinlatorArch=armv7hybrid
+          bash ./gradlew --no-daemon --stacktrace assembleDebug -PwinlatorArch=armv7hybrid 2>&1 | tee out/gradle-hybrid.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7hybrid.apk
 
       - name: 32-Bit-Unterbau holen (Release armv7-rootfs)
@@ -56,7 +221,8 @@ jobs:
           mkdir -p app/src/armv7/assets
           if gh release download armv7-rootfs -R "$GITHUB_REPOSITORY" -p 'armv7-assets.tar' -D /tmp; then
             tar -xf /tmp/armv7-assets.tar -C app/src/armv7/assets
-            ls -la app/src/armv7/assets app/src/armv7/assets/*
+            rm -f /tmp/armv7-assets.tar
+            find app/src/armv7/assets -type f | sort | xargs ls -la
             echo "ok=1" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::Noch kein 32-Bit-Unterbau im Release armv7-rootfs, armv7-APK wird übersprungen"
@@ -65,15 +231,25 @@ jobs:
       - name: APK armv7
         if: steps.rootfs.outputs.ok == '1'
         run: |
-          bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=armv7
+          bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=armv7 2>&1 | tee out/gradle-armv7.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7.apk
+
+      - name: Fehlerbericht
+        if: failure()
+        run: |
+          for f in out/gradle-*.log; do bash armv7/scripts/ci-report.sh "$f" "Gradle $(basename "$f" .log)" 60; done
 
       - name: Inhalt prüfen
         run: |
           for apk in out/*.apk; do
             echo "== $apk ($(du -h "$apk" | cut -f1))"
-            unzip -l "$apk" | grep -E 'lib/|assets/(rootfs|box|graphics_driver|container_pattern)' | awk '{print $1, $4}' | head -60
+            unzip -l "$apk" | grep -E 'lib/|assets/(rootfs|box|graphics_driver|container_pattern|common_dlls)' | awk '{print $1, $4}' | head -60
           done
+          if [ -f out/Winlator-11.2-armv7.apk ]; then
+            # das 32-Bit-APK darf keine Box64-/aarch64-Teile mehr enthalten
+            ! unzip -l out/Winlator-11.2-armv7.apk | grep -E 'assets/box64/|turnip-26\.2\.0|lib/arm64-v8a/' \
+              || { echo "::error::64-Bit-Teile im armv7-APK"; exit 1; }
+          fi
 
       - name: Release armv7-apk aktualisieren
         run: |
@@ -83,10 +259,37 @@ jobs:
             gh release upload "$TAG" out/*.apk --clobber -R "$GITHUB_REPOSITORY"
             gh release edit "$TAG" --notes "$NOTES" -R "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" out/*.apk --prerelease --title "Winlator armv7 (Testbuilds)" --notes "$NOTES" --target armv7 -R "$GITHUB_REPOSITORY"
+            gh release create "$TAG" out/*.apk --prerelease --title "Winlator armv7 (Testbuilds)" \
+              --notes "$NOTES" --target "$GITHUB_SHA" -R "$GITHUB_REPOSITORY"
           fi
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: apks
-          path: out/*.apk
+          name: logs-apk
+          path: out/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+  logs:
+    needs: [armhf, wine, assemble, apk]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: logs-*
+          path: logs
+
+      - name: Protokolle ins Release armv7-ci-logs
+        run: |
+          [ -d logs ] || { echo "keine Protokolle"; exit 0; }
+          NAME="ci-logs-${{ github.run_id }}-${{ github.run_attempt }}.tar.gz"
+          tar -czf "$NAME" -C logs .
+          ls -la "$NAME"
+          R="$GITHUB_REPOSITORY"
+          gh release view armv7-ci-logs -R "$R" > /dev/null 2>&1 || \
+            gh release create armv7-ci-logs -R "$R" --prerelease --title "armv7: CI-Protokolle" \
+              --notes "Protokolle fehlgeschlagener Bauläufe" --target "$GITHUB_SHA"
+          gh release upload armv7-ci-logs "$NAME" --clobber -R "$R"

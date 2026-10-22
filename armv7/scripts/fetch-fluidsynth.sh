@@ -34,4 +34,10 @@ if ! [ -f "$DEST/libomp.so" ] && [ -n "${ANDROID_NDK_HOME:-}" ]; then
     OMP="$(find "$ANDROID_NDK_HOME" -path "*linux/arm/libomp.so" | head -1)"
     [ -n "$OMP" ] && cp "$OMP" "$DEST/"
 fi
+# libfluidsynth/liboboe brauchen libc++_shared.so; die eigenen JNI-Bibliotheken sind reines C,
+# daher packt Gradle sie nicht von selbst ein
+if ! [ -f "$DEST/libc++_shared.so" ] && [ -n "${ANDROID_NDK_HOME:-}" ]; then
+    CXX="$(find "$ANDROID_NDK_HOME" -path "*arm-linux-androideabi/libc++_shared.so" | head -1)"
+    [ -n "$CXX" ] && cp "$CXX" "$DEST/"
+fi
 ls -la "$DEST"

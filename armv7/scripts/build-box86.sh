@@ -65,6 +65,10 @@ fi
 file "$DEST/usr/local/bin/box86"
 readelf -l "$DEST/usr/local/bin/box86" | grep -o "interpreter: [^]]*"
 
+# Liste der Bibliotheken, die Box86 auf armhf-Bibliotheken abbildet (für check-rootfs.py)
+grep -o 'GO("[^"]*"' "$SRC/src/library_list.h" | cut -d'"' -f2 | sort -u > "$OUT_DIR/box86-wrapped.txt"
+echo "$(wc -l < "$OUT_DIR/box86-wrapped.txt") abgebildete Bibliotheken"
+
 log "Winlator-Komponente packen"
 mkdir -p "$OUT_DIR"
 tar -C "$DEST" --owner=0 --group=0 -cf - usr/local/bin/box86 | zstd -19 -T0 -q -o "$OUT_DIR/box86-$BOX86_VERSION.tzst" -f
