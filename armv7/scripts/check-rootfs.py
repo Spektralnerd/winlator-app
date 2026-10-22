@@ -25,7 +25,9 @@ OPTIONAL = {"libOpenCL.so.1", "libcups.so.2", "libcapi20.so.3", "libnetapi.so", 
             "libgphoto2.so.6", "libgphoto2_port.so.12", "libpcsclite.so.1", "libodbc.so.2",
             "libv4l2.so.0", "libSDL2-2.0.so.0", "libudev.so.1", "libusb-1.0.so.0", "libpcap.so.0.8",
             "libxkbcommon.so.0", "libwayland-client.so.0", "libunwind.so.8", "libosmesa.so.8",
-            "libXss.so.1", "libXxf86vm.so.1"}
+            "libXss.so.1", "libXxf86vm.so.1",
+            # EGL: Wine nimmt dann GLX (Winlators X-Server, Mesa über gallium-xlib); ODBC: nur Datenbanken
+            "libEGL.so.1", "libodbc.so", "libnetapi.so"}
 
 
 def elf_machine(path):

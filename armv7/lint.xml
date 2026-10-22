@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Lint für die 32-Bit-Builds (minSdk 24): nur Aufrufe von APIs, die es auf Android 7 noch nicht gibt -->
+<lint>
+    <issue id="all" severity="ignore" />
+    <issue id="NewApi" severity="error" />
+    <issue id="InlinedApi" severity="warning" />
+    <issue id="UnusedAttribute" severity="ignore" />
+</lint>

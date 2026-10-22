@@ -51,7 +51,11 @@ jobs:
         env:
           FORCE: ${{ inputs.rootfs }}
         run: |
-          KEY="$(git ls-files -s armv7/scripts armv7/winhandler armv7/winpreexec armv7/patches \
+          # nur, was in den Unterbau eingeht (CI-Hilfsskripte wie ci-report.sh zählen nicht)
+          KEY="$(git ls-files -s 'armv7/scripts/build-*' 'armv7/scripts/ci-armhf.sh' 'armv7/scripts/ci-wine.sh' \
+                 armv7/scripts/env.sh armv7/scripts/fetch-armhf-libs.sh armv7/scripts/assemble.sh \
+                 armv7/scripts/check-rootfs.py armv7/scripts/make-container-pattern.py \
+                 armv7/winhandler armv7/winpreexec armv7/patches \
                  app/src/main/assets/rootfs.tzst app/src/main/assets/rootfs_patches.tzst \
                  app/src/main/java/com/winlator/core/DefaultVersion.java | sha256sum | cut -c1-16)"
           REL="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/armv7-rootfs" 2>/dev/null || echo '{}')"
@@ -215,6 +219,12 @@ jobs:
           bash ./gradlew --no-daemon --stacktrace assembleDebug -PwinlatorArch=armv7hybrid 2>&1 | tee out/gradle-hybrid.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7hybrid.apk
 
+      - name: Lint (APIs, die es auf Android 7 noch nicht gibt)
+        continue-on-error: true
+        run: |
+          bash ./gradlew --no-daemon lintDebug -PwinlatorArch=armv7hybrid > out/lint.log 2>&1 || tail -30 out/lint.log
+          python3 armv7/scripts/lint-annotations.py app/build/reports/lint-results-debug.xml
+
       - name: 32-Bit-Unterbau holen (Release armv7-rootfs)
         id: rootfs
         run: |
@@ -233,6 +243,11 @@ jobs:
         run: |
           bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=armv7 2>&1 | tee out/gradle-armv7.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7.apk
+
+      - name: Prüfbau arm64 (Original-Variante, wird nicht veröffentlicht)
+        run: |
+          bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=arm64 2>&1 | tee out/gradle-arm64.log
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -c 'lib/arm64-v8a/'
 
       - name: Fehlerbericht
         if: failure()

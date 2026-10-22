@@ -53,6 +53,8 @@ mkdir -p "$STAGE_DIR/wine/opt" && rm -rf "$STAGE_DIR/wine/opt/wine" && cp -a "$P
 log "Container-Vorlage (Win32-Präfix) erzeugen"
 HOMEDIR="$ROOT_PREFIX/home/xuser"
 rm -rf "$HOMEDIR" && mkdir -p "$HOMEDIR"
+# das Winlator-Wine legt seinen Server-Ordner unter rootfs/tmp an (wie auf dem Gerät)
+mkdir -p "$ROOT_PREFIX/tmp"
 export HOME="$HOMEDIR" USER=xuser LOGNAME=xuser WINEPREFIX="$HOMEDIR/.wine" WINEARCH=win32 WINEDEBUG=-all
 export WINEDLLOVERRIDES="mscoree,mshtml=" PATH="$PREFIX/bin:$PATH"
 xvfb-run -a sh -c 'wine wineboot -i && wineserver -w'
