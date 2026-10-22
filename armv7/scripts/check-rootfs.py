@@ -57,7 +57,8 @@ def scan(tree):
     for top, dirs, files in os.walk(tree):
         for name in files:
             path = os.path.join(top, name)
-            if os.path.islink(path) and not os.path.exists(path):
+            # nur gewöhnliche Dateien (ein Wine-Präfix verlinkt z. B. com1 auf /dev/ttyS0)
+            if not os.path.isfile(path):
                 continue
             m = elf_machine(path)
             if m is not None:
@@ -137,6 +138,23 @@ def main():
             continue
         what = "armhf-Fassung fehlt" if lib in wrapped else "nicht von Box86 abgebildet"
         (warnings if lib in OPTIONAL else problems).append(f"Wine lädt {lib}: {what}")
+
+    # glibc-Funktionen, die Wine importiert, muss Box86 kennen (sonst bricht es beim ersten Aufruf
+    # mit "PltResolver: Symbol ... not found" ab, z. B. wineserver bei __epoll_pwait2_time64)
+    symbols_file = os.path.join(os.path.dirname(wrapped_file), "box86-libc-symbols.txt")
+    if os.path.exists(symbols_file):
+        known = set(open(symbols_file).read().split())
+        for path in i386_elfs:
+            rel = os.path.relpath(path, root)
+            if not (path.startswith(wine_dir) or rel.startswith("opt/wine/bin/")) or os.path.islink(path):
+                continue
+            out = subprocess.run(["readelf", "--dyn-syms", "-W", path], capture_output=True, text=True).stdout
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 8 and parts[6] == "UND" and "@GLIBC" in parts[7]:
+                    sym = parts[7].split("@", 1)[0]
+                    if sym not in known:
+                        problems.append(f"i386 {rel}: {parts[7]} hat in Box86 keinen Wrapper")
 
     # Android hat kein /tmp: fest eingebaute /tmp-Pfade sind höchstens Hinweise, der X11-Socket
     # muss aber unter <rootfs>/tmp liegen (sonst findet kein Programm den X-Server)

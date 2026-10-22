@@ -1,0 +1,83 @@
+diff --git a/src/wrapped/wrappedlibc.c b/src/wrapped/wrappedlibc.c
+index fa6dc2e..5e39016 100755
+--- a/src/wrapped/wrappedlibc.c
++++ b/src/wrapped/wrappedlibc.c
+@@ -2629,6 +2629,53 @@ EXPORT int32_t my_execvpe(x86emu_t* emu, const char* path, char* const argv[], c
+     #endif
+ }
+ 
++// epoll_pwait2 (Linux 5.11) ist unter Android gesperrt und in der Winlator-glibc abgeschaltet;
++// ohne Wrapper bricht Box86 beim ersten Aufruf ab (wineserver). Aufrufer weichen bei ENOSYS
++// auf epoll_wait aus.
++EXPORT int my___epoll_pwait2_time64(x86emu_t* emu, int epfd, void* events, int maxevents, void* timeout, void* sigmask)
++{
++    (void)emu; (void)epfd; (void)events; (void)maxevents; (void)timeout; (void)sigmask;
++    errno = ENOSYS;
++    return -1;
++}
++EXPORT int my_epoll_pwait2(x86emu_t* emu, int epfd, void* events, int maxevents, void* timeout, void* sigmask)
++{
++    return my___epoll_pwait2_time64(emu, epfd, events, maxevents, timeout, sigmask);
++}
++
++// posix_spawn (ohne PATH-Suche): x86-Programme wie bei execv über box86 starten.
++// Wine startet wineserver mit posix_spawn; ohne diesen Wrapper versucht der Kernel, das
++// i386-Programm direkt auszuführen (ENOEXEC, "could not exec wineserver").
++EXPORT int32_t my_posix_spawn(x86emu_t* emu, pid_t* pid, const char* fullpath,
++    const posix_spawn_file_actions_t *actions, const posix_spawnattr_t* attrp,  char* const argv[], char* const envp[])
++{
++    int self = isProcSelf(fullpath, "exe");
++    int x86 = FileIsX86ELF(fullpath);
++    int x64 = my_context->box64path?FileIsX64ELF(fullpath):0;
++    int script = (my_context->bashpath && FileIsShell(fullpath))?1:0;
++    int ret;
++    printf_log(LOG_DEBUG, "posix_spawn(%p, \"%s\", %p, %p, %p, %p), IsX86=%d\n", pid, fullpath, actions, attrp, argv, envp, x86);
++    if (x86 || x64 || script || self) {
++        int i=0;
++        while(argv[i]) ++i;
++        int toadd = script?2:1;
++        // +2: Platz für das Programm auch bei leerem argv und für die NULL am Ende
++        char** newargv = (char**)alloca((i+toadd+2)*sizeof(char*));
++        memset(newargv, 0, (i+toadd+2)*sizeof(char*));
++        newargv[0] = x64?emu->context->box64path:emu->context->box86path;
++        if(script) newargv[1] = emu->context->bashpath; // script needs to be launched with bash
++        for (int j=0; j<i; ++j)
++            newargv[j+toadd] = argv[j];
++        // Programm mit vollem Pfad übergeben (argv[0] kann ein anderer Name sein)
++        newargv[toadd] = self?emu->context->fullpath:(char*)fullpath;
++        printf_log(LOG_DEBUG, " => posix_spawn(%p, \"%s\", %p, %p, %p [\"%s\", \"%s\"...:%d], %p)\n", pid, newargv[0], actions, attrp, newargv, newargv[1], i?newargv[2]:"", i, envp);
++        ret = posix_spawn(pid, newargv[0], actions, attrp, newargv, envp);
++        printf_log(LOG_DEBUG, "posix_spawn returned %d\n", ret);
++    } else
++        ret = posix_spawn(pid, fullpath, actions, attrp, argv, envp);
++    return ret;
++}
++
+ // execvp should use PATH to search for the program first
+ EXPORT int32_t my_posix_spawnp(x86emu_t* emu, pid_t* pid, const char* path, 
+     const posix_spawn_file_actions_t *actions, const posix_spawnattr_t* attrp,  char* const argv[], char* const envp[])
+diff --git a/src/wrapped/wrappedlibc_private.h b/src/wrapped/wrappedlibc_private.h
+index 86833cb..78b5913 100755
+--- a/src/wrapped/wrappedlibc_private.h
++++ b/src/wrapped/wrappedlibc_private.h
+@@ -1281,7 +1281,7 @@ GO(posix_fallocate64, iFiII)
+ // posix_madvise
+ GOW(posix_memalign, iFpLL)
+ // posix_openpt // Weak
+-GO(posix_spawn, iFpppppp)
++GOM(posix_spawn, iFEpppppp) //%%
+ GOW(posix_spawnattr_destroy, iFp)
+ GO(posix_spawnattr_getflags, iFpp)
+ GO(posix_spawnattr_getpgroup, iFpp)
+@@ -2249,6 +2249,11 @@ GO(localtime64, pFpp)
+ GO(localtime64_r, pFpp)
+ GO(__ppoll64, iFpupp)
+ GO(__clock_gettime64, iFpp)
++GO(__nanosleep64, iFpp)
++GO(__clock_nanosleep_time64, iFiipp)
++// epoll_pwait2: gibt es unter Android nicht (Winlator-glibc liefert ENOSYS), wineserver weicht auf epoll_wait aus
++GOM(__epoll_pwait2_time64, iFEipipp)    //%%
++GOM(epoll_pwait2, iFEipipp)    //%%
+ GO(__stat_time64, iFpp)  //needs alignement?
+ GO(__fstat_time64, iFip)
+ GO(__lstat_time64, iFpp)

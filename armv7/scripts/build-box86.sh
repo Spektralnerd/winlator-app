@@ -68,6 +68,22 @@ readelf -l "$DEST/usr/local/bin/box86" | grep -o "interpreter: [^]]*"
 # Liste der Bibliotheken, die Box86 auf armhf-Bibliotheken abbildet (für check-rootfs.py)
 grep -o 'GO("[^"]*"' "$SRC/src/library_list.h" | cut -d'"' -f2 | sort -u > "$OUT_DIR/box86-wrapped.txt"
 echo "$(wc -l < "$OUT_DIR/box86-wrapped.txt") abgebildete Bibliotheken"
+# glibc-Funktionen, für die Box86 einen Wrapper hat: importiert Wine eine andere, bricht Box86
+# beim ersten Aufruf ab (check-rootfs.py prüft das)
+python3 - "$SRC/src/wrapped" "$OUT_DIR/box86-libc-symbols.txt" <<'PY'
+import os, re, sys
+src, out = sys.argv[1:3]
+names = set()
+for lib in ("libc", "libpthread", "librt", "libdl", "libm", "ldlinux", "libresolv", "libcrypt"):
+    path = os.path.join(src, "wrapped%s_private.h" % lib)
+    if os.path.exists(path):
+        for line in open(path, errors="replace"):
+            m = re.match(r"\s*(?:GO|DATA)\w*\s*\(\s*([A-Za-z_]\w*)", line)
+            if m:
+                names.add(m.group(1))
+open(out, "w").write("\n".join(sorted(names)) + "\n")
+print(len(names), "glibc-Funktionen mit Wrapper")
+PY
 
 log "Winlator-Komponente packen"
 mkdir -p "$OUT_DIR"

@@ -45,6 +45,20 @@ Warum Debian 12: Box86 reicht Strukturen des i386-Gasts unverändert an die armh
 weiter, beide brauchen also dasselbe ABI mit 32-Bit-`time_t`. Neuere Distributionen haben armhf
 auf 64-Bit-`time_t` umgestellt (i386 nicht).
 
+Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
+- `box86/0001-wine10.patch`: was Box86 0.3.9 für Wine 10 fehlt, beides beendete jeden
+  Containerstart sofort:
+  - `posix_spawn` ging ungeprüft an die armhf-libc; Wine 10 startet wineserver damit, und der
+    Kernel kann das i386-Programm nicht ausführen („could not exec wineserver“). Jetzt startet
+    Box86 x86-Programme dort wie bei `execv` über sich selbst.
+  - `__epoll_pwait2_time64` (wineserver) und `__nanosleep64` (winebus) hatten keinen Wrapper
+    („PltResolver: Symbol … not found“). epoll_pwait2 liefert ENOSYS (gibt es unter Android
+    nicht), wineserver nimmt dann epoll_wait.
+
+  `check-rootfs.py` prüft seitdem jede glibc-Funktion, die Wine importiert, gegen die Wrapper
+  von Box86 (`box86-libc-symbols.txt` aus `build-box86.sh`).
+- `glibc/android_seccomp.c`: siehe „Android 8 und 9“ unten
+
 Schlägt ein Schritt fehl, stehen die letzten Protokollzeilen als Annotation am Lauf und die
 vollständigen Protokolle im Release `armv7-ci-logs`.
 
