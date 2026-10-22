@@ -138,6 +138,24 @@ def main():
         what = "armhf-Fassung fehlt" if lib in wrapped else "nicht von Box86 abgebildet"
         (warnings if lib in OPTIONAL else problems).append(f"Wine lädt {lib}: {what}")
 
+    # Android hat kein /tmp: fest eingebaute /tmp-Pfade sind höchstens Hinweise, der X11-Socket
+    # muss aber unter <rootfs>/tmp liegen (sonst findet kein Programm den X-Server)
+    tmp_re = re.compile(rb"(?<![A-Za-z0-9_./-])/tmp/[\x21-\x7e]{0,60}")
+    for path in armhf_elfs:
+        if os.path.islink(path):
+            continue
+        try:
+            data = open(path, "rb").read()
+        except OSError:
+            continue
+        rel = os.path.relpath(path, root)
+        for m in sorted(set(tmp_re.findall(data))):
+            text = m.decode("ascii", "replace")
+            if text.startswith("/tmp/.X11-unix"):
+                problems.append(f"armhf {rel}: X11-Socket unter {text} (Android hat kein /tmp)")
+            else:
+                warnings.append(f"armhf {rel}: fester Pfad {text}")
+
     print(f"armhf-ELF: {len(armhf_elfs)}, i386-ELF: {len(i386_elfs)}, "
           f"armhf-Bibliotheken: {len(armhf_libs)}, i386-Bibliotheken: {len(i386_libs)}")
     for w in sorted(set(warnings)):
