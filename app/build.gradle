@@ -21,7 +21,9 @@ android {
 
     defaultConfig {
         applicationId 'com.winlator'
-        minSdkVersion 26
+        // 32 Bit: ab Android 7.0 (API 24); was erst ab 8.0 geht (AHardwareBuffer, Pointer-Capture,
+        // @CriticalNative, Benachrichtigungskanäle) wird zur Laufzeit geprüft
+        minSdkVersion(appAbi == 'arm64-v8a' ? 26 : 24)
         targetSdkVersion 28
         versionCode 33
         versionName "11.2" + (winlatorArch == 'arm64' ? '' : "-${winlatorArch}")
@@ -88,6 +90,14 @@ android {
 
     lintOptions {
         checkReleaseBuilds false
+        if (appAbi != 'arm64-v8a') {
+            // nur API-Prüfungen (NewApi) für das niedrigere minSdk der 32-Bit-Builds,
+            // aufgerufen von GitHub Actions mit "lintDebug"
+            lintConfig rootProject.file('armv7/lint.xml')
+            abortOnError false
+            xmlReport true
+            htmlReport false
+        }
     }
 
     ndkVersion '24.0.8215888'

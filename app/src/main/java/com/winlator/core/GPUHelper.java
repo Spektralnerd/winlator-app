@@ -1,6 +1,8 @@
 package com.winlator.core;
 
+import android.app.ActivityManager;
 import android.content.Context;
+import android.content.pm.ConfigurationInfo;
 import android.content.SharedPreferences;
 import android.opengl.EGL14;
 
@@ -32,6 +34,14 @@ public abstract class GPUHelper {
 
     static {
         System.loadLibrary("winlator");
+    }
+
+    /** Höchste OpenGL-ES-Version des Geräts (Hauptversion), laut ro.opengles.version */
+    public static int getGLESMajorVersion(Context context) {
+        ActivityManager activityManager = (ActivityManager)context.getSystemService(Context.ACTIVITY_SERVICE);
+        ConfigurationInfo info = activityManager != null ? activityManager.getDeviceConfigurationInfo() : null;
+        if (info == null || info.reqGlEsVersion == ConfigurationInfo.GL_ES_VERSION_UNDEFINED) return 3;
+        return info.reqGlEsVersion >> 16;
     }
 
     private static ArrayMap<String, String> loadGPUInformation(Context context) {

@@ -1,5 +1,6 @@
 package com.winlator.widget;
 
+import android.os.Build;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
@@ -19,7 +20,7 @@ import com.winlator.winhandler.WinHandler;
 import com.winlator.xserver.Pointer;
 import com.winlator.xserver.XServer;
 
-public class TouchpadView extends View implements View.OnCapturedPointerListener {
+public class TouchpadView extends View {
     private static final byte MAX_FINGERS = 4;
     private static final short MAX_TWO_FINGERS_SCROLL_DISTANCE = 350;
     public static final byte MAX_TAP_TRAVEL_DISTANCE = 10;
@@ -51,8 +52,10 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
         setFocusableInTouchMode(capturePointerOnExternalMouse);
         updateXform(AppUtils.getScreenWidth(), AppUtils.getScreenHeight(), xServer.screenInfo.width, xServer.screenInfo.height);
 
-        if (capturePointerOnExternalMouse) {
-            setOnCapturedPointerListener(this);
+        // Pointer-Capture gibt es erst ab Android 8.0 (die Schnittstelle fehlt auf Android 7 ganz,
+        // daher kein "implements View.OnCapturedPointerListener")
+        if (capturePointerOnExternalMouse && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            setOnCapturedPointerListener(this::onCapturedPointer);
             setOnClickListener(view -> {
                 if (requestFocus()) requestPointerCapture();
             });
@@ -416,7 +419,6 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
         return result;
     }
 
-    @Override
     public boolean onCapturedPointer(View view, MotionEvent event) {
         if (event.getAction() == MotionEvent.ACTION_MOVE) {
             float dx = event.getX() * sensitivity;

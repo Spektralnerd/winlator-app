@@ -15,8 +15,21 @@ public class GPUImage extends Texture {
     private boolean locked = false;
     private int nativeHandle;
 
+    private static Boolean supported;
+
     static {
         System.loadLibrary("winlator");
+    }
+
+    /**
+     * AHardwareBuffer und EGLImage aus AHardwareBuffer gibt es erst ab Android 8.0, die Bildausgabe
+     * braucht dafür außerdem OpenGL ES 3. Ohne sie bleiben Fenster normale Texturen (Inhalt per
+     * glTexSubImage2D statt geteiltem Speicher).
+     */
+    public static boolean isSupported() {
+        if (supported == null) supported = isSupportedNative();
+        // Kopieren zwischen GPUImages braucht OpenGL ES 3.2 (glCopyImageSubData)
+        return supported && GLRenderer.glesVersion >= 3;
     }
 
     public GPUImage(Drawable owner) {
@@ -85,7 +98,9 @@ public class GPUImage extends Texture {
         return hardwareBufferPtr;
     }
 
+    /** @return null, wenn das Gerät keine GPUImages kann (siehe {@link #isSupported()}) */
     public static GPUImage createOrObtain(XServer xServer, Drawable drawable, boolean cpuAccess, boolean useHALPixelFormatBGRA8888) {
+        if (!isSupported()) return null;
         final Texture texture = drawable.getTexture();
         if (!(texture instanceof GPUImage)) {
             xServer.getRenderer().xServerView.queueEvent(texture::destroy);
@@ -95,6 +110,8 @@ public class GPUImage extends Texture {
         }
         else return (GPUImage)texture;
     }
+
+    private static native boolean isSupportedNative();
 
     private native long createHardwareBuffer(short width, short height, boolean cpuAccess, boolean useHALPixelFormatBGRA8888);
 

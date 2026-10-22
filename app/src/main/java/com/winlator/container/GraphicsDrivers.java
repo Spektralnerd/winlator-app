@@ -84,8 +84,9 @@ public abstract class GraphicsDrivers {
     }
 
     public static String getDefaultDriver(Context context) {
-        // Turnip gibt es für 32 Bit nur als experimentellen Eigenbau, daher dort Vortek als Vorgabe
-        if (Arch.X86_ONLY) return VORTEK+","+DEFAULT_OPENGL_DRIVER;
+        // Turnip gibt es für 32 Bit nur als experimentellen Eigenbau, daher dort Vortek als Vorgabe.
+        // Gladio (wie VirGL) braucht OpenGL ES 3 auf dem Gerät, sonst bleibt Software-Rendering.
+        if (Arch.X86_ONLY) return VORTEK+","+(GPUHelper.getGLESMajorVersion(context) >= 3 ? DEFAULT_OPENGL_DRIVER : SOFTWARE);
         return GPUHelper.getAdrenoModelId(context) > 0 ? GraphicsDrivers.TURNIP+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER : GraphicsDrivers.VORTEK+","+GraphicsDrivers.DEFAULT_OPENGL_DRIVER;
     }
 }

@@ -2,6 +2,7 @@
 #include "sysvshared_memory.h"
 #include "vulkan_helper.h"
 #include "dma_utils.h"
+#include "ahb_compat.h"
 
 extern int AHardwareBuffer_getFd(AHardwareBuffer* hardwareBuffer);
 extern DeviceMemoryInfo deviceMemoryInfo;

@@ -1,5 +1,8 @@
 package com.winlator.container;
 
+import android.content.Context;
+import com.winlator.core.Arch;
+import com.winlator.core.GPUHelper;
 import com.winlator.box64.Box64Preset;
 import com.winlator.core.AppUtils;
 import com.winlator.core.EnvVars;
@@ -21,6 +24,12 @@ public class Container {
     public static final String DEFAULT_SCREEN_SIZE = "1280x720";
     public static final String DEFAULT_AUDIO_DRIVER = AudioDrivers.ALSA;
     public static final String DEFAULT_DXWRAPPER = DXWrappers.DXVK;
+
+    /** Vorgabe für neue Container: DXVK braucht Vulkan, im 32-Bit-Build ohne Vulkan-Treiber daher WineD3D (OpenGL) */
+    public static String getDefaultDXWrapper(Context context) {
+        if (Arch.X86_ONLY && GPUHelper.vkGetApiVersion() == 0) return DXWrappers.WINED3D;
+        return DEFAULT_DXWRAPPER;
+    }
     public static final String DEFAULT_WINCOMPONENTS = "direct3d=1,directsound=1,directmusic=1,directshow=0,directplay=0,xaudio=1,vcrun2005=0,vcrun2010=1,wmdecoder=1";
     public static final String FALLBACK_WINCOMPONENTS = "direct3d=0,directsound=0,directmusic=0,directshow=0,directplay=0,xaudio=0,vcrun2005=0,vcrun2010=0,wmdecoder=0";
     public static final String DEFAULT_DRIVES = "D:"+AppUtils.DIRECTORY_DOWNLOADS +"E:"+AppUtils.INTERNAL_STORAGE;

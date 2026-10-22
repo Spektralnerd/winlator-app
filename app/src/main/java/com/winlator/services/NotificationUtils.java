@@ -6,6 +6,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import androidx.core.app.NotificationCompat;
 import com.winlator.R;
 import com.winlator.MainActivity;
@@ -135,6 +136,8 @@ public class NotificationUtils {
      * @param desc      Channel description (optional).
      */
     public void createNotificationChannel(Context context, String channelId, String name, int importance, String desc) {
+        // Benachrichtigungskanäle gibt es erst ab Android 8.0; davor gelten die Einstellungen der Benachrichtigung selbst
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm != null && nm.getNotificationChannel(channelId) == null) {
             NotificationChannel channel = new NotificationChannel(channelId, name, importance);

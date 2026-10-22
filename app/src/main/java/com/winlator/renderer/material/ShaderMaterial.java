@@ -3,6 +3,8 @@ package com.winlator.renderer.material;
 import android.graphics.Color;
 import android.opengl.GLES20;
 
+import com.winlator.renderer.GLRenderer;
+
 public abstract class ShaderMaterial {
     private static final float INV_255 = 1.0f / 255.0f;
     public int programId;
@@ -17,14 +19,24 @@ public abstract class ShaderMaterial {
     }
 
     protected static int compileShaders(String vertexShader, String fragmentShader) {
+        final boolean glsl300 = GLRenderer.glesVersion >= 3;
         int beginIndex = vertexShader.indexOf("void main() {");
-        vertexShader = vertexShader.substring(0, beginIndex) +
+        vertexShader = vertexShader.substring(0, beginIndex) + (glsl300 ?
             "vec2 applyXForm(vec2 p, float xform[6]) {\n" +
                 "return vec2(xform[0] * p.x + xform[2] * p.y + xform[4], xform[1] * p.x + xform[3] * p.y + xform[5]);\n" +
-            "}\n" + vertexShader.substring(beginIndex);
+            "}\n" :
+            // GLSL ES 1.00: als Makro, Arrays als Funktionsparameter kann nicht jeder ES-2-Treiber
+            "#define applyXForm(p, xf) vec2(xf[0] * p.x + xf[2] * p.y + xf[4], xf[1] * p.x + xf[3] * p.y + xf[5])\n") +
+            vertexShader.substring(beginIndex);
 
-        vertexShader = "#version 300 es\n" + vertexShader;
-        fragmentShader = "#version 300 es\n" + fragmentShader;
+        if (glsl300) {
+            vertexShader = "#version 300 es\n" + vertexShader;
+            fragmentShader = "#version 300 es\n" + fragmentShader;
+        }
+        else {
+            vertexShader = "#version 100\n" + toGLSL100(vertexShader, false);
+            fragmentShader = "#version 100\n" + toGLSL100(fragmentShader, true);
+        }
 
         int programId = GLES20.glCreateProgram();
         int[] compiled = new int[1];
@@ -54,6 +66,33 @@ public abstract class ShaderMaterial {
         GLES20.glDeleteShader(vertexShaderId);
         GLES20.glDeleteShader(fragmentShaderId);
         return programId;
+    }
+
+    /**
+     * Übersetzt die Shader (GLSL ES 3.00 ohne #version-Zeile) für OpenGL-ES-2-Kontexte nach
+     * GLSL ES 1.00: in/out werden attribute/varying, texture() wird texture2D(), die Ausgabe
+     * geht an gl_FragColor, highp im Fragment-Shader nur wo vorhanden (Mali-400 kann nur mediump).
+     */
+    private static String toGLSL100(String source, boolean fragment) {
+        StringBuilder sb = new StringBuilder();
+        if (fragment) sb.append("#define outFragColor gl_FragColor\n");
+        for (String line : source.split("\n", -1)) {
+            String trimmed = line.trim();
+            if (fragment && trimmed.startsWith("layout(") && trimmed.contains(" out ")) continue;
+
+            if (trimmed.startsWith("in ")) {
+                line = (fragment ? "varying " : "attribute ") + trimmed.substring(3);
+            }
+            else if (trimmed.startsWith("out ")) {
+                line = "varying " + trimmed.substring(4);
+            }
+            else if (fragment && trimmed.equals("precision highp float;")) {
+                line = "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif";
+            }
+
+            sb.append(line.replaceAll("\\btexture\\s*\\(", "texture2D(")).append('\n');
+        }
+        return sb.toString();
     }
 
     protected String getVertexShader() {

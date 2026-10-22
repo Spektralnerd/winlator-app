@@ -57,9 +57,25 @@ Die APKs sind mit dem Schlüssel aus `armv7/signing/debug.keystore` signiert (Pa
 `android`), damit neue Builds sich über alte installieren lassen. Er ist öffentlich und nur für
 Testbuilds gedacht.
 
+## Ältere Geräte (Etappe 6)
+
+Die 32-Bit-Builds laufen ab **Android 7.0** (API 24, das Original ab 8.0):
+
+- `@CriticalNative` wirkt erst ab Android 8; auf Android 7 registriert `libwinlator` beim Laden
+  Wrapper mit normaler JNI-Signatur (`critical_native_compat.c`)
+- AHardwareBuffer (ab Android 8) wird zur Laufzeit gesucht (`ahb_compat.c`); ohne ihn bleiben
+  Fenster gewöhnliche Texturen, Vortek kann dann nicht ausgeben
+- geteilter Speicher fällt ohne `memfd` (Kernel älter als 3.17) auf ashmem zurück
+- Pointer-Capture, Benachrichtigungskanäle, Vibrationsstärke und der AudioTrack-Leistungsmodus
+  nur ab Android 8
+
+Bildausgabe mit **OpenGL ES 2.0** (z. B. Mali-400): Hat das Gerät kein ES 3, nimmt die App einen
+ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekommen dann
+„Software“ als OpenGL-Treiber und, ohne Vulkan-Treiber, WineD3D statt DXVK (alles umstellbar).
+
 ## Grenzen
 
 - Nur 32-Bit-Windows-Programme (es gibt kein 64-Bit-Wine auf 32-Bit-ARM)
-- Die Bildausgabe der App braucht OpenGL ES 3.0 (Mali-400 & Co. können nur ES 2.0)
-- Vortek braucht Vulkan auf dem Gerät, VirGL und Gladio brauchen OpenGL ES 3.x
+- Vortek braucht Vulkan auf dem Gerät (und Android 8), VirGL und Gladio brauchen OpenGL ES 3.x
+- Software-Rendering ist softpipe (ohne LLVM) und entsprechend langsam
 - PulseAudio gibt es für armv7 noch nicht (ALSA ist ohnehin voreingestellt)

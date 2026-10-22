@@ -112,7 +112,7 @@ public class VortekRendererComponent extends EnvironmentComponent implements Con
         Window window = xServer.windowManager.getWindow(windowId);
         if (window != null) {
             GPUImage texture = GPUImage.createOrObtain(xServer, window.getContent(), false, useHALPixelFormatBGRA8888);
-            return texture.getHardwareBufferPtr();
+            return texture != null ? texture.getHardwareBufferPtr() : 0;
         }
         return 0;
     }

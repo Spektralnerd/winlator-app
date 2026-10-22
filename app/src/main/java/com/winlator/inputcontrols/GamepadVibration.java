@@ -62,7 +62,10 @@ public class GamepadVibration {
             vibrating[index] = false;
         }
         else if (newSpeed != currentSpeed[index]) {
-            vibrators[index].vibrate(VibrationEffect.createOneShot(durationMs, newSpeed));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrators[index].vibrate(VibrationEffect.createOneShot(durationMs, newSpeed));
+            }
+            else vibrators[index].vibrate(durationMs); // vor Android 8.0 ohne Stärke
             vibrating[index] = true;
         }
 

@@ -53,7 +53,8 @@ static int memfd_create(const char *name, unsigned int flags) {
 
 int createMemoryFd(const char* name, int64_t size) {
     int fd = memfd_create(name, MFD_ALLOW_SEALING);
-    if (fd < 0) return -1;
+    /* memfd gibt es erst ab Linux 3.17; auf älteren Kerneln (z. B. Android 7 auf 3.4) ashmem */
+    if (fd < 0) return ashmemCreateRegion(name, size);
 
     int res = ftruncate(fd, size);
     if (res < 0) {

@@ -9,6 +9,8 @@ include_directories(include)
 add_library(winlator SHARED
             src/drawable.c
             src/gpu_image.c
+            src/ahb_compat.c
+            src/critical_native_compat.c
             src/gpu_helper.c
             src/sysvshared_memory.c
             src/xconnector_epoll.c

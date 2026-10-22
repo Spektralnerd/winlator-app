@@ -114,6 +114,7 @@ public class DRI3Extension extends Extension {
         else content = window.getContent();
 
         GPUImage texture = GPUImage.createOrObtain(xServer, content, false, true);
+        if (texture == null) throw new BadImplementation();
         short stride = texture.getStride();
         int nativeHandle = texture.getNativeHandle();
 

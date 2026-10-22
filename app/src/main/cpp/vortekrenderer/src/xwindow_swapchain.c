@@ -1,5 +1,6 @@
 #include "xwindow_swapchain.h"
 #include "vulkan_helper.h"
+#include "ahb_compat.h"
 
 void getWindowExtent(JMethods* jmethods, int windowId, VkExtent2D* extent) {
     extent->width = (*jmethods->env)->CallIntMethod(jmethods->env, jmethods->obj, jmethods->getWindowWidth, windowId);
@@ -46,6 +47,8 @@ static VkResult createImageMemory(VkDevice device, VkImage image, AHardwareBuffe
 static VkResult createImage(VkDevice device, XWindowSwapchain* swapchain, XWindowSwapchain_Image* swapchainImage) {
     jboolean useHALPixelFormatBGRA8888 = swapchain->imageFormat == VK_FORMAT_B8G8R8A8_UNORM || swapchain->imageFormat == VK_FORMAT_B8G8R8A8_SRGB;
     AHardwareBuffer* hardwareBuffer = getWindowHardwareBuffer(swapchain->jmethods, swapchain->windowId, useHALPixelFormatBGRA8888);
+    /* kein AHardwareBuffer (Android 7 oder Bildausgabe mit OpenGL ES 2) */
+    if (!hardwareBuffer) return VK_ERROR_INITIALIZATION_FAILED;
 
     AHardwareBuffer_Desc ahbDesc = {0};
     AHardwareBuffer_describe(hardwareBuffer, &ahbDesc);

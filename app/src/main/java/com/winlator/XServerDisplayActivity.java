@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.KeyEvent;
 import android.view.Menu;
@@ -593,7 +594,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         rootView.addView(xServerView);
 
         globalCursorSpeed = preferences.getFloat("cursor_speed", 1.0f);
-        capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true);
+        // Pointer-Capture gibt es erst ab Android 8.0
+        capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O;
         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
         touchpadView.setSensitivity(globalCursorSpeed);
         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));

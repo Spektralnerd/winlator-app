@@ -142,7 +142,7 @@ public class ContainerDetailFragment extends Fragment {
         GraphicsDriverPicker graphicsDriverPicker = new GraphicsDriverPicker(view.findViewById(R.id.LLGraphicsDriver), selectedGraphicsDriver, oldGraphicsDriverConfig);
 
         String oldDXWrapperConfig = isEditMode() ? container.getDXWrapperConfig() : "";
-        String selectedDXWrapper = isEditMode() ? container.getDXWrapper() : Container.DEFAULT_DXWRAPPER;
+        String selectedDXWrapper = isEditMode() ? container.getDXWrapper() : Container.getDefaultDXWrapper(context);
         DXWrapperPicker dxwrapperPicker = new DXWrapperPicker(view.findViewById(R.id.LLDXWrapper), graphicsDriverPicker, selectedDXWrapper, oldDXWrapperConfig);
 
         view.findViewById(R.id.BTHelpDXWrapper).setOnClickListener((v) -> AppUtils.showHelpBox(context, v, R.string.dxwrapper_help_content));

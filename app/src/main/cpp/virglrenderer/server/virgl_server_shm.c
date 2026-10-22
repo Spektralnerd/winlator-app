@@ -29,8 +29,12 @@
 #include <errno.h>
 #include <fcntl.h>
 
+#include <string.h>
+#include <sys/ioctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <linux/types.h>
+#include <linux/ashmem.h>
 
 static int memfd_create(const char *name, unsigned int flags)
 {
@@ -41,6 +45,22 @@ static int memfd_create(const char *name, unsigned int flags)
 #endif
 }
 
+/* memfd gibt es erst ab Linux 3.17; auf älteren Kerneln (z. B. Android 7 auf 3.4) ashmem */
+static int ashmem_create(const char *name, size_t size)
+{
+   int fd = open("/dev/ashmem", O_RDWR);
+   if (fd < 0)
+      return -1;
+
+   char buf[ASHMEM_NAME_LEN] = {0};
+   strncpy(buf, name, sizeof(buf) - 1);
+   if (ioctl(fd, ASHMEM_SET_NAME, buf) < 0 || ioctl(fd, ASHMEM_SET_SIZE, size) < 0) {
+      close(fd);
+      return -1;
+   }
+   return fd;
+}
+
 int virgl_server_new_shm(uint32_t handle, size_t size)
 {
    int fd, ret;
@@ -49,9 +69,12 @@ int virgl_server_new_shm(uint32_t handle, size_t size)
    snprintf(str, length + 1, "virgl-res-%u", handle);
 
    fd = memfd_create(str, MFD_ALLOW_SEALING);
+   if (fd < 0) {
+      fd = ashmem_create(str, size);
+      free(str);
+      return fd < 0 ? -errno : fd;
+   }
    free(str);
-   if (fd < 0)
-      return -errno;
 
    ret = ftruncate(fd, size);
    if (ret < 0) {

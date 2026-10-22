@@ -35,9 +35,10 @@ Java_com_winlator_core_GPUHelper_vkGetDeviceExtensions(JNIEnv *env, jclass obj) 
     if (result != VK_SUCCESS) goto done;
 
     uint32_t deviceCount = 1;
-    VkPhysicalDevice physicalDevice;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     result = vkEnumeratePhysicalDevices(instance, &deviceCount, &physicalDevice);
-    if (result != VK_SUCCESS && result != VK_INCOMPLETE) goto done;
+    /* Geräte ohne Vulkan-Treiber (z. B. Mali-400, Adreno 3xx) liefern 0 Geräte */
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || deviceCount == 0 || !physicalDevice) goto done;
 
     uint32_t propertyCount = 0;
     result = vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &propertyCount, NULL);
@@ -91,9 +92,10 @@ Java_com_winlator_core_GPUHelper_vkGetApiVersion() {
     if (result != VK_SUCCESS) goto done;
 
     uint32_t deviceCount = 1;
-    VkPhysicalDevice physicalDevice;
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     result = vkEnumeratePhysicalDevices(instance, &deviceCount, &physicalDevice);
-    if (result != VK_SUCCESS && result != VK_INCOMPLETE) goto done;
+    /* Geräte ohne Vulkan-Treiber (z. B. Mali-400, Adreno 3xx) liefern 0 Geräte */
+    if ((result != VK_SUCCESS && result != VK_INCOMPLETE) || deviceCount == 0 || !physicalDevice) goto done;
 
     VkPhysicalDeviceProperties properties = {0};
     vkGetPhysicalDeviceProperties(physicalDevice, &properties);

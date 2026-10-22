@@ -4,6 +4,7 @@ import android.content.Context;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioTrack;
+import android.os.Build;
 
 import com.winlator.contentdialog.AudioDriverConfigDialog;
 import com.winlator.core.KeyValueSet;
@@ -115,11 +116,12 @@ public class ALSAClient {
             .setChannelMask(getChannelConfig(channels))
             .build();
 
-        audioTrack = new AudioTrack.Builder()
-            .setPerformanceMode(options.performanceMode)
+        AudioTrack.Builder builder = new AudioTrack.Builder()
             .setAudioFormat(format)
-            .setBufferSizeInBytes(getBufferSizeInBytes())
-            .build();
+            .setBufferSizeInBytes(getBufferSizeInBytes());
+        // Leistungsmodus (geringe Latenz) gibt es erst ab Android 8.0
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) builder.setPerformanceMode(options.performanceMode);
+        audioTrack = builder.build();
 
         bufferCapacity = audioTrack.getBufferCapacityInFrames();
         if (options.volume != 1.0f) audioTrack.setVolume(options.volume);

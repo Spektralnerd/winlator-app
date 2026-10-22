@@ -8,6 +8,7 @@ import android.os.Environment;
 import android.os.StatFs;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.system.OsConstants;
 
 import androidx.core.content.FileProvider;
 
@@ -26,7 +27,6 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Stack;
 import java.util.UUID;
@@ -108,7 +108,13 @@ public abstract class FileUtils {
     }
 
     public static boolean isSymlink(File file) {
-        return Files.isSymbolicLink(file.toPath());
+        // java.nio.file gibt es erst ab Android 8.0; Os.lstat ab Android 5.0
+        try {
+            return OsConstants.S_ISLNK(Os.lstat(file.getPath()).st_mode);
+        }
+        catch (ErrnoException e) {
+            return false;
+        }
     }
 
     public static boolean delete(File targetFile) {
@@ -393,9 +399,9 @@ public abstract class FileUtils {
 
     public static String readSymlink(File file) {
         try {
-            return Files.readSymbolicLink(file.toPath()).toString();
+            return Os.readlink(file.getPath());
         }
-        catch (IOException e) {
+        catch (ErrnoException e) {
             return "";
         }
     }

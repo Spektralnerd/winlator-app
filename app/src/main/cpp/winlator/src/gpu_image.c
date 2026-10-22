@@ -1,5 +1,4 @@
 #include <android/log.h>
-#include <android/hardware_buffer.h>
 #include <android/native_window.h>
 
 #define EGL_EGLEXT_PROTOTYPES
@@ -15,19 +14,35 @@
 #include <sys/mman.h>
 
 #include "native_handle.h"
+#include "ahb_compat.h"
 #include "winlator.h"
 
 #define HAL_PIXEL_FORMAT_BGRA_8888 5
 
+#if __ANDROID_API__ >= 26
 extern const native_handle_t* _Nullable AHardwareBuffer_getNativeHandle(const AHardwareBuffer* _Nonnull buffer);
+#else
+/* eglGetNativeClientBufferANDROID kommt erst mit Android 8.0 in die NDK-Stubs von libEGL */
+static EGLClientBuffer getNativeClientBufferCompat(const struct AHardwareBuffer* buffer) {
+    static PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC function = NULL;
+    static bool resolved = false;
+    if (!resolved) {
+        function = (PFNEGLGETNATIVECLIENTBUFFERANDROIDPROC)eglGetProcAddress("eglGetNativeClientBufferANDROID");
+        resolved = true;
+    }
+    return function ? function(buffer) : NULL;
+}
+#define eglGetNativeClientBufferANDROID getNativeClientBufferCompat
+#endif
 
 int AHardwareBuffer_getFd(AHardwareBuffer* hardwareBuffer) {
     const native_handle_t* nativeHandle = AHardwareBuffer_getNativeHandle(hardwareBuffer);
-    return nativeHandle->numFds > 0 ? nativeHandle->data[0] : -1;
+    return nativeHandle && nativeHandle->numFds > 0 ? nativeHandle->data[0] : -1;
 }
 
 EGLImageKHR createImageKHR(AHardwareBuffer* hardwareBuffer, int textureId) {
     const EGLint attribList[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
+    if (!hardwareBuffer) return NULL;
 
     AHardwareBuffer_acquire(hardwareBuffer);
 
@@ -57,6 +72,16 @@ AHardwareBuffer* createHardwareBuffer(int width, int height, bool cpuAccess, boo
     AHardwareBuffer_allocate(&buffDesc, &hardwareBuffer);
 
     return hardwareBuffer;
+}
+
+/* AHardwareBuffer (Android 8.0+) und die passende EGL-Erweiterung vorhanden? */
+JNIEXPORT jboolean JNICALL
+Java_com_winlator_renderer_GPUImage_isSupportedNative(JNIEnv *env, jclass obj) {
+    if (!WinlatorAHB_isAvailable()) return JNI_FALSE;
+#if __ANDROID_API__ < 26
+    if (!eglGetProcAddress("eglGetNativeClientBufferANDROID")) return JNI_FALSE;
+#endif
+    return JNI_TRUE;
 }
 
 JNIEXPORT jlong JNICALL
@@ -104,8 +129,9 @@ JNIEXPORT jobject JNICALL
 Java_com_winlator_renderer_GPUImage_lockHardwareBuffer(JNIEnv *env, jclass obj,
                                                        jlong hardwareBufferPtr) {
     AHardwareBuffer* hardwareBuffer = (AHardwareBuffer*)hardwareBufferPtr;
-    void *virtualAddr;
+    void *virtualAddr = NULL;
     AHardwareBuffer_lock(hardwareBuffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &virtualAddr);
+    if (!virtualAddr) return NULL;
 
     AHardwareBuffer_Desc buffDesc = {0};
     AHardwareBuffer_describe(hardwareBuffer, &buffDesc);

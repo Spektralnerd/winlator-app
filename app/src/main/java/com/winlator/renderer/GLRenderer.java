@@ -40,6 +40,8 @@ import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
 
 public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindowModificationListener, Pointer.OnPointerMotionListener {
+    /** OpenGL-ES-Hauptversion des Kontexts (3 wie im Original, 2 auf Geräten ohne ES 3, siehe XServerView) */
+    public static volatile int glesVersion = 3;
     public final XServerView xServerView;
     private final XServer xServer;
     protected final VertexAttribute quadVertices = new VertexAttribute("position", 2);
