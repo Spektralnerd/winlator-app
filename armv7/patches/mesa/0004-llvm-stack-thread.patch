@@ -1,0 +1,204 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+index 3a5208c..33cb318 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+@@ -48,6 +48,129 @@ extern void winlator_diag_compile_end(const char *name) __attribute__((weak));
+ extern void winlator_diag_step(unsigned step) __attribute__((weak));
+ #define WINLATOR_STEP(n) do { if (winlator_diag_step) winlator_diag_step(n); } while (0)
+ 
++/* Winlator armv7: LLVM braucht viel Stapel; beim Erzeugen des Maschinencodes legt
++ * ARMAsmPrinter::emitAttributes allein ein ARMSubtarget von einigen hundert KB darauf. Unter
++ * Box86 und Wine hat der Thread, der GL aufruft, manchmal nur wenig nativen Stapel: der
++ * Hauptthread, wenn Wine den Adressraum darunter reserviert hat (auf dem Gerät ~190 KB),
++ * Wine-Threads so viel wie ihr Windows-Stapel. LLVM lief dann über, das Programm fing den
++ * Absturz ab, die Übersetzung brach ab und llvmpipe versuchte es beim nächsten Zeichnen neu
++ * (schwarzes Bild, am Ende kein Speicher mehr). Deshalb übersetzt in diesem Fall ein
++ * Hilfsthread mit großem Stapel; der Aufrufer wartet auf ihn.
++ * WINLATOR_LLVM_THREAD=1: immer, =0: nie, sonst bei weniger als 2 MB freiem Stapel. */
++#include <pthread.h>
++#include <signal.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <sys/syscall.h>
++
++#define LP_STACK_MIN_ROOM (2u << 20)
++#define LP_STACK_HELPER   (8u << 20)
++
++static __thread uintptr_t lp_stack_low;   /* untere Grenze des Stapels dieses Threads */
++static __thread int lp_stack_checked;
++
++/* freier Stapel ab hier; SIZE_MAX, wenn unbekannt */
++static size_t
++lp_stack_room(void)
++{
++   uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
++
++   if (!lp_stack_checked) {
++      pthread_attr_t attr;
++      void *lo;
++      size_t size;
++
++      lp_stack_checked = 1;
++      /* glibc: beim Hauptthread aus /proc/self/maps, begrenzt durch den Bereich darunter */
++      if (pthread_getattr_np(pthread_self(), &attr) == 0) {
++         if (pthread_attr_getstack(&attr, &lo, &size) == 0 && (uintptr_t)lo < sp)
++            lp_stack_low = (uintptr_t)lo;
++         pthread_attr_destroy(&attr);
++      }
++   }
++   if (!lp_stack_low || sp <= lp_stack_low)
++      return SIZE_MAX;
++   return sp - lp_stack_low;
++}
++
++struct lp_stack_call {
++   void (*func)(void *);
++   void *data;
++};
++
++static void *
++lp_stack_thread(void *arg)
++{
++   struct lp_stack_call *call = arg;
++   call->func(call->data);
++   return NULL;
++}
++
++static void
++lp_stack_note(size_t room, int forced)
++{
++   static int noted;
++   const char *diag = getenv("WINLATOR_DIAG");
++
++   if (__atomic_exchange_n(&noted, 1, __ATOMIC_RELAXED) || (diag && diag[0] == '0'))
++      return;
++   if (forced)
++      fprintf(stderr, "[diag] llvmpipe: LLVM übersetzt in einem Hilfsthread mit %u MB Stapel "
++              "(WINLATOR_LLVM_THREAD=1)\n", LP_STACK_HELPER >> 20);
++   else
++      fprintf(stderr, "[diag] llvmpipe: Thread %ld hat nur %u KB Stapel frei, LLVM übersetzt "
++              "in einem Hilfsthread mit %u MB Stapel\n", (long)syscall(SYS_gettid),
++              (unsigned)(room >> 10), LP_STACK_HELPER >> 20);
++}
++
++/* func(data) mit genug Stapel ausführen */
++static void
++lp_call_with_stack(void (*func)(void *), void *data)
++{
++   static int mode = -2;   /* 1 immer, 0 nie, -1 nach Bedarf */
++   size_t room;
++
++   if (mode == -2) {
++      const char *v = getenv("WINLATOR_LLVM_THREAD");
++      mode = (v && v[0] == '1') ? 1 : (v && v[0] == '0') ? 0 : -1;
++   }
++   room = mode == 1 ? 0 : mode == 0 ? SIZE_MAX : lp_stack_room();
++   if (room >= LP_STACK_MIN_ROOM) {
++      func(data);
++      return;
++   }
++
++   struct lp_stack_call call = { func, data };
++   pthread_attr_t attr;
++   pthread_t thread;
++   sigset_t block, old;
++   int err;
++
++   pthread_attr_init(&attr);
++   pthread_attr_setstacksize(&attr, LP_STACK_HELPER);
++   /* Box86 und Wine kennen den Hilfsthread nicht: keine asynchronen Signale für ihn
++    * (Fehler wie SIGSEGV kommen weiter an und werden wie bisher gemeldet) */
++   sigfillset(&block);
++   sigdelset(&block, SIGSEGV);
++   sigdelset(&block, SIGBUS);
++   sigdelset(&block, SIGILL);
++   sigdelset(&block, SIGFPE);
++   sigdelset(&block, SIGTRAP);
++   sigdelset(&block, SIGABRT);
++   pthread_sigmask(SIG_BLOCK, &block, &old);
++   err = pthread_create(&thread, &attr, lp_stack_thread, &call);
++   pthread_sigmask(SIG_SETMASK, &old, NULL);
++   pthread_attr_destroy(&attr);
++   if (err) {
++      func(data);   /* kein Thread zu haben: wie bisher */
++      return;
++   }
++   lp_stack_note(room, mode == 1);
++   pthread_join(thread, NULL);
++}
++
+ #include <llvm/Config/llvm-config.h>
+ #include <llvm-c/Analysis.h>
+ #include <llvm-c/Transforms/Scalar.h>
+@@ -557,20 +680,12 @@ void lp_init_clock_hook(struct gallivm_state *gallivm)
+    gallivm->get_time_hook = LLVMAddFunction(gallivm->module, "get_time_hook", get_time_type);
+ }
+ 
+-/**
+- * Compile a module.
+- * This does IR optimization on all functions in the module.
+- */
+-void
+-gallivm_compile_module(struct gallivm_state *gallivm)
++static void
++gallivm_compile_module_llvm(void *data)
+ {
++   struct gallivm_state *gallivm = data;
+    int64_t time_begin = 0;
+ 
+-   assert(!gallivm->compiled);
+-
+-   if (winlator_diag_compile_begin)
+-      winlator_diag_compile_begin(gallivm->module_name);
+-
+    if (gallivm->builder) {
+       LLVMDisposeBuilder(gallivm->builder);
+       gallivm->builder = NULL;
+@@ -724,6 +839,34 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+ #endif
+ }
+ 
++/**
++ * Compile a module.
++ * This does IR optimization on all functions in the module.
++ */
++void
++gallivm_compile_module(struct gallivm_state *gallivm)
++{
++   assert(!gallivm->compiled);
++
++   if (winlator_diag_compile_begin)
++      winlator_diag_compile_begin(gallivm->module_name);
++
++   lp_call_with_stack(gallivm_compile_module_llvm, gallivm);
++}
++
++struct lp_jit_call {
++   struct gallivm_state *gallivm;
++   LLVMValueRef func;
++   void *code;
++};
++
++static void
++gallivm_jit_function_llvm(void *data)
++{
++   struct lp_jit_call *call = data;
++   call->code = LLVMGetPointerToGlobal(call->gallivm->engine, call->func);
++}
++
+ 
+ 
+ func_pointer
+@@ -741,7 +884,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+       time_begin = os_time_get();
+ 
+    WINLATOR_STEP(6);
+-   code = LLVMGetPointerToGlobal(gallivm->engine, func);
++   struct lp_jit_call call = { gallivm, func, NULL };
++   lp_call_with_stack(gallivm_jit_function_llvm, &call);
++   code = call.code;
+    assert(code);
+    jit_func = pointer_to_func(code);
+ 

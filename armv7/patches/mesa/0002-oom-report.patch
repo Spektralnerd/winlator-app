@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..8ed8559
+index 0000000..dd51229
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,1593 @@
+@@ -0,0 +1,1657 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -1189,6 +1189,69 @@ index 0000000..8ed8559
 +   }
 +}
 +
++/* Nativer Stapel des Hauptthreads beim Laden der libGL. Box86 lässt ihn wachsen, bevor Wine
++ * den Adressraum darunter reserviert; sonst bleiben ~190 KB, zu wenig für LLVM (dann übersetzt
++ * llvmpipe in einem Hilfsthread, siehe lp_bld_init.c). */
++void report_main_stack()
++{
++   uintptr_t lo = 0, hi = 0, below = 0, prev = 0;
++   pthread_mutex_lock(&out_mutex);
++   int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
++   if (fd >= 0) {
++      size_t have = 0;
++      while (!hi) {
++         ssize_t r = read(fd, mapsbuf + have, sizeof(mapsbuf) - have);
++         if (r < 0 && errno == EINTR)
++            continue;
++         if (r <= 0)
++            break;
++         have += (size_t)r;
++         size_t pos = 0;
++         for (;;) {
++            const char *nl = (const char *)memchr(mapsbuf + pos, '\n', have - pos);
++            if (!nl)
++               break;
++            const char *p = mapsbuf + pos;
++            uintptr_t start = parse_hex(p);
++            if (*p == '-') {
++               p++;
++               uintptr_t end = parse_hex(p);
++               if (memmem(mapsbuf + pos, (size_t)(nl - (mapsbuf + pos)), "[stack]", 7)) {
++                  lo = start;
++                  hi = end;
++                  below = prev;
++                  break;
++               }
++               prev = end;
++            }
++            pos = (size_t)(nl - mapsbuf) + 1;
++         }
++         memmove(mapsbuf, mapsbuf + pos, have - pos);
++         have -= pos;
++         if (have == sizeof(mapsbuf))
++            have = 0;
++      }
++      close(fd);
++   }
++   begin_line();
++   if (hi) {
++      put("libGL geladen: Hauptstapel ");
++      put_hex(lo, 8);
++      put_char('-');
++      put_hex(hi, 8);
++      put(" (");
++      put_size(hi - lo);
++      put("), frei darunter ");
++      put_size(lo - below);
++      if (hi - lo < 2 * 1024 * 1024 && lo - below < 2 * 1024 * 1024)
++         put(", zu wenig für LLVM: llvmpipe übersetzt dort in einem Hilfsthread");
++   } else {
++      put("libGL geladen: Hauptstapel nicht gefunden");
++   }
++   end_line();
++   pthread_mutex_unlock(&out_mutex);
++}
++
 +__attribute__((constructor)) void read_progress_setting()
 +{
 +   const char *v = getenv("WINLATOR_DIAG");
@@ -1196,6 +1259,7 @@ index 0000000..8ed8559
 +      progress_enabled = false;
 +   if (progress_enabled) {
 +      install_fault_handlers();
++      report_main_stack();
 +      tls_write(0x5a17c0deu);
 +      uint32_t got = tls_read();
 +      if (got != 0x5a17c0deu) {

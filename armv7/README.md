@@ -126,9 +126,25 @@ reservierte Wine alles bis 64 KB unter ihn, der Stapel konnte nicht mehr wachsen
 200 KB. LLVM lief darüber hinaus (SIGSEGV in `memset` knapp unter dem Stapel); das Programm fing
 die Ausnahme ab, der GL-Aufruf brach jedes Mal mitten in der Shader-Übersetzung ab, llvmpipe
 legte bei jedem Zeichenaufruf eine neue Variante an, kein Bild wurde fertig, und nach etwa 1400
-Varianten war der Speicher voll. `patches/wine/0002-native-main-stack-room.patch` lässt unter dem
-nativen Hauptstapel (`[stack]` in `/proc/self/maps`) so viel Platz frei, wie `RLIMIT_STACK`
-erlaubt (mindestens 8 MB). Unter qemu liegt der Stapel unter 2 GB, dort trat das nie auf.
+Varianten war der Speicher voll. Unter qemu liegt der Stapel unter 2 GB und ist von Anfang an
+8 MB groß, dort trat das nie auf. In Wine selbst lässt sich das nicht beheben: Box86 zeigt dem
+x86-Code in `/proc/self/maps` nur das Programm und den x86-Stapel, der native Stapel ist für
+Wine unsichtbar. Darum zwei Absicherungen:
+- `patches/box86/0002-native-main-stack.patch`: Box86 lässt beim Start von Wine-Prozessen den
+  nativen Stapel auf 8 MB wachsen (knapp unter `RLIMIT_STACK`), bevor Wine reserviert. Dafür
+  liest der Kernel einmal an der untersten Adresse (`write()` aus dem Speicher in eine Pipe);
+  belegt wird nur Adressraum, Speicher kostet erst eine tatsächlich beschriebene Seite. Mit
+  „Box86 Logs“ steht das Ergebnis im Box86-Protokoll (`BOX86: native stack grown from … KB to
+  … KB`). `BOX86_NATIVE_STACK=<MB>` ändert die Größe, `0` schaltet es ab.
+- `patches/mesa/0004-llvm-stack-thread.patch`: llvmpipe prüft vor jeder Übersetzung den freien
+  Stapel des aufrufenden Threads (`pthread_getattr_np`, beim Hauptthread durch den Bereich
+  darunter begrenzt). Sind es unter 2 MB, übersetzt LLVM in einem Hilfsthread mit 8 MB Stapel,
+  der Aufrufer wartet. Das hilft auch bei Wine-Threads mit kleinem Stapel (z. B. dem
+  Befehls-Thread von WineD3D). `WINLATOR_LLVM_THREAD=1` erzwingt den Hilfsthread, `0` schaltet
+  ihn ab. Beim ersten Mal steht eine Zeile `[diag] llvmpipe: … Hilfsthread …` in `start.txt`.
+
+Beim Laden schreibt die libGL außerdem `[diag] libGL geladen: Hauptstapel <von>-<bis> (<Größe>)`
+nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etwa 190 KB.
 
 ## Testen auf dem Gerät
 
@@ -180,7 +196,7 @@ erlaubt (mindestens 8 MB). Unter qemu liegt der Stapel unter 2 GB, dort trat das
    von der ähnlichsten vorhandenen Variante unterscheidet (Aufbau des Schlüssels im Kommentar
    von `winlator_diag_fs_variant`); auf dem Galaxy Note 8.0 bekam beim SKIDROW-Intro ein
    einziger Shader über 1400 Varianten, bis der Speicher ausging (Ursache: zu kleiner Stapel des
-   Hauptthreads, siehe „Stapel des Hauptthreads“). Bricht eine Übersetzung ab, steht beim
+   Hauptthreads, LLVM lief über; siehe „Stapel des Hauptthreads“). Bricht eine Übersetzung ab, steht beim
    nächsten Beginn, nach welchem Schritt (JIT-Engine, Optimierung, Maschinencode …). Stürzt
    Code in der libGL ab (Signal mit Programmzähler oder Rücksprungadresse in der libGL), meldet
    sie Signal, Adresse und Aufrufkette und reicht das Signal dann an Box86 weiter (höchstens

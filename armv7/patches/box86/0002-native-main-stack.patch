@@ -1,0 +1,110 @@
+diff --git a/src/main.c b/src/main.c
+index bc1aff9..2bf711d 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -21,6 +21,7 @@
+ #include <signal.h>
+ #include <sys/syscall.h>
+ #include <sys/prctl.h>
++#include <sys/resource.h>
+ #ifdef DYNAREC
+ #ifdef ARM
+ #include <linux/auxvec.h>
+@@ -1312,6 +1313,87 @@ static void free_contextargv()
+ 
+ extern char **environ;
+ 
++// Winlator armv7: Platz für den nativen Stapel des Hauptthreads.
++// Box86 führt nativen Code des Hauptthreads (abgebildete Bibliotheken wie die libGL mit
++// llvmpipe/LLVM) auf dem nativen Stapel des Prozesses aus. Wine sieht davon nichts (Box86
++// zeigt ihm in /proc/self/maps nur den x86-Stapel) und reserviert beim Start allen freien
++// Adressraum oberhalb von 2 GB, bis direkt unter den nativen Stapel. Danach kann der nicht
++// mehr wachsen; auf einem 32-Bit-Kernel mit 3G/1G-Teilung blieben so rund 190 KB, und LLVM
++// lief über. Deshalb wächst der Stapel hier vorher bis knapp unter seine Grenze: der Kernel
++// liest an der untersten Adresse (write() aus diesem Speicher in eine Pipe) und vergrößert
++// dabei den Bereich. Belegt wird nur Adressraum; Speicher kostet erst eine Seite, die
++// tatsächlich beschrieben wird. Klappt das nicht, meldet write() EFAULT statt eines Signals.
++// BOX86_NATIVE_STACK=<MB> legt die Größe fest (Vorgabe 8, 0 schaltet es ab).
++static void GrowNativeStack(void)
++{
++    size_t want = 8u<<20;
++    const char* env = getenv("BOX86_NATIVE_STACK");
++    if(env && *env) {
++        long mb = strtol(env, NULL, 10);
++        if(mb<=0)
++            return;
++        want = (mb>1024)?(1024u<<20):((size_t)mb<<20);
++    }
++    struct rlimit rl;
++    if(!getrlimit(RLIMIT_STACK, &rl) && rl.rlim_cur!=RLIM_INFINITY && rl.rlim_cur<want+(64u<<10))
++        want = (rl.rlim_cur>(256u<<10))?(size_t)rl.rlim_cur-(64u<<10):0;   // unter der Grenze bleiben
++    if(!want)
++        return;
++    // Bereich [stack] und das Ende des Bereichs darunter
++    FILE* f = fopen("/proc/self/maps", "r");
++    if(!f)
++        return;
++    char line[512];
++    uintptr_t lo = 0, hi = 0, below = 0, prev = 0;
++    while(fgets(line, sizeof(line), f)) {
++        unsigned long a, b;
++        if(sscanf(line, "%lx-%lx", &a, &b)!=2)
++            continue;
++        if(strstr(line, "[stack]")) {
++            lo = a; hi = b; below = prev;
++            break;
++        }
++        prev = b;
++    }
++    fclose(f);
++    if(!hi) {
++        printf_log(LOG_INFO, "BOX86: native stack not found in /proc/self/maps\n");
++        return;
++    }
++    if(hi-lo>=want) {
++        printf_log(LOG_INFO, "BOX86: native stack already %zu KB\n", (size_t)((hi-lo)>>10));
++        return;
++    }
++    uintptr_t page = (uintptr_t)sysconf(_SC_PAGESIZE);
++    if(!page || (page&(page-1)))
++        page = 4096;
++    uintptr_t target = (hi-want)&~(page-1);
++    // Abstand zum Bereich darunter (neuere Kernel halten 1 MB frei, stack_guard_gap)
++    uintptr_t floor = below+(1u<<20)+(64u<<10);
++    if(floor<below)
++        floor = lo;
++    if(target<floor)
++        target = (floor+page-1)&~(page-1);
++    if(target>=lo) {
++        printf_log(LOG_INFO, "BOX86: no room to grow the native stack (%zu KB, next mapping below ends at %p)\n",
++            (size_t)((hi-lo)>>10), (void*)below);
++        return;
++    }
++    int fds[2];
++    if(pipe(fds))
++        return;
++    ssize_t r = write(fds[1], (const void*)target, 1);
++    int err = errno;
++    close(fds[0]);
++    close(fds[1]);
++    if(r==1)
++        printf_log(LOG_INFO, "BOX86: native stack grown from %zu KB to %zu KB (%p-%p)\n",
++            (size_t)((hi-lo)>>10), (size_t)((hi-target)>>10), (void*)target, (void*)hi);
++    else
++        printf_log(LOG_INFO, "BOX86: could not grow the native stack (%s), it stays at %zu KB\n",
++            strerror(err), (size_t)((hi-lo)>>10));
++}
++
+ int main(int argc, const char **argv, char **env)
+ {
+     init_malloc_hook();
+@@ -1447,6 +1529,9 @@ int main(int argc, const char **argv, char **env)
+     if(!strcmp(prog, "wineserver") || (strlen(prog)>9 && !strcmp(prog+strlen(prog)-strlen("/wineserver"), "/wineserver"))) {
+         box86_wine = 1;
+     }
++    // nativer Stapel: vor Wines Reservierung wachsen lassen (siehe GrowNativeStack)
++    if(box86_wine)
++        GrowNativeStack();
+     // Create a new context
+     my_context = NewBox86Context(argc - nextarg);
+ 
