@@ -1,0 +1,76 @@
+name: Winlator armv7 Mesa-Test
+
+# Baut nur die armhf-Mesa-Bibliothek (VirGL + Software), um Änderungen an build-mesa.sh
+# schnell zu prüfen, ohne den ganzen 32-Bit-Unterbau neu zu bauen. Läuft bei Pushes auf den
+# Zweig armv7-mesa; Ergebnis und Protokoll landen im Release "armv7-mesa-test".
+
+on:
+  push:
+    branches: [armv7-mesa]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  mesa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container: debian:bookworm
+    steps:
+      - name: git
+        run: apt-get update -q && apt-get install -y -q --no-install-recommends git ca-certificates > /dev/null
+
+      - uses: actions/checkout@v5
+
+      - name: Mesa (virgl) bauen
+        run: |
+          mkdir -p armv7/work
+          set -o pipefail
+          ARMHF_STEPS=build-mesa MESA_VARIANTS=virgl bash armv7/scripts/ci-armhf.sh 2>&1 | tee armv7/work/mesa.log
+
+      - name: Ergebnis packen
+        if: always()
+        run: |
+          mkdir -p out
+          cp armv7/work/mesa.log out/ 2>/dev/null || true
+          cp armv7/work/build/mesa-virgl/meson-logs/meson-log.txt out/ 2>/dev/null || true
+          if [ -f armv7/work/stage/mesa-virgl/usr/lib/libGL.so.1.7.0 ]; then
+            tar -C armv7/work/stage/mesa-virgl -czf out/mesa-virgl.tar.gz usr
+          fi
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mesa-test
+          path: out
+          retention-days: 3
+
+  release:
+    needs: mesa
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: mesa-test
+          path: out
+
+      - name: Release armv7-mesa-test aktualisieren
+        run: |
+          TAG=armv7-mesa-test
+          NOTES="Mesa-Testbau aus $(git rev-parse --short HEAD) am $(date -u '+%Y-%m-%d %H:%M UTC'), Ergebnis: ${{ needs.mesa.result }}"
+          gh release view "$TAG" > /dev/null 2>&1 || \
+            gh release create "$TAG" --prerelease --title "Winlator armv7: Mesa-Test" --notes "$NOTES" --target "$GITHUB_SHA"
+          gh release upload "$TAG" out/* --clobber
+          gh release edit "$TAG" --notes "$NOTES"

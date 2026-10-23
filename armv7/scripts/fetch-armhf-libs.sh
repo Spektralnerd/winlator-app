@@ -27,6 +27,7 @@ PACKAGES=(
     libusb-1.0-0 libudev1 libsdl2-2.0-0 libdbus-1-3
     libgstreamer1.0-0 libgstreamer-plugins-base1.0-0
     gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly
+    libtinfo6 libxml2
 )
 # Startliste: Sonamen, die im Root-FS liegen sollen
 SEED_LIBS=(
@@ -71,6 +72,14 @@ echo "$(ls *.deb | wc -l) Pakete"
 log "Entpacken"
 rm -rf "$EXTRACT" && mkdir -p "$EXTRACT"
 for d in *.deb; do dpkg-deb -x "$d" "$EXTRACT"; done
+
+# was die eigenen Mesa-Bibliotheken brauchen (llvmpipe zieht ggf. libtinfo nach)
+for f in "$STAGE_DIR"/mesa-*/usr/lib/libGL.so.1.7.0; do
+    [ -f "$f" ] || continue
+    for n in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+        echo "$n" | grep -Eq "$GLIBC_SONAMES" || SEED_LIBS+=("$n")
+    done
+done
 
 log "Benötigte Bibliotheken bestimmen (NEEDED-Hülle)"
 rm -rf "$DEST" && mkdir -p "$DEST/usr/lib/gstreamer-1.0" "$DEST/usr/share" "$DEST/usr/libexec/gstreamer-1.0"
@@ -135,6 +144,15 @@ if [ -n "$SCANNER" ]; then
 fi
 # Locale-Daten für libX11 (XLOCALEDIR)
 [ -d "$EXTRACT/usr/share/X11" ] && cp -a "$EXTRACT/usr/share/X11" "$DEST/usr/share/"
+
+# jede Abhängigkeit der Mesa-Bibliotheken muss jetzt im Root-FS liegen
+for f in "$STAGE_DIR"/mesa-*/usr/lib/libGL.so.1.7.0; do
+    [ -f "$f" ] || continue
+    for n in $(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p'); do
+        echo "$n" | grep -Eq "$GLIBC_SONAMES" && continue
+        [ -e "$DEST/usr/lib/$n" ] || { echo "$f braucht $n, das im Root-FS fehlt"; exit 1; }
+    done
+done
 
 log "Übersicht"
 du -sh "$DEST"
