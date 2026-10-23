@@ -35,6 +35,68 @@ index 24d0823..0a0168e 100755
     if (gallivm_debug & GALLIVM_DEBUG_PERF) {
        int64_t time_end = os_time_get();
        int time_msec = (int)(time_end - time_begin) / 1000;
+diff --git a/virgl-23.1.9/src/gallium/drivers/llvmpipe/lp_state_fs.c b/virgl-23.1.9/src/gallium/drivers/llvmpipe/lp_state_fs.c
+index 062d556..bf84218 100755
+--- a/virgl-23.1.9/src/gallium/drivers/llvmpipe/lp_state_fs.c
++++ b/virgl-23.1.9/src/gallium/drivers/llvmpipe/lp_state_fs.c
+@@ -4590,6 +4590,17 @@ make_variant_key(struct llvmpipe_context *lp,
+ }
+ 
+ 
++/* Winlator armv7: Diagnose, wenn ein Shader immer neue Varianten bekommt (welche Bytes des
++ * Schlüssels sich unterscheiden) und wenn Varianten verworfen werden. Definiert in
++ * targets/libgl-xlib/winlator_oom_report.cpp; schwach, damit andere Ziele weiter linken. */
++extern void winlator_diag_fs_variant(unsigned shader_no, unsigned variant_no,
++                                     unsigned nr_variants, unsigned nr_instrs,
++                                     const void *key, unsigned key_size,
++                                     const void *closest, unsigned closest_no,
++                                     unsigned closest_diff) __attribute__((weak));
++extern void winlator_diag_fs_cull(unsigned nr_variants, unsigned nr_instrs,
++                                  unsigned to_cull) __attribute__((weak));
++
+ /**
+  * Update fragment shader state.  This is called just prior to drawing
+  * something when some fragment-related state has changed.
+@@ -4628,6 +4639,30 @@ llvmpipe_update_fs(struct llvmpipe_context *lp)
+                       lp->nr_fs_variants ? lp->nr_fs_instrs / lp->nr_fs_variants : 0);
+       }
+ 
++      if (winlator_diag_fs_variant && shader->variants_created >= 4 &&
++          (shader->variants_created < 10 || shader->variants_created % 100 == 0)) {
++         /* die ähnlichste vorhandene Variante dieses Shaders suchen */
++         const struct lp_fragment_shader_variant *closest = NULL;
++         unsigned closest_diff = ~0u;
++         LIST_FOR_EACH_ENTRY(li, &shader->variants.list, list) {
++            const unsigned char *a = (const unsigned char *)&li->base->key;
++            const unsigned char *b = (const unsigned char *)key;
++            unsigned diff = 0;
++            for (unsigned i = 0; i < shader->variant_key_size; i++)
++               diff += a[i] != b[i];
++            if (diff < closest_diff) {
++               closest_diff = diff;
++               closest = li->base;
++            }
++         }
++         winlator_diag_fs_variant(shader->no, shader->variants_created,
++                                  lp->nr_fs_variants, lp->nr_fs_instrs,
++                                  key, shader->variant_key_size,
++                                  closest ? (const void *)&closest->key : NULL,
++                                  closest ? closest->no : 0,
++                                  closest ? closest_diff : 0);
++      }
++
+       /* First, check if we've exceeded the max number of shader variants.
+        * If so, free 6.25% of them (the least recently used ones).
+        */
+@@ -4637,6 +4672,8 @@ llvmpipe_update_fs(struct llvmpipe_context *lp)
+ 
+       if (variants_to_cull ||
+           lp->nr_fs_instrs >= LP_MAX_SHADER_INSTRUCTIONS) {
++         if (winlator_diag_fs_cull)
++            winlator_diag_fs_cull(lp->nr_fs_variants, lp->nr_fs_instrs, variants_to_cull);
+          if (gallivm_debug & GALLIVM_DEBUG_PERF) {
+             debug_printf("Evicting FS: %u fs variants,\t%u total variants,"
+                          "\t%u instrs,\t%u instrs/variant\n",
 diff --git a/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c b/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c
 index 4777ce8..096d53d 100755
 --- a/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c

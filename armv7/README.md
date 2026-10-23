@@ -163,7 +163,12 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    Bild, 30 s nach dem ersten Shader noch kein Bild – und gibt dann für jeden Thread Zustand,
    Wartestelle im Kernel, CPU-Zeit, Programmzähler und die Rücksprünge in die libGL aus
    (höchstens dreimal je Prozess; Kernel 3.0 liefert dafür Stapel- und Befehlszeiger in
-   `/proc/self/task/*/stat`). `WINLATOR_DIAG=0` schaltet den Fortschritt ab.
+   `/proc/self/task/*/stat`). Bekommt ein Fragment-Shader mehr als vier Varianten, steht
+   für die nächsten (höchstens 40 Meldungen) da, in welchen Bytes sich der Variantenschlüssel
+   von der ähnlichsten vorhandenen Variante unterscheidet (Aufbau des Schlüssels im Kommentar
+   von `winlator_diag_fs_variant`); auf dem Galaxy Note 8.0 bekam beim SKIDROW-Intro ein
+   einziger Shader über 1400 Varianten, bis der Speicher ausging. `WINLATOR_DIAG=0` schaltet
+   den Fortschritt ab.
 
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`
