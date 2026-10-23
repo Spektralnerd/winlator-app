@@ -1,0 +1,69 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_conv.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_conv.c
+index 69494ed..c260d96 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_conv.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_conv.c
+@@ -500,7 +500,8 @@ int lp_build_conv_auto(struct gallivm_state *gallivm,
+ 
+       /* Special case 4x4x32 --> 1x16x8 */
+       if (src_type.length == 4 &&
+-            (util_get_cpu_caps()->has_sse2 || util_get_cpu_caps()->has_altivec))
++            (util_get_cpu_caps()->has_sse2 || util_get_cpu_caps()->has_altivec ||
++             (DETECT_ARCH_ARM && util_get_cpu_caps()->has_neon)))   /* Winlator armv7 */
+       {
+          num_dsts = (num_srcs + 3) / 4;
+          dst_type->length = num_srcs * 4 >= 16 ? 16 : num_srcs * 4;
+@@ -608,7 +609,8 @@ lp_build_conv(struct gallivm_state *gallivm,
+        ((dst_type.length == 16 && 4 * num_dsts == num_srcs) ||
+         (num_dsts == 1 && dst_type.length * num_srcs == 16 && num_srcs != 3)) &&
+ 
+-       (util_get_cpu_caps()->has_sse2 || util_get_cpu_caps()->has_altivec))
++       (util_get_cpu_caps()->has_sse2 || util_get_cpu_caps()->has_altivec ||
++        (DETECT_ARCH_ARM && util_get_cpu_caps()->has_neon)))   /* Winlator armv7: NEON-Packs */
+    {
+       struct lp_build_context bld;
+       struct lp_type int16_type, int32_type;
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_pack.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_pack.c
+index 76e57c5..414d9a3 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_pack.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_pack.c
+@@ -691,6 +691,40 @@ lp_build_pack2(struct gallivm_state *gallivm,
+       }
+    }
+ 
++#if DETECT_ARCH_ARM
++   /*
++    * Winlator armv7: NEON saturating narrow (VQMOVN.S / VQMOVUN.S, like packss / packus on
++    * SSE2: signed input, saturated to the destination range), so that the 4x4x32 -> 16x8
++    * conversion fast path works on ARM too. Without it LLVM legalized the generic path with
++    * <2 x i16>/<4 x i8> vectors lane by lane through the stack.
++    */
++   if (util_get_cpu_caps()->has_neon &&
++       src_type.width * src_type.length == 128 &&
++       (src_type.width == 32 || src_type.width == 16)) {
++      const char *intrinsic;
++      struct lp_type half_type = dst_type;
++      LLVMTypeRef half_vec_type;
++      LLVMValueRef halves[2], idx[16];
++      unsigned i;
++
++      half_type.length /= 2;
++      half_vec_type = lp_build_vec_type(gallivm, half_type);
++      if (src_type.width == 32)
++         intrinsic = dst_type.sign ? "llvm.arm.neon.vqmovns.v4i16" : "llvm.arm.neon.vqmovnsu.v4i16";
++      else
++         intrinsic = dst_type.sign ? "llvm.arm.neon.vqmovns.v8i8" : "llvm.arm.neon.vqmovnsu.v8i8";
++      lo = LLVMBuildBitCast(builder, lo, lp_build_int_vec_type(gallivm, src_type), "");
++      hi = LLVMBuildBitCast(builder, hi, lp_build_int_vec_type(gallivm, src_type), "");
++      halves[0] = lp_build_intrinsic_unary(builder, intrinsic, half_vec_type, lo);
++      halves[1] = lp_build_intrinsic_unary(builder, intrinsic, half_vec_type, hi);
++      for (i = 0; i < dst_type.length; i++)
++         idx[i] = lp_build_const_int32(gallivm, i);
++      res = LLVMBuildShuffleVector(builder, halves[0], halves[1],
++                                   LLVMConstVector(idx, dst_type.length), "");
++      return LLVMBuildBitCast(builder, res, dst_vec_type, "");
++   }
++#endif
++
+    /* generic shuffle */
+    lo = LLVMBuildBitCast(builder, lo, dst_vec_type, "");
+    hi = LLVMBuildBitCast(builder, hi, dst_vec_type, "");

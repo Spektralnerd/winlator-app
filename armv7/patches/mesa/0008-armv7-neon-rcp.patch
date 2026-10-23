@@ -1,0 +1,91 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
+index 50de300..f72c61c 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
+@@ -1247,6 +1247,38 @@ lp_build_mul_imm(struct lp_build_context *bld,
+ }
+ 
+ 
++#if DETECT_ARCH_ARM
++/*
++ * Winlator armv7: NEON has no vector division; LLVM split every <4 x float> fdiv into four
++ * VFP divisions (VDIV.F32, ~15 cycles each and not pipelined on Cortex-A9), e.g. 1/w for
++ * every quad. VRECPE gives ~8 bits, each VRECPS step doubles that; two steps reach float
++ * precision. VRECPS handles 0 * inf (gives 2.0), so 1/0 = inf and 1/inf = 0 stay right.
++ * GALLIVM_PERF=exact_div keeps the exact division.
++ */
++static boolean
++lp_build_neon_rcp_available(struct lp_type type)
++{
++   return util_get_cpu_caps()->has_neon && type.floating &&
++          type.width == 32 && type.length == 4 &&
++          !(gallivm_perf & GALLIVM_PERF_EXACT_DIV);
++}
++
++static LLVMValueRef
++lp_build_neon_rcp(struct lp_build_context *bld, LLVMValueRef a)
++{
++   LLVMBuilderRef builder = bld->gallivm->builder;
++   LLVMValueRef x = lp_build_intrinsic_unary(builder, "llvm.arm.neon.vrecpe.v4f32",
++                                             bld->vec_type, a);
++   for (unsigned i = 0; i < 2; i++) {
++      LLVMValueRef step = lp_build_intrinsic_binary(builder, "llvm.arm.neon.vrecps.v4f32",
++                                                    bld->vec_type, a, x);
++      x = LLVMBuildFMul(builder, x, step, "");
++   }
++   return x;
++}
++#endif
++
++
+ /**
+  * Generate a / b
+  */
+@@ -1279,6 +1311,11 @@ lp_build_div(struct lp_build_context *bld,
+       type.floating)
+       return lp_build_mul(bld, a, lp_build_rcp(bld, b));
+ 
++#if DETECT_ARCH_ARM
++   if (lp_build_neon_rcp_available(type))
++      return LLVMBuildFMul(builder, a, lp_build_neon_rcp(bld, b), "");
++#endif
++
+    if (type.floating)
+       return LLVMBuildFDiv(builder, a, b, "");
+    else if (type.sign)
+@@ -2675,6 +2712,11 @@ lp_build_rcp(struct lp_build_context *bld,
+       return res;
+    }
+ 
++#if DETECT_ARCH_ARM
++   if (lp_build_neon_rcp_available(type))
++      return lp_build_neon_rcp(bld, a);
++#endif
++
+    return LLVMBuildFDiv(builder, bld->one, a, "");
+ }
+ 
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
+index 8756d7f..49140c7 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
+@@ -49,6 +49,7 @@
+ #define GALLIVM_PERF_NO_OPT          (1 << 3)
+ #define GALLIVM_PERF_NO_AOS_SAMPLING (1 << 4)
+ #define GALLIVM_PERF_ARCH_ROUNDING   (1 << 5)  /* Winlator armv7: LLVM-Rundung auf 32-Bit-ARM */
++#define GALLIVM_PERF_EXACT_DIV       (1 << 6)  /* Winlator armv7: VFP-Division statt NEON-Kehrwert */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+index 00eaccd..a92231c 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+@@ -201,6 +201,7 @@ static const struct debug_named_value lp_bld_perf_flags[] = {
+    { "no_aos_sampling", GALLIVM_PERF_NO_AOS_SAMPLING, "disable aos sampling optimization" },
+    { "nopt",   GALLIVM_PERF_NO_OPT, "disable optimization passes to speed up shader compilation" },
+    { "arch_rounding", GALLIVM_PERF_ARCH_ROUNDING, "use LLVM rounding intrinsics on 32-bit ARM (libm calls on ARMv7)" },
++   { "exact_div", GALLIVM_PERF_EXACT_DIV, "exact (VFP) float division on 32-bit ARM instead of NEON reciprocal estimate" },
+    DEBUG_NAMED_VALUE_END
+ };
+ 
