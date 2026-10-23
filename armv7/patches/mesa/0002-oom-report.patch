@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..1508945
+index 0000000..7566eab
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,1803 @@
+@@ -0,0 +1,2290 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -963,6 +963,480 @@ index 0000000..1508945
 +   end_line();
 +}
 +
++/* ---- Stichproben: wo die Threads rechnen ----
++ * Kernel 3.0 trägt in /proc/self/task/<tid>/stat (Feld 30, kstkeip) den Programmzähler ein,
++ * den der Thread beim letzten Eintritt in den Kernel hatte (Zeitgeber-Interrupt, Systemaufruf).
++ * Der Thread "winlator-prof" liest das 50-mal pro Sekunde für die Mal-Threads von llvmpipe und
++ * für andere Threads mit nennenswerter CPU-Zeit (nur solche im Zustand R) und zählt, wo sie
++ * gerade sind: übersetzte Funktion (JIT, Name aus gallivm_jit_function), libGL+Offset (mit der
++ * Symboldatei auflösbar), andere Bibliothek mit Symbol, anonymer Code (Box86-Dynarec).
++ * Neuere Kernel liefern 0, dann bleibt die Rangliste leer. WINLATOR_PROFILE=0 schaltet ab. */
++struct jit_entry {
++   uintptr_t start;
++   char name[44];
++};
++const int MAX_JIT = 512;
++jit_entry jit_table[MAX_JIT];
++int jit_next, jit_used;
++pthread_mutex_t prof_mutex = PTHREAD_MUTEX_INITIALIZER;
++bool profile_enabled = true;
++
++void jit_record(const char *module, const char *func, const void *code)
++{
++   jit_entry e;
++   memset(&e, 0, sizeof(e));
++   e.start = (uintptr_t)code;
++   size_t n = 0;
++   for (const char *c = module ? module : "?"; *c && n < sizeof(e.name) - 1; c++)
++      e.name[n++] = *c;
++   /* fs_variant_whole/partial: Art anhängen; sonst ist der Modulname eindeutig genug */
++   if (func && !strncmp(func, "fs_variant_", 11) && n < sizeof(e.name) - 2) {
++      e.name[n++] = ':';
++      for (const char *c = func + 11; *c && n < sizeof(e.name) - 1; c++)
++         e.name[n++] = *c;
++   }
++   pthread_mutex_lock(&prof_mutex);
++   jit_table[jit_next] = e;
++   jit_next = (jit_next + 1) % MAX_JIT;
++   if (jit_used < MAX_JIT)
++      jit_used++;
++   pthread_mutex_unlock(&prof_mutex);
++}
++
++/* (prof_mutex gehalten) bekannte JIT-Funktion, die pc enthalten dürfte */
++const jit_entry *find_jit(uintptr_t pc)
++{
++   const jit_entry *best = nullptr;
++   for (int i = 0; i < jit_used; i++) {
++      const jit_entry &e = jit_table[i];
++      if (e.start && e.start <= pc && pc - e.start < 64 * 1024 && (!best || e.start >= best->start))
++         best = &e;
++   }
++   return best;
++}
++
++enum { K_JIT = 1, K_GL = 2, K_LIB = 3, K_ANON = 4, K_NONE = 5 };
++struct prof_bin {
++   uint64_t key;
++   uint32_t count;
++};
++const unsigned PROF_BINS = 1024;
++struct prof_hist {
++   prof_bin bins[PROF_BINS];
++   uint32_t total;
++};
++prof_hist prof_raster, prof_other;
++
++void hist_add(prof_hist &h, uint64_t key)
++{
++   h.total++;
++   uint32_t i = (uint32_t)((key ^ (key >> 29)) * 2654435761u) & (PROF_BINS - 1);
++   for (unsigned probe = 0; probe < 64; probe++) {
++      prof_bin &b = h.bins[(i + probe) & (PROF_BINS - 1)];
++      if (b.count && b.key == key) {
++         b.count++;
++         return;
++      }
++      if (!b.count) {
++         b.key = key;
++         b.count = 1;
++         return;
++      }
++   }
++   /* voll: zählt nur in total */
++}
++
++uint64_t classify_pc(uintptr_t pc)
++{
++   if (!pc)
++      return (uint64_t)K_NONE << 32;
++   if (pc >= gl_text_lo && pc < gl_text_hi)
++      return ((uint64_t)K_GL << 32) | ((pc - gl_base) & ~(uintptr_t)0xff);
++   Dl_info info;
++   if (dladdr((void *)pc, &info) && info.dli_fbase) {
++      /* mit Symbol: nach Symbol zusammenfassen, sonst nach 256-Byte-Abschnitt */
++      uintptr_t where = info.dli_saddr ? (uintptr_t)info.dli_saddr : (pc & ~(uintptr_t)0xff);
++      return ((uint64_t)K_LIB << 32) | where;
++   }
++   pthread_mutex_lock(&prof_mutex);
++   const jit_entry *e = find_jit(pc);
++   uintptr_t start = e ? e->start : 0;
++   pthread_mutex_unlock(&prof_mutex);
++   if (start)
++      return ((uint64_t)K_JIT << 32) | start;
++   return (uint64_t)K_ANON << 32;
++}
++
++void put_prof_key(uint64_t key)
++{
++   unsigned kind = (unsigned)(key >> 32);
++   uintptr_t v = (uintptr_t)(key & 0xffffffffu);
++   switch (kind) {
++   case K_JIT: {
++      const char *name = nullptr;
++      pthread_mutex_lock(&prof_mutex);
++      for (int i = 0; i < jit_used; i++)
++         if (jit_table[i].start == v)
++            name = jit_table[i].name;
++      char copy[sizeof(jit_table[0].name)];
++      if (name) {
++         memcpy(copy, name, sizeof(copy));
++         name = copy;
++      }
++      pthread_mutex_unlock(&prof_mutex);
++      put(name ? name : "JIT?");
++      break;
++   }
++   case K_GL:
++      put("libGL+");
++      put_hex(v, 7);
++      break;
++   case K_LIB: {
++      Dl_info info;
++      if (dladdr((void *)v, &info) && info.dli_fname) {
++         const char *base = strrchr(info.dli_fname, '/');
++         base = base ? base + 1 : info.dli_fname;
++         put(*base ? base : "Programm");
++         if (info.dli_sname && (uintptr_t)info.dli_saddr == v) {
++            put(":");
++            put(info.dli_sname);
++         } else {
++            put("+");
++            put_hex(v - (uintptr_t)info.dli_fbase, 6);
++         }
++      } else {
++         put_hex(v, 8);
++      }
++      break;
++   }
++   case K_ANON:
++      put("anonym (Box86-Dynarec?)");
++      break;
++   default:
++      put("pc 0");
++   }
++}
++
++/* (out_mutex gehalten) Rangliste ausgeben und leeren */
++void put_profile(prof_hist &h, const char *title)
++{
++   pthread_mutex_lock(&prof_mutex);
++   static prof_hist copy;
++   copy = h;
++   memset(&h, 0, sizeof(h));
++   pthread_mutex_unlock(&prof_mutex);
++   if (!copy.total)
++      return;
++   begin_line();
++   put(title);
++   put(", ");
++   put_dec(copy.total);
++   put(" Stichproben:");
++   int on_line = 0;
++   for (int shown = 0; shown < 18; shown++) {
++      int best = -1;
++      for (unsigned i = 0; i < PROF_BINS; i++)
++         if (copy.bins[i].count && (best < 0 || copy.bins[i].count > copy.bins[best].count))
++            best = (int)i;
++      if (best < 0 || copy.bins[best].count * 200ull < copy.total)
++         break;   /* unter 0,5 % weglassen */
++      if (on_line == 6) {
++         end_line();
++         begin_line();
++         put("  ");
++         on_line = 0;
++      }
++      unsigned tenth = (unsigned)(copy.bins[best].count * 1000ull / copy.total);
++      put(" ");
++      put_dec(tenth / 10);
++      put_char(',');
++      put_dec(tenth % 10);
++      put(" % ");
++      put_prof_key(copy.bins[best].key);
++      put(";");
++      on_line++;
++      copy.bins[best].count = 0;
++   }
++   end_line();
++}
++
++/* eine Zeile aus stat: Zustand, Name, CPU-Ticks, kstkeip */
++bool parse_task_stat(const char *buf, char *state, char *comm, size_t comm_size,
++                     unsigned long long *ticks, uintptr_t *eip)
++{
++   const char *open_paren = strchr(buf, '(');
++   const char *close_paren = strrchr(buf, ')');
++   if (!open_paren || !close_paren || close_paren < open_paren)
++      return false;
++   size_t clen = (size_t)(close_paren - open_paren - 1);
++   if (clen > comm_size - 1)
++      clen = comm_size - 1;
++   memcpy(comm, open_paren + 1, clen);
++   comm[clen] = 0;
++   unsigned long long field[32];
++   memset(field, 0, sizeof(field));
++   const char *q = close_paren + 1;
++   *state = '?';
++   for (int f = 3; f <= 30 && *q; f++) {
++      while (*q == ' ')
++         q++;
++      if (f == 3) {
++         *state = *q;
++      } else {
++         unsigned long long v = 0;
++         while (*q >= '0' && *q <= '9')
++            v = v * 10 + (unsigned long long)(*q++ - '0');
++         field[f] = v;
++      }
++      while (*q && *q != ' ')
++         q++;
++   }
++   *ticks = field[14] + field[15];
++   *eip = field[30] <= 0xffffffffull ? (uintptr_t)field[30] : 0;
++   return true;
++}
++
++size_t read_into(const char *path, char *buf, size_t size)
++{
++   buf[0] = 0;
++   int fd = open(path, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return 0;
++   size_t n = 0;
++   while (n < size - 1) {
++      ssize_t r = read(fd, buf + n, size - 1 - n);
++      if (r < 0 && errno == EINTR)
++         continue;
++      if (r <= 0)
++         break;
++      n += (size_t)r;
++   }
++   close(fd);
++   buf[n] = 0;
++   return n;
++}
++
++void task_stat_path(char *path, int tid)
++{
++   char num[16];
++   int i = 0;
++   size_t n = 0;
++   const char *pre = "/proc/self/task/";
++   while (pre[n]) {
++      path[n] = pre[n];
++      n++;
++   }
++   do {
++      num[i++] = (char)('0' + tid % 10);
++      tid /= 10;
++   } while (tid);
++   while (i)
++      path[n++] = num[--i];
++   memcpy(path + n, "/stat", 6);
++}
++
++struct prof_task {
++   int tid;
++   unsigned long long ticks;
++   bool raster, sample;
++   int sent, got;   /* Signale an den Thread, angekommene Stichproben (Ausweichweg) */
++};
++prof_task prof_tasks[MAX_THREADS], prof_tasks_new[MAX_THREADS];
++int prof_task_count;
++
++/* einmal pro Sekunde: welche Threads abgefragt werden (llvmpipe-* immer, andere ab 5 % CPU) */
++void prof_refresh(int self, long hz, char *buf, size_t size)
++{
++   DIR *dir = opendir("/proc/self/task");
++   if (!dir)
++      return;
++   int count = 0;
++   struct dirent *entry;
++   while ((entry = readdir(dir)) && count < MAX_THREADS) {
++      if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
++         continue;
++      int tid = atoi(entry->d_name);
++      if (tid == self)
++         continue;
++      char path[48];
++      task_stat_path(path, tid);
++      if (!read_into(path, buf, size))
++         continue;
++      char state, comm[16];
++      unsigned long long ticks;
++      uintptr_t eip;
++      if (!parse_task_stat(buf, &state, comm, sizeof(comm), &ticks, &eip))
++         continue;
++      if (!strcmp(comm, "winlator-diag"))
++         continue;
++      prof_task &t = prof_tasks_new[count++];
++      t.tid = tid;
++      t.ticks = ticks;
++      t.raster = !strncmp(comm, "llvmpipe", 8);
++      unsigned long long before = ticks;
++      t.sent = t.got = 0;
++      for (int i = 0; i < prof_task_count; i++) {
++         if (prof_tasks[i].tid == tid) {
++            before = prof_tasks[i].ticks;
++            t.sent = prof_tasks[i].sent;
++            t.got = prof_tasks[i].got;
++         }
++      }
++      t.sample = t.raster || (ticks >= before && (ticks - before) * 20 >= (unsigned long long)hz);
++   }
++   closedir(dir);
++   memcpy(prof_tasks, prof_tasks_new, sizeof(prof_task) * (size_t)count);
++   prof_task_count = count;
++}
++
++/* Ausweichweg, wenn der Kernel kein kstkeip liefert (neuere Kernel, qemu): ein Echtzeitsignal an
++ * den Thread, der Handler merkt sich den Programmzähler aus dem Kontext. */
++struct prof_sample {
++   std::atomic<int> tid;
++   uintptr_t pc;
++};
++const unsigned PROF_RING = 256;
++prof_sample prof_ring[PROF_RING];
++std::atomic<uint32_t> prof_ring_head{0};
++
++void prof_signal_handler(int, siginfo_t *, void *ctx)
++{
++   int saved_errno = errno;
++   ucontext_t *uc = (ucontext_t *)ctx;
++   uint32_t slot = prof_ring_head.fetch_add(1) % PROF_RING;
++   prof_ring[slot].pc = uc ? (uintptr_t)uc->uc_mcontext.arm_pc : 0;
++   prof_ring[slot].tid.store((int)syscall(SYS_gettid), std::memory_order_release);
++   errno = saved_errno;
++}
++
++bool install_prof_signal(int sig)
++{
++   struct sigaction old;
++   if (sigaction(sig, nullptr, &old))
++      return false;
++   if (!(old.sa_flags & SA_SIGINFO) && old.sa_handler != SIG_DFL)
++      return false;   /* schon von jemandem belegt */
++   if ((old.sa_flags & SA_SIGINFO) && old.sa_sigaction != prof_signal_handler)
++      return false;
++   struct sigaction sa;
++   memset(&sa, 0, sizeof(sa));
++   sa.sa_sigaction = prof_signal_handler;
++   sa.sa_flags = SA_SIGINFO | SA_RESTART;
++   sigemptyset(&sa.sa_mask);
++   return !sigaction(sig, &sa, nullptr);
++}
++
++void *profiler_main(void *)
++{
++   prctl(PR_SET_NAME, "winlator-prof", 0, 0, 0);
++   int self = (int)syscall(SYS_gettid);
++   int pid = getpid();
++   long hz = sysconf(_SC_CLK_TCK);
++   if (hz <= 0)
++      hz = 100;
++   static char buf[1024];
++   /* erst kstkeip probieren; liefert der Kernel nur 0, auf Signale umstellen */
++   bool use_signal = false;
++   int sig = SIGRTMAX - 3;
++   unsigned round = 0, probe_samples = 0, probe_nonzero = 0;
++   for (;;) {
++      if (round++ % 50 == 0)
++         prof_refresh(self, hz, buf, sizeof(buf));
++      if (!use_signal && probe_samples >= 200 && !probe_nonzero) {
++         use_signal = install_prof_signal(sig);
++         pthread_mutex_lock(&out_mutex);
++         begin_line();
++         put(use_signal ? "Stichproben: der Kernel liefert keine Programmzähler der Threads, nehme Signal "
++                        : "Stichproben: der Kernel liefert keine Programmzähler der Threads und Signal ");
++         put_dec((unsigned)sig);
++         put(use_signal ? "" : " ist belegt, Profil abgeschaltet");
++         end_line();
++         pthread_mutex_unlock(&out_mutex);
++         pthread_mutex_lock(&prof_mutex);
++         memset(&prof_raster, 0, sizeof(prof_raster));
++         memset(&prof_other, 0, sizeof(prof_other));
++         pthread_mutex_unlock(&prof_mutex);
++         if (!use_signal)
++            return nullptr;
++         probe_nonzero = 1;   /* nicht noch einmal prüfen */
++      }
++      int signalled = 0;
++      for (int i = 0; i < prof_task_count; i++) {
++         if (!prof_tasks[i].sample)
++            continue;
++         char path[48];
++         task_stat_path(path, prof_tasks[i].tid);
++         if (!read_into(path, buf, sizeof(buf)))
++            continue;
++         char state, comm[16];
++         unsigned long long ticks;
++         uintptr_t eip;
++         if (!parse_task_stat(buf, &state, comm, sizeof(comm), &ticks, &eip) || state != 'R')
++            continue;
++         if (use_signal) {
++            /* Thread, der Signale nie annimmt (blockiert), nicht weiter beschießen */
++            if (prof_tasks[i].sent >= 50 && !prof_tasks[i].got)
++               continue;
++            if (!syscall(SYS_tgkill, pid, prof_tasks[i].tid, sig)) {
++               prof_tasks[i].sent++;
++               signalled++;
++            }
++            continue;
++         }
++         if (probe_samples < 200) {
++            probe_samples++;
++            if (eip)
++               probe_nonzero++;
++         }
++         if (!eip)
++            continue;
++         uint64_t key = classify_pc(eip);
++         pthread_mutex_lock(&prof_mutex);
++         hist_add(prof_tasks[i].raster ? prof_raster : prof_other, key);
++         pthread_mutex_unlock(&prof_mutex);
++      }
++      if (use_signal) {
++         if (signalled)
++            usleep(2000);   /* Handler laufen lassen */
++         for (unsigned k = 0; k < PROF_RING; k++) {
++            int tid = prof_ring[k].tid.exchange(0, std::memory_order_acquire);
++            if (!tid)
++               continue;
++            uintptr_t pc = prof_ring[k].pc;
++            bool raster = false;
++            for (int i = 0; i < prof_task_count; i++) {
++               if (prof_tasks[i].tid == tid) {
++                  raster = prof_tasks[i].raster;
++                  prof_tasks[i].got++;
++                  break;
++               }
++            }
++            uint64_t key = classify_pc(pc);
++            pthread_mutex_lock(&prof_mutex);
++            hist_add(raster ? prof_raster : prof_other, key);
++            pthread_mutex_unlock(&prof_mutex);
++         }
++      }
++      usleep(20000);
++   }
++   return nullptr;
++}
++
++std::atomic<int> profiler_started{0};
++
++void start_profiler()
++{
++   if (!profile_enabled || profiler_started.exchange(1))
++      return;
++   pthread_attr_t attr;
++   pthread_attr_init(&attr);
++   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++   pthread_attr_setstacksize(&attr, 128 * 1024);
++   pthread_t thread;
++   pthread_create(&thread, &attr, profiler_main, nullptr);
++   pthread_attr_destroy(&attr);
++}
++
 +void put_progress()
 +{
 +   put("bisher ");
@@ -996,6 +1470,7 @@ index 0000000..1508945
 +   pthread_mutex_lock(&out_mutex);
 +   put_thread_cpu(1000);   /* Ausgangswerte merken */
 +   pthread_mutex_unlock(&out_mutex);
++   start_profiler();
 +   uint32_t started = now_ms();
 +   uint32_t window_start = started, window_frames = frames.load(), interval = 30000;
 +   uint32_t window_compiles = compiles.load();
@@ -1058,6 +1533,8 @@ index 0000000..1508945
 +         }
 +         pthread_mutex_lock(&out_mutex);
 +         put_thread_cpu(t - window_start);
++         put_profile(prof_raster, "Mal-Threads (llvmpipe) stecken in");
++         put_profile(prof_other, "andere Threads stecken in");
 +         pthread_mutex_unlock(&out_mutex);
 +         window_start = t;
 +         window_frames = f;
@@ -1403,6 +1880,9 @@ index 0000000..1508945
 +   const char *v = getenv("WINLATOR_DIAG");
 +   if (v && v[0] == '0')
 +      progress_enabled = false;
++   const char *prof = getenv("WINLATOR_PROFILE");
++   if (!progress_enabled || (prof && prof[0] == '0'))
++      profile_enabled = false;
 +   if (progress_enabled) {
 +      install_fault_handlers();
 +      report_main_stack();
@@ -1813,6 +2293,13 @@ index 0000000..1508945
 +   put(" wegen Anzahl)");
 +   end_line();
 +   pthread_mutex_unlock(&out_mutex);
++}
++
++/* übersetzte Funktion (lp_bld_init.c, gallivm_jit_function): für die Stichproben */
++extern "C" void winlator_diag_jit(const char *module, const char *func, const void *code)
++{
++   if (profile_enabled && code)
++      jit_record(module, func, code);
 +}
 +
 +/* Schritt der laufenden Übersetzung (lp_bld_init.c, lp_state_fs.c) */

@@ -198,7 +198,14 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    erste Bild und alle 30 s die Bilder pro Sekunde (nach 5 Minuten alle 5 Minuten), jeweils mit
    einer Zeile `CPU je Thread`: die Threads mit dem größten Anteil eines Kerns seit der letzten
    Zeile (z. B. das Spiel samt Box86, `llvmpipe-0` … `llvmpipe-3`), der Prozess zusammen und,
-   falls `/proc/stat` lesbar ist, das ganze System (auch X-Server, wineserver, Ton). Ein
+   falls `/proc/stat` lesbar ist, das ganze System (auch X-Server, wineserver, Ton). Dazu
+   Ranglisten, wo die Threads gerade rechnen (`… stecken in, N Stichproben: …`): ein Thread
+   `winlator-prof` liest 50-mal pro Sekunde den Programmzähler der Mal-Threads und der übrigen
+   Threads mit mindestens 5 % CPU (Kernel 3.0: Feld kstkeip in `/proc/self/task/*/stat`; liefert
+   der Kernel nur 0, holt ein Echtzeitsignal den Programmzähler aus dem Kontext). Einträge:
+   übersetzte Funktion (`fs319_variant2:whole`, Namen meldet `patches/mesa/0006`), `libGL+Offset`
+   (256-Byte-Abschnitte, über die Symboldatei den Funktionen zuzuordnen),
+   Bibliothek mit Symbol, `anonym` (meist Box86-Dynarec). `WINLATOR_PROFILE=0` schaltet das ab. Ein
    Wachhund-Thread meldet Stillstände – eine Übersetzung dauert über 15 s, seit 15 s kein neues
    Bild, 30 s nach dem ersten Shader noch kein Bild – und gibt dann für jeden Thread Zustand,
    Wartestelle im Kernel, CPU-Zeit, Programmzähler und die Rücksprünge in die libGL aus

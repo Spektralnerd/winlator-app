@@ -1,0 +1,23 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+index 5921b5c..6723851 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+@@ -46,6 +46,8 @@
+ extern void winlator_diag_compile_begin(const char *name) __attribute__((weak));
+ extern void winlator_diag_compile_end(const char *name) __attribute__((weak));
+ extern void winlator_diag_step(unsigned step) __attribute__((weak));
++/* übersetzte Funktion: Name und Anfang für die Stichproben der Diagnose */
++extern void winlator_diag_jit(const char *module, const char *func, const void *code) __attribute__((weak));
+ #define WINLATOR_STEP(n) do { if (winlator_diag_step) winlator_diag_step(n); } while (0)
+ 
+ /* Winlator armv7: LLVM braucht viel Stapel; beim Erzeugen des Maschinencodes legt
+@@ -891,6 +893,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+    assert(code);
+    jit_func = pointer_to_func(code);
+ 
++   if (winlator_diag_jit)
++      winlator_diag_jit(gallivm->module_name, LLVMGetValueName(func), code);
++
+    if (winlator_diag_compile_end)
+       winlator_diag_compile_end(gallivm->module_name);
+ 
