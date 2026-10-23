@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..7566eab
+index 0000000..0151162
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,2290 @@
+@@ -0,0 +1,2436 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -49,6 +49,7 @@ index 0000000..7566eab
 +#include <exception>
 +#include <new>
 +#include <typeinfo>
++#include <string>
 +
 +#include <cxxabi.h>
 +
@@ -64,6 +65,7 @@ index 0000000..7566eab
 +#include <time.h>
 +#include <sys/prctl.h>
 +#include <sys/resource.h>
++#include <sys/stat.h>
 +#include <sys/syscall.h>
 +#include <unistd.h>
 +
@@ -639,8 +641,15 @@ index 0000000..7566eab
 +}
 +std::atomic<uint32_t> fs_variant_reports{0}, fs_culls{0};
 +
-+/* Bereich aus /proc/self/maps, der addr enthält */
++/* Bereich aus /proc/self/maps, der addr enthält (buf: eigener Puffer für andere Threads) */
++bool find_mapping_in(uintptr_t addr, uintptr_t *lo, uintptr_t *hi, char *buf, size_t bufsize);
++
 +bool find_mapping(uintptr_t addr, uintptr_t *lo, uintptr_t *hi)
++{
++   return find_mapping_in(addr, lo, hi, mapsbuf, sizeof(mapsbuf));
++}
++
++bool find_mapping_in(uintptr_t addr, uintptr_t *lo, uintptr_t *hi, char *mapsbuf, size_t bufsize)
 +{
 +   int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
 +   if (fd < 0)
@@ -648,7 +657,7 @@ index 0000000..7566eab
 +   bool found = false;
 +   size_t have = 0;
 +   while (!found) {
-+      ssize_t r = read(fd, mapsbuf + have, sizeof(mapsbuf) - have);
++      ssize_t r = read(fd, mapsbuf + have, bufsize - have);
 +      if (r < 0 && errno == EINTR)
 +         continue;
 +      if (r <= 0)
@@ -675,7 +684,7 @@ index 0000000..7566eab
 +      }
 +      memmove(mapsbuf, mapsbuf + pos, have - pos);
 +      have -= pos;
-+      if (have == sizeof(mapsbuf))
++      if (have == bufsize)
 +         have = 0;
 +   }
 +   close(fd);
@@ -1396,6 +1405,28 @@ index 0000000..7566eab
 +         pthread_mutex_unlock(&prof_mutex);
 +      }
 +      if (use_signal) {
++         /* Mesa blockiert in seinen Threads (u_thread_create) alle Signale: dann einmal melden */
++         static bool blocked_reported;
++         if (!blocked_reported && round % 50 == 49) {
++            bool any_raster = false, all_blocked = true;
++            for (int i = 0; i < prof_task_count; i++) {
++               if (!prof_tasks[i].raster)
++                  continue;
++               any_raster = true;
++               if (prof_tasks[i].sent < 50 || prof_tasks[i].got)
++                  all_blocked = false;
++            }
++            if (any_raster && all_blocked) {
++               blocked_reported = true;
++               pthread_mutex_lock(&out_mutex);
++               begin_line();
++               put("Stichproben: die Mal-Threads blockieren Signal ");
++               put_dec((unsigned)sig);
++               put(" (Mesa sperrt in seinen Threads alle Signale), für sie gibt es kein Profil");
++               end_line();
++               pthread_mutex_unlock(&out_mutex);
++            }
++         }
 +         if (signalled)
 +            usleep(2000);   /* Handler laufen lassen */
 +         for (unsigned k = 0; k < PROF_RING; k++) {
@@ -2295,11 +2326,126 @@ index 0000000..7566eab
 +   pthread_mutex_unlock(&out_mutex);
 +}
 +
-+/* übersetzte Funktion (lp_bld_init.c, gallivm_jit_function): für die Stichproben */
++/* ---- WINLATOR_JIT_DUMP: LLVM-IR (nach der Optimierung) und Maschinencode jeder übersetzten
++ * Funktion als Dateien, zum Untersuchen langsamer Shader. Wert: Ordner (absolut) oder "1" für
++ * <Ordner von BOX86_TRACE_FILE>/../jit bzw. Documents/Winlator/jit. Schaltet den Shader-Cache ab,
++ * damit jeder Shader wirklich übersetzt wird. ---- */
++char jit_dump_dir[256];
++
++void make_dirs(const char *path)
++{
++   char tmp[256];
++   size_t n = strlen(path);
++   if (n >= sizeof(tmp))
++      return;
++   memcpy(tmp, path, n + 1);
++   for (size_t i = 1; i < n; i++) {
++      if (tmp[i] == '/') {
++         tmp[i] = 0;
++         mkdir(tmp, 0777);
++         tmp[i] = '/';
++      }
++   }
++   mkdir(tmp, 0777);
++}
++
++__attribute__((constructor)) void read_jit_dump_setting()
++{
++   const char *v = getenv("WINLATOR_JIT_DUMP");
++   if (!v || !*v || !strcmp(v, "0"))
++      return;
++   if (v[0] == '/') {
++      snprintf(jit_dump_dir, sizeof(jit_dump_dir), "%s", v);
++   } else {
++      const char *trace = getenv("BOX86_TRACE_FILE");
++      const char *slash = trace ? strrchr(trace, '/') : nullptr;
++      if (slash && slash > trace) {
++         /* .../Documents/Winlator/trace/box86-%pid.txt -> .../Documents/Winlator/jit */
++         std::string dir(trace, (size_t)(slash - trace));
++         size_t up = dir.rfind('/');
++         if (up != std::string::npos && !strcmp(dir.c_str() + up, "/trace"))
++            dir.resize(up);
++         snprintf(jit_dump_dir, sizeof(jit_dump_dir), "%s/jit", dir.c_str());
++      } else {
++         snprintf(jit_dump_dir, sizeof(jit_dump_dir), "/storage/emulated/0/Documents/Winlator/jit");
++      }
++   }
++   make_dirs(jit_dump_dir);
++   setenv("MESA_SHADER_CACHE_DISABLE", "true", 1);
++   pthread_mutex_lock(&out_mutex);
++   begin_line();
++   put("JIT-Dump (IR und Maschinencode jedes Shaders) nach ");
++   put(jit_dump_dir);
++   put(", Shader-Cache abgeschaltet");
++   end_line();
++   pthread_mutex_unlock(&out_mutex);
++}
++
++void dump_file(const char *name, const char *suffix, const void *data, size_t size)
++{
++   char path[512];
++   snprintf(path, sizeof(path), "%s/%s%s", jit_dump_dir, name, suffix);
++   for (char *c = path + strlen(jit_dump_dir) + 1; *c; c++)
++      if (*c == '/' || *c == ':' || *c == ' ')
++         *c = '_';
++   int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
++   if (fd < 0)
++      return;
++   const char *p = (const char *)data;
++   while (size) {
++      ssize_t w = write(fd, p, size);
++      if (w < 0 && errno == EINTR)
++         continue;
++      if (w <= 0)
++         break;
++      p += w;
++      size -= (size_t)w;
++   }
++   close(fd);
++}
++
++void dump_jit_code(const char *module, const char *func, const void *code)
++{
++   uintptr_t lo, hi, start = (uintptr_t)code;
++   static char maps_copy[16384];   /* nur aus dem GL-Thread (Übersetzung) */
++   if (!find_mapping_in(start, &lo, &hi, maps_copy, sizeof(maps_copy)))
++      return;
++   size_t size = hi - start > 65536 ? 65536 : hi - start;
++   char name[160];
++   snprintf(name, sizeof(name), "%s.%s", module ? module : "?", func ? func : "?");
++   dump_file(name, ".bin", code, size);
++   /* Verzeichnis: Name, Adresse, gesicherte Länge */
++   char line[256];
++   int n = snprintf(line, sizeof(line), "%s %08lx %u\n", name, (unsigned long)start, (unsigned)size);
++   char path[300];
++   snprintf(path, sizeof(path), "%s/index.txt", jit_dump_dir);
++   int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0666);
++   if (fd >= 0) {
++      ssize_t w = write(fd, line, (size_t)n);
++      (void)w;
++      close(fd);
++   }
++}
++
++/* übersetzte Funktion (lp_bld_init.c, gallivm_jit_function): für die Stichproben und den Dump */
 +extern "C" void winlator_diag_jit(const char *module, const char *func, const void *code)
 +{
 +   if (profile_enabled && code)
 +      jit_record(module, func, code);
++   if (jit_dump_dir[0] && code)
++      dump_jit_code(module, func, code);
++}
++
++/* LLVM-IR eines Moduls nach der Optimierung (lp_bld_init.c, nur mit WINLATOR_JIT_DUMP) */
++extern "C" int winlator_diag_ir_wanted(void)
++{
++   return jit_dump_dir[0] != 0;
++}
++
++extern "C" void winlator_diag_ir(const char *module, const char *ir)
++{
++   if (jit_dump_dir[0] && ir)
++      dump_file(module ? module : "?", ".ll", ir, strlen(ir));
 +}
 +
 +/* Schritt der laufenden Übersetzung (lp_bld_init.c, lp_state_fs.c) */

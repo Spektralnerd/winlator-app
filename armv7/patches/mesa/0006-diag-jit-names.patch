@@ -1,17 +1,32 @@
 diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
-index 5921b5c..6723851 100755
+index 5921b5c..00eaccd 100755
 --- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
 +++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
-@@ -46,6 +46,8 @@
+@@ -46,6 +46,11 @@
  extern void winlator_diag_compile_begin(const char *name) __attribute__((weak));
  extern void winlator_diag_compile_end(const char *name) __attribute__((weak));
  extern void winlator_diag_step(unsigned step) __attribute__((weak));
 +/* übersetzte Funktion: Name und Anfang für die Stichproben der Diagnose */
 +extern void winlator_diag_jit(const char *module, const char *func, const void *code) __attribute__((weak));
++/* WINLATOR_JIT_DUMP: LLVM-IR nach der Optimierung als Datei */
++extern int winlator_diag_ir_wanted(void) __attribute__((weak));
++extern void winlator_diag_ir(const char *module, const char *ir) __attribute__((weak));
  #define WINLATOR_STEP(n) do { if (winlator_diag_step) winlator_diag_step(n); } while (0)
  
  /* Winlator armv7: LLVM braucht viel Stapel; beim Erzeugen des Maschinencodes legt
-@@ -891,6 +893,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+@@ -745,6 +750,11 @@ gallivm_compile_module_llvm(void *data)
+    LLVMRunPasses(gallivm->module, passes, LLVMGetExecutionEngineTargetMachine(gallivm->engine), opts);
+    LLVMDisposePassBuilderOptions(opts);
+    WINLATOR_STEP(4);
++   if (winlator_diag_ir_wanted && winlator_diag_ir && winlator_diag_ir_wanted()) {
++      char *ir = LLVMPrintModuleToString(gallivm->module);
++      winlator_diag_ir(gallivm->module_name, ir);
++      LLVMDisposeMessage(ir);
++   }
+ #else
+ #if GALLIVM_HAVE_CORO == 1
+    LLVMRunPassManager(gallivm->cgpassmgr, gallivm->module);
+@@ -891,6 +901,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
     assert(code);
     jit_func = pointer_to_func(code);
  

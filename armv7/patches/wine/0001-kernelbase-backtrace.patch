@@ -1,8 +1,8 @@
 diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
-index 9d9b4b3..b21a2b5 100755
+index 9d9b4b3..9438cfe 100755
 --- a/dlls/kernelbase/debug.c
 +++ b/dlls/kernelbase/debug.c
-@@ -524,6 +524,81 @@ static void format_exception_msg( const EXCEPTION_POINTERS *ptr, char *buffer, i
+@@ -524,6 +524,156 @@ static void format_exception_msg( const EXCEPTION_POINTERS *ptr, char *buffer, i
  }
  
  
@@ -55,6 +55,72 @@ index 9d9b4b3..b21a2b5 100755
 +             (ULONG)((const char *)addr - (const char *)module) );
 +}
 +
++/* readable committed memory [p, p + size) within one region? */
++static BOOL is_readable( const BYTE *p, SIZE_T size )
++{
++    MEMORY_BASIC_INFORMATION mbi;
++
++    if (!VirtualQuery( p, &mbi, sizeof(mbi) )) return FALSE;
++    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD))) return FALSE;
++    if (!(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ |
++                         PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) return FALSE;
++    return p + size <= (const BYTE *)mbi.BaseAddress + mbi.RegionSize;
++}
++
++/* bytes around addr as hex and text (code at the crash, data the registers point to) */
++static void print_memory( const char *what, ULONG_PTR addr, unsigned int before, unsigned int count )
++{
++    const BYTE *p = (const BYTE *)addr - before;
++    char hex[3 * 48 + 1], text[48 + 1];
++    unsigned int i;
++
++    if (count > 48) count = 48;
++    if (addr < 0x10000) return;
++    while (count && !is_readable( p, count ))
++    {
++        if (before) { p += before; count -= before; before = 0; }   /* without the bytes before */
++        else count /= 2;
++    }
++    if (!count) return;
++    for (i = 0; i < count; i++)
++    {
++        snprintf( hex + 3 * i, 4, "%02x%c", p[i], (const BYTE *)addr == p + i + 1 ? '|' : ' ' );
++        text[i] = p[i] >= 32 && p[i] < 127 ? p[i] : '.';
++    }
++    hex[3 * count] = 0;
++    text[count] = 0;
++    MESSAGE( "wine:   %s %p: %s \"%s\"\n", what, p, hex, text );
++}
++
++/* Windows address space: how much is free, largest free block (allocation failures, e.g. a
++ * game that gets NULL while loading a level) */
++static void print_address_space(void)
++{
++    MEMORY_BASIC_INFORMATION mbi;
++    SYSTEM_BASIC_INFORMATION info;
++    const BYTE *p = (const BYTE *)0x10000, *limit = (const BYTE *)0x7fff0000;
++    SIZE_T free_total = 0, free_max = 0, commit_total = 0, reserve_total = 0;
++    const BYTE *free_max_at = NULL;
++
++    if (!NtQuerySystemInformation( SystemBasicInformation, &info, sizeof(info), NULL ))
++        limit = (const BYTE *)info.HighestUserAddress;
++    while (p < limit && VirtualQuery( p, &mbi, sizeof(mbi) ))
++    {
++        if (mbi.State == MEM_FREE)
++        {
++            free_total += mbi.RegionSize;
++            if (mbi.RegionSize > free_max) { free_max = mbi.RegionSize; free_max_at = mbi.BaseAddress; }
++        }
++        else if (mbi.State == MEM_COMMIT) commit_total += mbi.RegionSize;
++        else reserve_total += mbi.RegionSize;
++        if ((const BYTE *)mbi.BaseAddress + mbi.RegionSize <= p) break;
++        p = (const BYTE *)mbi.BaseAddress + mbi.RegionSize;
++    }
++    MESSAGE( "wine: address space up to %p: committed %lu MB, reserved %lu MB, free %lu MB, "
++             "largest free block %lu MB at %p\n", limit, (ULONG)(commit_total >> 20),
++             (ULONG)(reserve_total >> 20), (ULONG)(free_total >> 20), (ULONG)(free_max >> 20), free_max_at );
++}
++
 +static void print_backtrace( const EXCEPTION_POINTERS *ptr )
 +{
 +    const CONTEXT *ctx = ptr->ContextRecord;
@@ -66,6 +132,15 @@ index 9d9b4b3..b21a2b5 100755
 +             ctx->Eax, ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi );
 +    MESSAGE( "wine: eip=%08lx esp=%08lx ebp=%08lx, call chain (stack scan):\n",
 +             ctx->Eip, ctx->Esp, ctx->Ebp );
++    print_memory( "code", ctx->Eip, 24, 40 );
++    print_memory( "eax ->", ctx->Eax, 0, 32 );
++    print_memory( "ebx ->", ctx->Ebx, 0, 32 );
++    print_memory( "ecx ->", ctx->Ecx, 0, 32 );
++    print_memory( "edx ->", ctx->Edx, 0, 32 );
++    print_memory( "esi ->", ctx->Esi, 0, 32 );
++    print_memory( "edi ->", ctx->Edi, 0, 32 );
++    print_memory( "stack", ctx->Esp, 0, 48 );
++    print_address_space();
 +    print_code_address( "at", ptr->ExceptionRecord->ExceptionAddress );
 +    sp = (const DWORD *)ctx->Esp;
 +    end = (const DWORD *)tib->StackBase;
@@ -84,7 +159,7 @@ index 9d9b4b3..b21a2b5 100755
  /******************************************************************
   *		start_debugger
   *
-@@ -543,6 +618,9 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
+@@ -543,6 +693,9 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
  
      format_exception_msg( epointers, buffer, sizeof(buffer) );
      MESSAGE( "wine: %s (thread %04lx), starting debugger...\n", buffer, GetCurrentThreadId() );

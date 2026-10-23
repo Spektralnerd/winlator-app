@@ -177,7 +177,11 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    Stürzt ein Windows-Programm ab („Unhandled exception …“), kann Box86 den Wine-Debugger nicht
    starten. Das Wine des Root-FS (`patches/wine/0001-kernelbase-backtrace.patch`) gibt darum
    selbst die Register und die Aufrufkette aus (Rücksprungadressen auf dem Stapel als
-   `modul+offset`), die Zeilen beginnen mit `wine:` und stehen in `start.txt`.
+   `modul+offset`), die Zeilen beginnen mit `wine:` und stehen in `start.txt`. Dazu die Bytes
+   rund um den Absturzbefehl (`code`, ein `|` markiert die Absturzadresse), der Speicher, auf
+   den die Register zeigen (Text oft gleich lesbar, z. B. Erweiterungsnamen), der Stapel und
+   der Windows-Adressraum (belegt, reserviert, frei, größter freier Block), um
+   Speicheranforderungen, die an fehlendem Adressraum scheitern, zu erkennen.
 
    Scheitert in der libGL (llvmpipe/LLVM) eine Speicheranforderung, endete das bisher nur mit
    „terminate called after throwing an instance of 'std::bad_alloc'“. Die libGL ersetzt darum
@@ -205,7 +209,11 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    der Kernel nur 0, holt ein Echtzeitsignal den Programmzähler aus dem Kontext). Einträge:
    übersetzte Funktion (`fs319_variant2:whole`, Namen meldet `patches/mesa/0006`), `libGL+Offset`
    (256-Byte-Abschnitte, über die Symboldatei den Funktionen zuzuordnen),
-   Bibliothek mit Symbol, `anonym` (meist Box86-Dynarec). `WINLATOR_PROFILE=0` schaltet das ab. Ein
+   Bibliothek mit Symbol, `anonym` (meist Box86-Dynarec). `WINLATOR_PROFILE=0` schaltet das ab.
+   `WINLATOR_JIT_DUMP=1` (oder ein absoluter Ordner) schreibt für jede übersetzte Funktion das
+   LLVM-IR nach der Optimierung (`<Modul>.ll`) und den Maschinencode (`<Modul>.<Funktion>.bin`,
+   bis 64 KB, `index.txt` mit Adressen) nach `Documents/Winlator/jit` und schaltet dafür den
+   Shader-Cache ab; den Code zeigt `arm-linux-gnueabihf-objdump -D -b binary -marm`. Ein
    Wachhund-Thread meldet Stillstände – eine Übersetzung dauert über 15 s, seit 15 s kein neues
    Bild, 30 s nach dem ersten Shader noch kein Bild – und gibt dann für jeden Thread Zustand,
    Wartestelle im Kernel, CPU-Zeit, Programmzähler und die Rücksprünge in die libGL aus
