@@ -19,10 +19,13 @@ In `armv7` gilt:
   32-Bit-DLLs, `syswow64` gibt es nicht. Komponenten, die für ein WoW64-Präfix gepackt sind
   (DXVK, VKD3D, WineD3D, D8VK, D7VK, cnc-ddraw, Windows-Komponenten), werden beim Entpacken
   umgelenkt (`syswow64/` → `system32/`, 64-Bit-Teile entfallen).
-- Zusätzlicher OpenGL-Treiber **Software** (Mesa softpipe auf der CPU, steckt in der
-  VirGL-Bibliothek; langsam, aber ohne Anforderungen an die GPU). Das Winlator-Mesa schaltet
-  softpipe ab, sobald VirGL mitgebaut wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt
-  das zurück (ohne GALLIUM_DRIVER nimmt Mesa softpipe, mit `virpipe` weiterhin nur VirGL).
+- Zusätzlicher OpenGL-Treiber **Software** (Mesa llvmpipe auf der CPU, steckt in der
+  VirGL-Bibliothek; ohne Anforderungen an die GPU). llvmpipe übersetzt die Shader mit LLVM 15
+  (aus Debian armhf, statisch gelinkt) und rastert mit `LP_NUM_THREADS` Threads (die App setzt
+  die Zahl der Kerne). `GALLIUM_DRIVER=softpipe` in den Container-Umgebungsvariablen nimmt den
+  einfachen Rasterer ohne JIT. Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
+  wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt das zurück (mit `virpipe` bleibt es
+  weiterhin bei VirGL, ohne Ausweichen).
   Ohne den Patch scheiterte jeder OpenGL-Kontext („couldn't initialize OpenGL“), und Programme,
   die trotzdem weitermachen, stürzten z. B. in glu32 mit 0xc0000417 ab.
 - adrenotools gibt es nur für arm64 (eigene Qualcomm-Treiber für Vortek entfallen)
@@ -37,7 +40,7 @@ Alles läuft über GitHub Actions (`.github/workflows/armv7.yml`):
    gegenüber dem Release `armv7-rootfs` geändert hat, wird der Unterbau neu gebaut
    (erzwingen: Workflow von Hand starten, Haken bei „32-Bit-Unterbau neu bauen“)
 2. `armhf` (Debian 12, `ci-armhf.sh`): glibc 2.39 mit Termux- und Winlator-Patches, Box86,
-   alsa-lib + Winlator-Plugin, Gladio-/Vortek-Client, Mesa (VirGL+softpipe, Zink),
+   alsa-lib + Winlator-Plugin, Gladio-/Vortek-Client, Mesa (VirGL+llvmpipe/softpipe, Zink),
    Laufzeitbibliotheken aus Debian 12 armhf (nur die benötigten), Hilfsprogramme
 3. `wine` (Debian 12 i386, `ci-wine.sh`): Wine 10.10 (Winlator-Fassung) als 32-Bit-Wine und
    daraus die Container-Vorlage (Win32-Präfix)
@@ -150,5 +153,7 @@ Win32-Präfix) funktionieren dann nicht mehr und sollten neu angelegt werden.
 
 - Nur 32-Bit-Windows-Programme (es gibt kein 64-Bit-Wine auf 32-Bit-ARM)
 - Vortek braucht Vulkan auf dem Gerät (und Android 8), VirGL und Gladio brauchen OpenGL ES 3.x
-- Software-Rendering ist softpipe (ohne LLVM) und entsprechend langsam
+- Software-Rendering bleibt Software-Rendering: llvmpipe ist um ein Vielfaches schneller als
+  softpipe (auf dem Galaxy Note 8.0 schaffte softpipe beim SKIDROW-Intro, 1024×768, etwa
+  0,5 Bilder pro Sekunde), ersetzt aber keine GPU
 - PulseAudio gibt es für armv7 noch nicht (ALSA ist ohnehin voreingestellt)

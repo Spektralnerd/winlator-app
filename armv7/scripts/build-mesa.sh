@@ -69,11 +69,15 @@ if [ "$LLVM" = enabled ]; then
     QEMU="$(command -v qemu-arm-static || command -v qemu-arm || true)"
     [ -n "$QEMU" ] || { echo "qemu-arm(-static) fehlt"; exit 1; }
     # llvm-config leitet seine Pfade vom eigenen Ort ab; falls es doch feste Debian-Pfade
-    # (/usr/lib/llvm-N) nennt, werden sie auf den entpackten Ordner umgebogen
+    # (/usr/lib/llvm-N) nennt, werden sie auf den entpackten Ordner umgebogen.
+    # Debians LLVM ist mit Polly und Z3 gebaut; llvmpipe braucht beides nicht, die statischen
+    # Archive liegen aber in anderen Paketen: aus der Linkliste nehmen (der Linker zieht aus
+    # Archiven ohnehin nur, was referenziert wird).
     cat > "$BUILD_DIR/bin/llvm-config-armhf" <<EOF
 #!/bin/sh
 out="\$("$QEMU" -L "$LS" "$LLVM_CONFIG" "\$@")" || exit \$?
-printf '%s\n' "\$out" | sed -E 's#(^|[ =]|-I|-L)/usr/lib/llvm-$LLVM_VER#\1$LS/usr/lib/llvm-$LLVM_VER#g'
+printf '%s\n' "\$out" | sed -E -e 's#(^|[ =]|-I|-L)/usr/lib/llvm-$LLVM_VER#\1$LS/usr/lib/llvm-$LLVM_VER#g' \
+    -e ':a' -e 's#(^| )(-lPolly|-lPollyISL|-lz3|[^ ]*/libPolly[^ ]*\.a|[^ ]*/libz3\.so[^ ]*)( |\$)#\1#' -e 'ta'
 EOF
     chmod +x "$BUILD_DIR/bin/llvm-config-armhf"
     echo "llvm-config $(llvm-config-armhf --version), Ziel $(llvm-config-armhf --host-target)"
