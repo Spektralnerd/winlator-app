@@ -35,6 +35,18 @@ In `armv7` gilt:
   libm-Aufruf, also etwa zwei je Texel (`nearbyintf` sichert dabei jedes Mal FPSCR). Auf
   32-Bit-ARM nimmt gallivm jetzt seine eigenen Rundungen aus reinen Vektorbefehlen;
   `GALLIVM_PERF=arch_rounding` stellt das alte Verhalten her.
+  `patches/mesa/0007-armv7-neon-pack.patch`: Den schnellen Weg „4×4×32 → 16×8“ (Fragmentfarbe
+  float → RGBA8) gab es nur für SSE2 und AltiVec, weil er sich auf deren sättigende
+  Pack-Befehle verlässt. `lp_build_pack2` nimmt auf NEON jetzt `VQMOVN.S`/`VQMOVUN.S` (gleiche
+  Bedeutung wie packss/packus), und der schnelle Weg gilt auch auf ARM. Vorher legalisierte
+  LLVM die Zwischentypen `<2 x i16>`/`<4 x i8>` Spur für Spur über den Stapel (je 4×4-Block 64
+  NEON→ARM-Transfers, auf dem A9 jeweils mit Wartezeit).
+  `patches/mesa/0008-armv7-neon-rcp.patch`: NEON kann nicht vektoriell teilen, jede
+  `<4 x float>`-Division wurde zu vier VFP-Divisionen (`VDIV.F32`, nicht überlappend). Kehrwert
+  und Division nehmen jetzt `VRECPE` und zwei `VRECPS`-Schritte (volle float-Genauigkeit;
+  VRECPS behandelt 0·∞, also bleiben 1/0 = ∞ und 1/∞ = 0); `GALLIVM_PERF=exact_div` stellt die
+  genaue Division wieder her. Mit beiden Patches ist der Fragment-Shader des Testprogramms um
+  ein Drittel kürzer, die Bilder bleiben bitgenau gleich.
   Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
   wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt das zurück (mit `virpipe` bleibt es
   weiterhin bei VirGL, ohne Ausweichen).
