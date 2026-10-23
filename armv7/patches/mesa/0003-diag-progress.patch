@@ -1,8 +1,8 @@
 diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
-index 24d0823..0a0168e 100755
+index 24d0823..3a5208c 100755
 --- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
 +++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
-@@ -40,6 +40,12 @@
+@@ -40,6 +40,14 @@
  #include "lp_bld_coro.h"
  #include "lp_bld_printf.h"
  
@@ -11,11 +11,13 @@ index 24d0823..0a0168e 100755
 + * damit andere Ziele ohne diese Datei weiter linken. */
 +extern void winlator_diag_compile_begin(const char *name) __attribute__((weak));
 +extern void winlator_diag_compile_end(const char *name) __attribute__((weak));
++extern void winlator_diag_step(unsigned step) __attribute__((weak));
++#define WINLATOR_STEP(n) do { if (winlator_diag_step) winlator_diag_step(n); } while (0)
 +
  #include <llvm/Config/llvm-config.h>
  #include <llvm-c/Analysis.h>
  #include <llvm-c/Transforms/Scalar.h>
-@@ -560,6 +566,9 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+@@ -560,6 +568,9 @@ gallivm_compile_module(struct gallivm_state *gallivm)
  
     assert(!gallivm->compiled);
  
@@ -25,7 +27,44 @@ index 24d0823..0a0168e 100755
     if (gallivm->builder) {
        LLVMDisposeBuilder(gallivm->builder);
        gallivm->builder = NULL;
-@@ -729,6 +738,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+@@ -571,6 +582,7 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+       assert(0);
+    }
+    assert(gallivm->engine);
++   WINLATOR_STEP(2);
+ 
+    if (gallivm->cache && gallivm->cache->data_size) {
+       goto skip_cached;
+@@ -607,6 +619,7 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+ 
+    LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+    LLVMRunPasses(gallivm->module, passes, LLVMGetExecutionEngineTargetMachine(gallivm->engine), opts);
++   WINLATOR_STEP(3);
+ 
+    if (!(gallivm_perf & GALLIVM_PERF_NO_OPT))
+       strcpy(passes, "sroa,early-cse,simplifycfg,reassociate,mem2reg,instsimplify,instcombine");
+@@ -615,6 +628,7 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+ 
+    LLVMRunPasses(gallivm->module, passes, LLVMGetExecutionEngineTargetMachine(gallivm->engine), opts);
+    LLVMDisposePassBuilderOptions(opts);
++   WINLATOR_STEP(4);
+ #else
+ #if GALLIVM_HAVE_CORO == 1
+    LLVMRunPassManager(gallivm->cgpassmgr, gallivm->module);
+@@ -676,6 +690,7 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+    LLVMAddGlobalMapping(gallivm->engine, gallivm->get_time_hook, os_time_get_nano);
+ 
+    lp_build_coro_add_malloc_hooks(gallivm);
++   WINLATOR_STEP(5);
+ 
+    if (gallivm_debug & GALLIVM_DEBUG_ASM) {
+       LLVMValueRef llvm_func = LLVMGetFirstFunction(gallivm->module);
+@@ -725,10 +740,14 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+    if (gallivm_debug & GALLIVM_DEBUG_PERF)
+       time_begin = os_time_get();
+ 
++   WINLATOR_STEP(6);
+    code = LLVMGetPointerToGlobal(gallivm->engine, func);
     assert(code);
     jit_func = pointer_to_func(code);
  

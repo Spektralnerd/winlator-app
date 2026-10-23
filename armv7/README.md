@@ -118,6 +118,18 @@ Bildausgabe mit **OpenGL ES 2.0** (z. B. Mali-400): Hat das Gerät kein ES 3, ni
 ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekommen dann
 „Software“ als OpenGL-Treiber und, ohne Vulkan-Treiber, WineD3D statt DXVK (alles umstellbar).
 
+**Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
+Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit
+llvmpipe/LLVM) auf dem nativen Hauptstapel des Prozesses aus; Wine sieht nur Box86s eigenen
+x86-Stapel. Liegt der native Stapel oberhalb von 2 GB (bei 3G/1G knapp unter 0xbf000000),
+reservierte Wine alles bis 64 KB unter ihn, der Stapel konnte nicht mehr wachsen und hatte etwa
+200 KB. LLVM lief darüber hinaus (SIGSEGV in `memset` knapp unter dem Stapel); das Programm fing
+die Ausnahme ab, der GL-Aufruf brach jedes Mal mitten in der Shader-Übersetzung ab, llvmpipe
+legte bei jedem Zeichenaufruf eine neue Variante an, kein Bild wurde fertig, und nach etwa 1400
+Varianten war der Speicher voll. `patches/wine/0002-native-main-stack-room.patch` lässt unter dem
+nativen Hauptstapel (`[stack]` in `/proc/self/maps`) so viel Platz frei, wie `RLIMIT_STACK`
+erlaubt (mindestens 8 MB). Unter qemu liegt der Stapel unter 2 GB, dort trat das nie auf.
+
 ## Testen auf dem Gerät
 
 1. APK aus dem Release `armv7-apk` installieren: `Winlator-11.2-armv7.apk` für alle 32-Bit-Geräte,
@@ -167,8 +179,14 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    für die nächsten (höchstens 40 Meldungen) da, in welchen Bytes sich der Variantenschlüssel
    von der ähnlichsten vorhandenen Variante unterscheidet (Aufbau des Schlüssels im Kommentar
    von `winlator_diag_fs_variant`); auf dem Galaxy Note 8.0 bekam beim SKIDROW-Intro ein
-   einziger Shader über 1400 Varianten, bis der Speicher ausging. `WINLATOR_DIAG=0` schaltet
-   den Fortschritt ab.
+   einziger Shader über 1400 Varianten, bis der Speicher ausging (Ursache: zu kleiner Stapel des
+   Hauptthreads, siehe „Stapel des Hauptthreads“). Bricht eine Übersetzung ab, steht beim
+   nächsten Beginn, nach welchem Schritt (JIT-Engine, Optimierung, Maschinencode …). Stürzt
+   Code in der libGL ab (Signal mit Programmzähler oder Rücksprungadresse in der libGL), meldet
+   sie Signal, Adresse und Aufrufkette und reicht das Signal dann an Box86 weiter (höchstens
+   dreimal je Prozess); Box86 selbst zeigt mit `BOX86_SHOWSEGV=1` jeden Speicherzugriffsfehler,
+   auch wenn das Programm einen Handler hat. `WINLATOR_DIAG=0` schaltet den Fortschritt und den
+   Signalabfang ab.
 
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`

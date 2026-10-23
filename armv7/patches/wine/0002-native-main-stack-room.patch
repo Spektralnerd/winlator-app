@@ -1,0 +1,90 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 4d76a93..2ef835b 100755
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -37,6 +37,7 @@
+ #include <sys/stat.h>
+ #include <sys/mman.h>
+ #include <sys/ioctl.h>
++#include <sys/resource.h>
+ #ifdef HAVE_SYS_SYSINFO_H
+ # include <sys/sysinfo.h>
+ #endif
+@@ -701,6 +702,54 @@ static void reserve_area( void *addr, void *end )
+ }
+ 
+ 
++#if defined(__i386__) && !defined(__APPLE__)
++/***********************************************************************
++ *           get_native_main_stack
++ *
++ * Winlator armv7: Box86 runs the native code of the main thread (wrapped
++ * libraries such as libGL with llvmpipe/LLVM) on the native main stack of
++ * the process; Wine itself only sees Box86's separate x86 stack. Find the
++ * native stack ("[stack]" in /proc/self/maps), so that its room to grow is
++ * not reserved below. Without this Wine reserved everything up to 64k below
++ * it, native code had about 200 KB of stack, and LLVM overflowed it.
++ */
++static BOOL get_native_main_stack( char **start, char **end )
++{
++    char line[512];
++    BOOL ret = FALSE;
++    FILE *f = fopen( "/proc/self/maps", "r" );
++
++    if (!f) return FALSE;
++    while (fgets( line, sizeof(line), f ))
++    {
++        unsigned long lo, hi;
++
++        if (!strstr( line, "[stack]" )) continue;
++        if (sscanf( line, "%lx-%lx", &lo, &hi ) == 2)
++        {
++            *start = (char *)lo;
++            *end = (char *)hi;
++            ret = TRUE;
++        }
++        break;
++    }
++    fclose( f );
++    return ret;
++}
++
++/* room below the native main stack: its growth limit (at least 8 MB) */
++static size_t native_stack_room(void)
++{
++    struct rlimit rl;
++    size_t room = 8 << 20;
++
++    if (getrlimit( RLIMIT_STACK, &rl )) return room;
++    if (rl.rlim_cur == RLIM_INFINITY) return 64 << 20;
++    if (rl.rlim_cur > room) room = rl.rlim_cur < (256 << 20) ? rl.rlim_cur : (256 << 20);
++    return room;
++}
++#endif
++
+ static void mmap_init( const struct preload_info *preload_info )
+ {
+ #ifndef _WIN64
+@@ -743,8 +792,22 @@ static void mmap_init( const struct preload_info *preload_info )
+         reserve_area( base, end );
+     }
+     else
++#endif
++    {
++#if defined(__i386__) && !defined(__APPLE__)
++        char *native_start, *native_end;
++
++        if (get_native_main_stack( &native_start, &native_end ) && native_start >= user_space_limit)
++        {
++            char *base = (char *)(((ULONG_PTR)native_start - native_stack_room()) & ~granularity_mask);
++
++            if (base > user_space_limit) reserve_area( user_space_limit, base );
++            reserve_area( native_end, 0 );
++        }
++        else
+ #endif
+         reserve_area( user_space_limit, 0 );
++    }
+ 
+ #else
+ 
