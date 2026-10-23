@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..66da9cd
+index 0000000..d34686f
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,724 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -30,7 +30,8 @@ index 0000000..66da9cd
 + *   - eine Übersicht des Adressraums (Lücken, größte Bereiche, Belegung je 16 MB)
 + *   - Rücksprungadressen in die libGL (Aufrufkette, auflösbar mit der Symboldatei aus dem Bau)
 + * Alle Zeilen beginnen mit "[diag]"; Winlator übernimmt sie immer ins Startprotokoll.
-+ * Danach geht es weiter wie bisher (std::bad_alloc). Im Normalfall kostet das nichts.
++ * Danach wirft operator new wie gewohnt std::bad_alloc; da niemand es abfängt, endet der Prozess
++ * (sofort mit _exit statt über abort, siehe terminate_now). Im Normalfall kostet das nichts.
 + * WINLATOR_OOM_TEST=n lässt zum Ausprobieren die n-te Anforderung scheitern.
 + * Kommt ohne malloc aus (es ist ja gerade keiner mehr zu haben).
 + */
@@ -40,7 +41,11 @@ index 0000000..66da9cd
 +#include <cstdint>
 +#include <cstdlib>
 +#include <cstring>
++#include <exception>
 +#include <new>
++#include <typeinfo>
++
++#include <cxxabi.h>
 +
 +#include <elf.h>
 +#include <fcntl.h>
@@ -673,10 +678,28 @@ index 0000000..66da9cd
 +   report("Speicheranforderung in libstdc++", 0, errno, (uintptr_t)__builtin_return_address(0));
 +}
 +
-+__attribute__((constructor)) void install_new_handler()
++/* Nicht abgefangene Ausnahme (LLVM fängt nichts ab): Statt abort() den Prozess sofort beenden.
++ * Ein SIGABRT verwandelt Wine unter Box86 in eine Windows-Ausnahme, danach hing das Programm
++ * in einer Endlosschleife (Ton lief weiter, Fenster blieb schwarz). */
++void terminate_now()
++{
++   begin_line();
++   put("std::terminate");
++   const std::type_info *type = abi::__cxa_current_exception_type();
++   if (type) {
++      put(" nach Ausnahme ");
++      put(type->name());
++   }
++   put(": Prozess wird beendet");
++   end_line();
++   _exit(134);
++}
++
++__attribute__((constructor)) void install_handlers()
 +{
 +   if (!std::get_new_handler())
 +      std::set_new_handler(new_handler_report);
++   std::set_terminate(terminate_now);
 +}
 +
 +} /* namespace */

@@ -149,8 +149,11 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    Übersicht des Adressraums je 16 MB und die Rücksprungadressen in die libGL. Die Offsets löst
    die Symboldatei `libGL-virgl-symbole.txt.xz` aus dem Release `armv7-rootfs` auf (erste Zeile:
    build-id, muss zur Diagnosezeile passen). `WINLATOR_OOM_TEST=n` lässt zum Ausprobieren die
-   n-te Anforderung scheitern. `start.txt` fasst gleiche Zeilen hintereinander zusammen und
-   übernimmt `[diag]`-Zeilen immer, auch jenseits der ersten 600 Zeilen.
+   n-te Anforderung scheitern. Eine nicht abgefangene C++-Ausnahme beendet den Prozess danach
+   sofort (`_exit(134)`): Über `abort()` machte Wine unter Box86 daraus eine Windows-Ausnahme,
+   und das Programm hing in einer Endlosschleife (Ton lief weiter, Fenster blieb schwarz).
+   `start.txt` fasst gleiche Zeilen hintereinander zusammen und übernimmt `[diag]`-Zeilen
+   immer, auch jenseits der ersten 600 Zeilen.
 
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`
