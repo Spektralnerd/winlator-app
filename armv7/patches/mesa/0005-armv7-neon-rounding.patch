@@ -1,0 +1,45 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
+index 511c578..50de300 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_arit.c
+@@ -1865,7 +1865,15 @@ arch_rounding_available(const struct lp_type type)
+    else if ((util_get_cpu_caps()->has_altivec &&
+             (type.width == 32 && type.length == 4)))
+       return TRUE;
+-   else if (util_get_cpu_caps()->has_neon)
++   /*
++    * Winlator armv7: 32-bit ARMv7 NEON has no vector rounding (VRINT came with
++    * ARMv8). LLVM then splits llvm.floor/nearbyint/... into one libm call per
++    * lane (glibc's nearbyintf even saves and restores FPSCR each time), i.e.
++    * about two calls per texel. The generic paths below are plain NEON code.
++    * GALLIVM_PERF=arch_rounding brings the intrinsics back.
++    */
++   else if (util_get_cpu_caps()->has_neon &&
++            (!DETECT_ARCH_ARM || (gallivm_perf & GALLIVM_PERF_ARCH_ROUNDING)))
+       return TRUE;
+    else if (util_get_cpu_caps()->family == CPU_S390X)
+       return TRUE;
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
+index 291e6d5..8756d7f 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_debug.h
+@@ -48,6 +48,7 @@
+ #define GALLIVM_PERF_NO_QUAD_LOD     (1 << 2)
+ #define GALLIVM_PERF_NO_OPT          (1 << 3)
+ #define GALLIVM_PERF_NO_AOS_SAMPLING (1 << 4)
++#define GALLIVM_PERF_ARCH_ROUNDING   (1 << 5)  /* Winlator armv7: LLVM-Rundung auf 32-Bit-ARM */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+index 33cb318..5921b5c 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+@@ -195,6 +195,7 @@ static const struct debug_named_value lp_bld_perf_flags[] = {
+    { "no_quad_lod", GALLIVM_PERF_NO_QUAD_LOD, "disable quad_lod optimization" },
+    { "no_aos_sampling", GALLIVM_PERF_NO_AOS_SAMPLING, "disable aos sampling optimization" },
+    { "nopt",   GALLIVM_PERF_NO_OPT, "disable optimization passes to speed up shader compilation" },
++   { "arch_rounding", GALLIVM_PERF_ARCH_ROUNDING, "use LLVM rounding intrinsics on 32-bit ARM (libm calls on ARMv7)" },
+    DEBUG_NAMED_VALUE_END
+ };
+ 

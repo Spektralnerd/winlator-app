@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..dd51229
+index 0000000..1508945
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,1657 @@
+@@ -0,0 +1,1803 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -823,6 +823,146 @@ index 0000000..dd51229
 +   closedir(dir);
 +}
 +
++/* CPU-Zeit je Thread seit der letzten Zeile: zeigt, wer bremst (Spiel samt Box86, WineD3D,
++ * die Mal-Threads von llvmpipe ...). Prozent eines Kerns; dazu die Auslastung des ganzen
++ * Systems aus /proc/stat (auch X-Server, wineserver, Ton), falls lesbar. */
++struct thread_cpu {
++   int tid;
++   unsigned long long ticks;
++   unsigned delta;
++   char comm[16];
++};
++const int MAX_THREADS = 96;
++thread_cpu prev_cpu[MAX_THREADS], cur_cpu[MAX_THREADS];
++int prev_cpu_count;
++unsigned long long prev_sys_busy, prev_sys_total;
++
++bool read_sys_cpu(unsigned long long *busy, unsigned long long *total)
++{
++   if (!read_small("/proc/stat") || strncmp(filebuf, "cpu ", 4))
++      return false;
++   const char *q = filebuf + 4;
++   unsigned long long v[8] = {0};
++   for (int i = 0; i < 8; i++) {
++      while (*q == ' ')
++         q++;
++      while (*q >= '0' && *q <= '9')
++         v[i] = v[i] * 10 + (unsigned long long)(*q++ - '0');
++   }
++   /* user nice system idle iowait irq softirq steal */
++   *total = v[0] + v[1] + v[2] + v[3] + v[4] + v[5] + v[6] + v[7];
++   *busy = *total - v[3] - v[4];
++   return true;
++}
++
++void put_thread_cpu(uint32_t window_ms)
++{
++   DIR *dir = opendir("/proc/self/task");
++   if (!dir)
++      return;
++   long hz = sysconf(_SC_CLK_TCK);
++   if (hz <= 0)
++      hz = 100;
++   unsigned long long window_ticks = (unsigned long long)window_ms * (unsigned long long)hz / 1000;
++   if (!window_ticks)
++      window_ticks = 1;
++   int count = 0;
++   unsigned long long sum = 0;
++   struct dirent *entry;
++   while ((entry = readdir(dir)) && count < MAX_THREADS) {
++      if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
++         continue;
++      int tid = atoi(entry->d_name);
++      if (!read_task_file(tid, "stat"))
++         continue;
++      char *open_paren = strchr(filebuf, '(');
++      char *close_paren = strrchr(filebuf, ')');
++      if (!open_paren || !close_paren || close_paren < open_paren)
++         continue;
++      thread_cpu &t = cur_cpu[count];
++      memset(&t, 0, sizeof(t));
++      size_t clen = (size_t)(close_paren - open_paren - 1);
++      if (clen > sizeof(t.comm) - 1)
++         clen = sizeof(t.comm) - 1;
++      memcpy(t.comm, open_paren + 1, clen);
++      /* utime (Feld 14) + stime (Feld 15) */
++      unsigned long long field[16] = {0};
++      const char *q = close_paren + 1;
++      for (int f = 3; f <= 15 && *q; f++) {
++         while (*q == ' ')
++            q++;
++         unsigned long long v = 0;
++         while (*q >= '0' && *q <= '9')
++            v = v * 10 + (unsigned long long)(*q++ - '0');
++         field[f] = v;
++         while (*q && *q != ' ')
++            q++;
++      }
++      t.tid = tid;
++      t.ticks = field[14] + field[15];
++      unsigned long long before = 0;
++      bool known = false;
++      for (int i = 0; i < prev_cpu_count; i++) {
++         if (prev_cpu[i].tid == tid) {
++            before = prev_cpu[i].ticks;
++            known = true;
++            break;
++         }
++      }
++      unsigned long long d = known && t.ticks >= before ? t.ticks - before : t.ticks;
++      if (d > window_ticks)
++         d = window_ticks;   /* neuer Thread: höchstens das Fenster */
++      t.delta = (unsigned)d;
++      sum += d;
++      count++;
++   }
++   closedir(dir);
++   bool first = prev_cpu_count == 0;
++   memcpy(prev_cpu, cur_cpu, sizeof(thread_cpu) * (size_t)count);
++   prev_cpu_count = count;
++   unsigned long long sys_busy = 0, sys_total = 0;
++   bool have_sys = read_sys_cpu(&sys_busy, &sys_total);
++   bool sys_ok = have_sys && prev_sys_total && sys_total > prev_sys_total;
++   unsigned long long dbusy = sys_ok ? sys_busy - prev_sys_busy : 0, dtotal = sys_ok ? sys_total - prev_sys_total : 0;
++   if (have_sys) {
++      prev_sys_busy = sys_busy;
++      prev_sys_total = sys_total;
++   }
++   if (first)
++      return;   /* erst ab der zweiten Messung gibt es Abstände */
++   /* die größten zuerst (einfaches Auswahlverfahren, wenige Einträge) */
++   begin_line();
++   put("CPU je Thread (Anteil eines Kerns): ");
++   for (int shown = 0; shown < 8; shown++) {
++      int best = -1;
++      for (int i = 0; i < count; i++)
++         if (cur_cpu[i].delta && (best < 0 || cur_cpu[i].delta > cur_cpu[best].delta))
++            best = i;
++      if (best < 0 || cur_cpu[best].delta * 100ull < window_ticks * 2ull)
++         break;   /* unter 2 % weglassen */
++      if (shown)
++         put(", ");
++      for (const char *c = cur_cpu[best].comm; *c; c++)
++         put_char(*c >= 32 && *c < 127 && *c != ',' ? *c : '?');
++      put(" ");
++      put_dec(cur_cpu[best].delta * 100ull / window_ticks);
++      put(" %");
++      cur_cpu[best].delta = 0;
++   }
++   put("; Prozess zusammen ");
++   put_dec(sum * 100ull / window_ticks);
++   put(" %");
++   long cpus = sysconf(_SC_NPROCESSORS_CONF);
++   if (sys_ok && dtotal && cpus > 0) {
++      put(", ganzes System ");
++      put_dec(dbusy * 100ull * (unsigned long long)cpus / dtotal);
++      put(" % von ");
++      put_dec((unsigned long long)cpus * 100ull);
++      put(" %");
++   }
++   end_line();
++}
++
 +void put_progress()
 +{
 +   put("bisher ");
@@ -853,6 +993,9 @@ index 0000000..dd51229
 +void *watchdog_main(void *)
 +{
 +   prctl(PR_SET_NAME, "winlator-diag", 0, 0, 0);
++   pthread_mutex_lock(&out_mutex);
++   put_thread_cpu(1000);   /* Ausgangswerte merken */
++   pthread_mutex_unlock(&out_mutex);
 +   uint32_t started = now_ms();
 +   uint32_t window_start = started, window_frames = frames.load(), interval = 30000;
 +   uint32_t window_compiles = compiles.load();
@@ -913,6 +1056,9 @@ index 0000000..dd51229
 +            end_line();
 +            pthread_mutex_unlock(&out_mutex);
 +         }
++         pthread_mutex_lock(&out_mutex);
++         put_thread_cpu(t - window_start);
++         pthread_mutex_unlock(&out_mutex);
 +         window_start = t;
 +         window_frames = f;
 +         if (t - started > 300000)

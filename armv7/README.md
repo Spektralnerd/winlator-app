@@ -23,10 +23,19 @@ In `armv7` gilt:
   VirGL-Bibliothek; ohne Anforderungen an die GPU). llvmpipe übersetzt die Shader mit LLVM 15
   (aus Debian armhf, statisch gelinkt) und rastert mit `LP_NUM_THREADS` Threads (die App setzt
   die Zahl der Kerne). `GALLIUM_DRIVER=softpipe` in den Container-Umgebungsvariablen nimmt den
-  einfachen Rasterer ohne JIT. Die App setzt für „Software“ `GALLIVM_PERF=no_aos_sampling`: Der
-  8-Bit-Pfad (AoS) von llvmpipe liefert auf 32-Bit-ARM mit LINEAR gefilterte Texturen schwarz
-  (unter qemu nachgestellt: `GL_NEAREST` stimmt, `GL_LINEAR` gibt (0,0,0,255)); der
-  Gleitkomma-Pfad rechnet richtig. Ein eigener Wert in den Umgebungsvariablen hat Vorrang. Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
+  einfachen Rasterer ohne JIT. `GALLIVM_PERF` setzt die App nicht (mehr): Früher stand dort
+  `no_aos_sampling`, weil der 8-Bit-Texturpfad (AoS) mit `GL_LINEAR` schwarze Texel lieferte.
+  Das kam nur unter qemu vor: LLVM liest für die Zielmerkmale `/proc/cpuinfo`, unter qemu-user
+  die des x86-PCs, erzeugt dann Code ohne Gleitkommaeinheit und ruft libm-Funktionen mit der
+  falschen Aufrufkonvention auf. Mit der cpuinfo eines Cortex-A9 (`unshare --mount` und
+  `mount --bind`) stimmt der AoS-Pfad. Zum Vergleichen lässt sich `GALLIVM_PERF` im Container
+  setzen (`no_aos_sampling`, `brilinear`, `rho_approx`, durch Kommas getrennt).
+  `patches/mesa/0005-armv7-neon-rounding.patch`: ARMv7-NEON kann Vektoren nicht runden (VRINT
+  gibt es erst ab ARMv8); LLVM machte aus `llvm.floor`/`llvm.nearbyint` je Lane einen
+  libm-Aufruf, also etwa zwei je Texel (`nearbyintf` sichert dabei jedes Mal FPSCR). Auf
+  32-Bit-ARM nimmt gallivm jetzt seine eigenen Rundungen aus reinen Vektorbefehlen;
+  `GALLIVM_PERF=arch_rounding` stellt das alte Verhalten her.
+  Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
   wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt das zurück (mit `virpipe` bleibt es
   weiterhin bei VirGL, ohne Ausweichen).
   Ohne den Patch scheiterte jeder OpenGL-Kontext („couldn't initialize OpenGL“), und Programme,
@@ -186,7 +195,10 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
 
    Dazu schreibt die libGL den Fortschritt von llvmpipe mit (`patches/mesa/0003-diag-progress.patch`):
    die ersten 40 übersetzten Shader mit Dauer (danach nur langsame und jeden hundertsten), das
-   erste Bild und alle 30 s die Bilder pro Sekunde (nach 5 Minuten alle 5 Minuten). Ein
+   erste Bild und alle 30 s die Bilder pro Sekunde (nach 5 Minuten alle 5 Minuten), jeweils mit
+   einer Zeile `CPU je Thread`: die Threads mit dem größten Anteil eines Kerns seit der letzten
+   Zeile (z. B. das Spiel samt Box86, `llvmpipe-0` … `llvmpipe-3`), der Prozess zusammen und,
+   falls `/proc/stat` lesbar ist, das ganze System (auch X-Server, wineserver, Ton). Ein
    Wachhund-Thread meldet Stillstände – eine Übersetzung dauert über 15 s, seit 15 s kein neues
    Bild, 30 s nach dem ersten Shader noch kein Bild – und gibt dann für jeden Thread Zustand,
    Wartestelle im Kernel, CPU-Zeit, Programmzähler und die Rücksprünge in die libGL aus

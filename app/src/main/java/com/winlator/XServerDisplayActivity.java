@@ -831,10 +831,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 // Software-Rendering auf der CPU (32-Bit-Build: in der VirGL-Mesa-Bibliothek enthalten).
                 // Ohne GALLIUM_DRIVER nimmt Mesa den besten eingebauten Software-Treiber (llvmpipe, sonst softpipe).
                 if (!envVars.has("LP_NUM_THREADS")) envVars.put("LP_NUM_THREADS", Runtime.getRuntime().availableProcessors());
-                // llvmpipe auf 32-Bit-ARM (LLVM 15): der 8-Bit-Pfad (AoS) für gefilterte Texturen liefert
-                // schwarze Texel; der Gleitkomma-Pfad stimmt. Eigener Wert in den Umgebungsvariablen
-                // des Containers hat Vorrang (z. B. GALLIVM_PERF=none, um den AoS-Pfad zu testen).
-                if (Arch.X86_ONLY && !envVars.has("GALLIVM_PERF")) envVars.put("GALLIVM_PERF", "no_aos_sampling");
+                // GALLIVM_PERF bleibt ohne Vorgabe: Der 8-Bit-Texturpfad (AoS) von llvmpipe stimmt auf
+                // echter Hardware; die schwarzen Texel gab es nur unter qemu (LLVM las dort die
+                // /proc/cpuinfo des PCs und erzeugte Code ohne Gleitkommaeinheit). Zum Vergleichen
+                // z. B. GALLIVM_PERF=no_aos_sampling oder brilinear,rho_approx im Container setzen.
 
                 if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
                 break;
