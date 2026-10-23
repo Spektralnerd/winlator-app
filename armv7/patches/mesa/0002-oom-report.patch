@@ -1,0 +1,720 @@
+diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/meson.build b/virgl-23.1.9/src/gallium/targets/libgl-xlib/meson.build
+index 77e4a6a..ca68f4a 100755
+--- a/virgl-23.1.9/src/gallium/targets/libgl-xlib/meson.build
++++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/meson.build
+@@ -39,7 +39,7 @@ endif
+ 
+ libgl = shared_library(
+   'GL',
+-  files('xlib.c'),
++  files('xlib.c', 'winlator_oom_report.cpp'),
+   include_directories : [
+     inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium, inc_gallium_aux, inc_gallium_winsys, inc_gallium_drivers,
+     include_directories('../../frontends/glx/xlib'),
+diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
+new file mode 100644
+index 0000000..66da9cd
+--- /dev/null
++++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
+@@ -0,0 +1,701 @@
++/*
++ * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
++ *
++ * llvmpipe übersetzt Shader mit LLVM. LLVM fordert Speicher über operator new an und ist ohne
++ * Ausnahmebehandlung gebaut: Scheitert eine Anforderung, endet das Programm nur mit
++ * "terminate called after throwing an instance of 'std::bad_alloc'", ohne Hinweis auf die
++ * Ursache. Diese Datei ersetzt operator new für den Code in der libGL (die Symbole bleiben
++ * dank Versionsskript lokal). Scheitert eine Anforderung, stehen vorher im Protokoll:
++ *   - die angeforderte Größe und errno
++ *   - Speicherstand des Prozesses und des Systems, Grenzen (overcommit, max_map_count, rlimit)
++ *   - eine Übersicht des Adressraums (Lücken, größte Bereiche, Belegung je 16 MB)
++ *   - Rücksprungadressen in die libGL (Aufrufkette, auflösbar mit der Symboldatei aus dem Bau)
++ * Alle Zeilen beginnen mit "[diag]"; Winlator übernimmt sie immer ins Startprotokoll.
++ * Danach geht es weiter wie bisher (std::bad_alloc). Im Normalfall kostet das nichts.
++ * WINLATOR_OOM_TEST=n lässt zum Ausprobieren die n-te Anforderung scheitern.
++ * Kommt ohne malloc aus (es ist ja gerade keiner mehr zu haben).
++ */
++#include <atomic>
++#include <cerrno>
++#include <cstddef>
++#include <cstdint>
++#include <cstdlib>
++#include <cstring>
++#include <new>
++
++#include <elf.h>
++#include <fcntl.h>
++#include <link.h>
++#include <sys/prctl.h>
++#include <sys/resource.h>
++#include <sys/syscall.h>
++#include <unistd.h>
++
++namespace {
++
++const char hexdigits[] = "0123456789abcdef";
++
++/* ---- Ausgabe zeilenweise auf stderr, ohne malloc ---- */
++
++char line[600];
++size_t line_len;
++
++void put_char(char c)
++{
++   if (line_len < sizeof(line) - 2)
++      line[line_len++] = c;
++}
++
++void put(const char *s)
++{
++   while (*s)
++      put_char(*s++);
++}
++
++void put_n(const char *s, size_t n)
++{
++   for (size_t i = 0; i < n && s[i]; i++)
++      put_char(s[i]);
++}
++
++void put_dec(unsigned long long v)
++{
++   char tmp[24];
++   int i = 0;
++   do {
++      tmp[i++] = (char)('0' + v % 10);
++      v /= 10;
++   } while (v);
++   while (i)
++      put_char(tmp[--i]);
++}
++
++void put_hex(unsigned long long v, int digits)
++{
++   for (int i = digits - 1; i >= 0; i--)
++      put_char(hexdigits[(v >> (i * 4)) & 15]);
++}
++
++/* Größe lesbar: Byte, KB oder MB */
++void put_size(unsigned long long bytes)
++{
++   if (bytes < 10 * 1024) {
++      put_dec(bytes);
++      put(" B");
++   } else if (bytes < 10ull * 1024 * 1024) {
++      put_dec(bytes >> 10);
++      put(" KB");
++   } else {
++      put_dec(bytes >> 20);
++      put(" MB");
++   }
++}
++
++void begin_line()
++{
++   line_len = 0;
++   put("[diag] ");
++}
++
++void end_line()
++{
++   line[line_len++] = '\n';
++   size_t off = 0;
++   while (off < line_len) {
++      ssize_t r = write(2, line + off, line_len - off);
++      if (r < 0 && errno == EINTR)
++         continue;
++      if (r <= 0)
++         break;
++      off += (size_t)r;
++   }
++   line_len = 0;
++}
++
++/* ---- kleine Dateien aus /proc ---- */
++
++char filebuf[4096];
++
++size_t read_small(const char *path)
++{
++   filebuf[0] = 0;
++   int fd = open(path, O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return 0;
++   size_t n = 0;
++   while (n < sizeof(filebuf) - 1) {
++      ssize_t r = read(fd, filebuf + n, sizeof(filebuf) - 1 - n);
++      if (r < 0 && errno == EINTR)
++         continue;
++      if (r <= 0)
++         break;
++      n += (size_t)r;
++   }
++   close(fd);
++   filebuf[n] = 0;
++   return n;
++}
++
++/* Zahl hinter "Schlüssel:" in filebuf (z. B. "VmSize:  123 kB"), -1 wenn nicht da */
++long long find_value(const char *key)
++{
++   size_t klen = strlen(key);
++   const char *p = filebuf;
++   while (*p) {
++      if (!strncmp(p, key, klen) && p[klen] == ':') {
++         const char *q = p + klen + 1;
++         while (*q == ' ' || *q == '\t')
++            q++;
++         long long v = 0;
++         while (*q >= '0' && *q <= '9')
++            v = v * 10 + (*q++ - '0');
++         return v;
++      }
++      const char *nl = strchr(p, '\n');
++      if (!nl)
++         break;
++      p = nl + 1;
++   }
++   return -1;
++}
++
++/* "Name 123 MB" für einen kB-Wert aus filebuf */
++void put_kb_value(const char *label, const char *key)
++{
++   long long v = find_value(key);
++   if (v < 0)
++      return;
++   put(" ");
++   put(label);
++   put(" ");
++   put_size((unsigned long long)v * 1024);
++}
++
++/* erste Zahl einer kleinen Datei (z. B. /proc/sys/vm/overcommit_memory) */
++void put_file_number(const char *label, const char *path)
++{
++   put(" ");
++   put(label);
++   put(" ");
++   if (!read_small(path)) {
++      put("?");
++      return;
++   }
++   const char *q = filebuf;
++   while (*q >= '0' && *q <= '9')
++      put_char(*q++);
++}
++
++void put_rlimit(const char *label, int resource)
++{
++   struct rlimit rl;
++   put(" ");
++   put(label);
++   put(" ");
++   if (getrlimit(resource, &rl))
++      put("?");
++   else if (rl.rlim_cur == RLIM_INFINITY)
++      put("unbegrenzt");
++   else
++      put_size(rl.rlim_cur);
++}
++
++/* ---- die libGL selbst: Lage des Codes und build-id (beim Laden ermittelt) ---- */
++
++uintptr_t gl_base, gl_text_lo, gl_text_hi;
++char gl_build_id[41];
++
++int find_self_cb(struct dl_phdr_info *info, size_t, void *data)
++{
++   uintptr_t addr = (uintptr_t)data;
++   for (int i = 0; i < info->dlpi_phnum; i++) {
++      const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
++      if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X))
++         continue;
++      uintptr_t lo = info->dlpi_addr + ph->p_vaddr, hi = lo + ph->p_memsz;
++      if (addr < lo || addr >= hi)
++         continue;
++      gl_base = info->dlpi_addr;
++      gl_text_lo = lo;
++      gl_text_hi = hi;
++      for (int j = 0; j < info->dlpi_phnum; j++) {
++         const ElfW(Phdr) *nh = &info->dlpi_phdr[j];
++         if (nh->p_type != PT_NOTE)
++            continue;
++         const char *p = (const char *)(info->dlpi_addr + nh->p_vaddr);
++         const char *end = p + nh->p_memsz;
++         while (p + sizeof(ElfW(Nhdr)) <= end) {
++            const ElfW(Nhdr) *n = (const ElfW(Nhdr) *)p;
++            const char *name = p + sizeof(*n);
++            const unsigned char *desc = (const unsigned char *)(name + ((n->n_namesz + 3) & ~3u));
++            if (n->n_type == NT_GNU_BUILD_ID && n->n_namesz == 4 && !memcmp(name, "GNU", 4)) {
++               unsigned len = n->n_descsz > 20 ? 20 : n->n_descsz;
++               for (unsigned k = 0; k < len; k++) {
++                  gl_build_id[2 * k] = hexdigits[desc[k] >> 4];
++                  gl_build_id[2 * k + 1] = hexdigits[desc[k] & 15];
++               }
++               gl_build_id[2 * len] = 0;
++            }
++            p = (const char *)desc + ((n->n_descsz + 3) & ~3u);
++         }
++      }
++      return 1;
++   }
++   return 0;
++}
++
++__attribute__((constructor)) void find_self()
++{
++   dl_iterate_phdr(find_self_cb, (void *)&find_self);
++}
++
++/* ---- Adressraum aus /proc/self/maps ---- */
++
++const unsigned SLICE_SHIFT = 24;               /* 16 MB je Zeichen */
++const unsigned SLICES = 256;                   /* 4 GB */
++uint32_t slice_used[SLICES], slice_none[SLICES];
++
++struct range {
++   uintptr_t start, end;
++   char perms[5];
++   char name[40];
++};
++const int TOP = 8;
++range biggest[TOP];
++range gaps[TOP];
++unsigned long long total_mapped, total_none;
++unsigned map_count;
++uintptr_t prev_end;
++uintptr_t stack_lo, stack_hi, cur_sp;
++
++void insert_top(range *list, const range &r)
++{
++   uintptr_t size = r.end - r.start;
++   for (int i = 0; i < TOP; i++) {
++      if (size > list[i].end - list[i].start) {
++         for (int j = TOP - 1; j > i; j--)
++            list[j] = list[j - 1];
++         list[i] = r;
++         return;
++      }
++   }
++}
++
++uintptr_t parse_hex(const char *&p)
++{
++   uintptr_t v = 0;
++   for (;;) {
++      char c = *p;
++      int d;
++      if (c >= '0' && c <= '9')
++         d = c - '0';
++      else if (c >= 'a' && c <= 'f')
++         d = c - 'a' + 10;
++      else
++         break;
++      v = (v << 4) | (uintptr_t)d;
++      p++;
++   }
++   return v;
++}
++
++void maps_line(const char *p, const char *end)
++{
++   range r;
++   memset(&r, 0, sizeof(r));
++   r.start = parse_hex(p);
++   if (*p != '-')
++      return;
++   p++;
++   r.end = parse_hex(p);
++   if (*p != ' ' || r.end <= r.start)
++      return;
++   p++;
++   for (int i = 0; i < 4 && p < end; i++)
++      r.perms[i] = *p++;
++   /* Offset, Gerät, Inode überspringen, dann der Name */
++   for (int field = 0; field < 3; field++) {
++      while (p < end && *p == ' ')
++         p++;
++      while (p < end && *p != ' ')
++         p++;
++   }
++   while (p < end && *p == ' ')
++      p++;
++   const char *name = p;
++   const char *slash = nullptr;
++   for (const char *q = p; q < end; q++)
++      if (*q == '/')
++         slash = q;
++   if (slash && name[0] == '/')
++      name = slash + 1;
++   size_t nlen = (size_t)(end - name);
++   if (nlen > sizeof(r.name) - 1)
++      nlen = sizeof(r.name) - 1;
++   memcpy(r.name, name, nlen);
++
++   map_count++;
++   uintptr_t size = r.end - r.start;
++   bool none = !strncmp(r.perms, "---", 3);
++   total_mapped += size;
++   if (none)
++      total_none += size;
++   for (uintptr_t a = r.start; a < r.end;) {
++      unsigned s = (unsigned)(a >> SLICE_SHIFT);
++      uintptr_t slice_end = ((uintptr_t)(s + 1)) << SLICE_SHIFT;
++      uintptr_t e = (slice_end == 0 || slice_end > r.end) ? r.end : slice_end;
++      slice_used[s] += (uint32_t)(e - a);
++      if (none)
++         slice_none[s] += (uint32_t)(e - a);
++      if (slice_end == 0)
++         break;
++      a = e;
++   }
++   if (r.start > prev_end) {
++      range g;
++      memset(&g, 0, sizeof(g));
++      g.start = prev_end;
++      g.end = r.start;
++      insert_top(gaps, g);
++   }
++   prev_end = r.end;
++   insert_top(biggest, r);
++   if (cur_sp >= r.start && cur_sp < r.end) {
++      stack_lo = r.start;
++      stack_hi = r.end;
++   }
++}
++
++char mapsbuf[16384];
++
++void scan_maps()
++{
++   int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return;
++   size_t have = 0;
++   for (;;) {
++      ssize_t r = read(fd, mapsbuf + have, sizeof(mapsbuf) - have);
++      if (r < 0 && errno == EINTR)
++         continue;
++      if (r <= 0)
++         break;
++      have += (size_t)r;
++      size_t pos = 0;
++      for (;;) {
++         const char *nl = (const char *)memchr(mapsbuf + pos, '\n', have - pos);
++         if (!nl)
++            break;
++         maps_line(mapsbuf + pos, nl);
++         pos = (size_t)(nl - mapsbuf) + 1;
++      }
++      memmove(mapsbuf, mapsbuf + pos, have - pos);
++      have -= pos;
++      if (have == sizeof(mapsbuf))
++         have = 0; /* überlange Zeile verwerfen */
++   }
++   close(fd);
++}
++
++void put_range(const range &r, bool with_name)
++{
++   put(" ");
++   put_hex(r.start, 8);
++   put("+");
++   put_size(r.end - r.start);
++   if (with_name) {
++      put(" ");
++      put_n(r.perms, 4);
++      if (r.name[0]) {
++         put(" ");
++         put(r.name);
++      }
++   }
++}
++
++/* ---- Rücksprungadressen in die libGL auf dem Stapel ---- */
++
++/* steht vor addr ein Aufruf (BL/BLX)? Thumb-Adressen haben Bit 0 gesetzt */
++bool after_call(uintptr_t addr)
++{
++   if (addr & 1) {
++      uintptr_t pc = addr - 1;
++      if (pc < gl_text_lo + 4 || pc > gl_text_hi)
++         return false;
++      uint16_t hw1 = *(const uint16_t *)(pc - 4), hw2 = *(const uint16_t *)(pc - 2);
++      if ((hw1 & 0xf800) == 0xf000 && (hw2 & 0xc000) == 0xc000)
++         return true; /* BL/BLX mit Sprungziel (32 Bit) */
++      return (hw2 & 0xff87) == 0x4780; /* BLX Rm (16 Bit) */
++   }
++   if (addr & 3 || addr < gl_text_lo + 4 || addr > gl_text_hi)
++      return false;
++   uint32_t insn = *(const uint32_t *)(addr - 4);
++   return (insn & 0x0f000000) == 0x0b000000 || (insn & 0xfe000000) == 0xfa000000 ||
++          (insn & 0x0ffffff0) == 0x012fff30;
++}
++
++void stack_scan(uintptr_t caller)
++{
++   begin_line();
++   put("Aufrufkette (libGL+Offset, neueste zuerst):");
++   if (!gl_text_hi) {
++      put(" libGL nicht gefunden");
++      end_line();
++      return;
++   }
++   /* jede Adresse nur einmal (auf dem Stapel liegen oft alte Kopien) */
++   static uintptr_t seen[64];
++   int shown = 0, in_line = 1;
++   if (caller >= gl_text_lo && caller < gl_text_hi) {
++      put(" ");
++      put_hex(caller - gl_base, 7);
++      seen[shown++] = caller;
++      in_line++;
++   }
++   uintptr_t hi = stack_hi > cur_sp ? stack_hi : cur_sp + 16384;
++   if (hi - cur_sp > 1024 * 1024)
++      hi = cur_sp + 1024 * 1024;
++   for (uintptr_t a = cur_sp & ~(uintptr_t)3; a + 4 <= hi && shown < 64; a += 4) {
++      uintptr_t w = *(const uintptr_t *)a;
++      if (w < gl_text_lo || w >= gl_text_hi || !after_call(w))
++         continue;
++      bool dup = false;
++      for (int i = 0; i < shown && !dup; i++)
++         dup = seen[i] == w;
++      if (dup)
++         continue;
++      seen[shown] = w;
++      if (in_line == 10) {
++         end_line();
++         begin_line();
++         put("  ");
++         in_line = 0;
++      }
++      put(" ");
++      put_hex(w - gl_base, 7);
++      shown++;
++      in_line++;
++   }
++   if (!shown)
++      put(" keine gefunden");
++   end_line();
++}
++
++std::atomic<int> reported{0};
++
++/* what: Art des Fehlschlags; size 0 = unbekannt */
++__attribute__((noinline)) void report(const char *what, std::size_t size, int err, uintptr_t caller)
++{
++   if (reported.exchange(1))
++      return;
++   int dummy;
++   cur_sp = (uintptr_t)&dummy;
++
++   char tname[17];
++   memset(tname, 0, sizeof(tname));
++   prctl(PR_GET_NAME, tname, 0, 0, 0);
++
++   begin_line();
++   put("libGL: ");
++   put(what);
++   if (size) {
++      put(" über ");
++      put_size(size);
++      put(" (");
++      put_dec(size);
++      put(" Byte)");
++   }
++   put(" gescheitert, errno ");
++   put_dec((unsigned)err);
++   put(", Thread ");
++   put_dec((unsigned long long)syscall(SYS_gettid));
++   put(" \"");
++   put(tname);
++   put("\"");
++   end_line();
++
++   begin_line();
++   put("libGL bei ");
++   put_hex(gl_base, 8);
++   put(", build-id ");
++   put(gl_build_id[0] ? gl_build_id : "?");
++   end_line();
++
++   begin_line();
++   put("Prozess:");
++   if (read_small("/proc/self/status")) {
++      put_kb_value("VmPeak", "VmPeak");
++      put_kb_value("VmSize", "VmSize");
++      put_kb_value("VmRSS", "VmRSS");
++      put_kb_value("VmData", "VmData");
++      put_kb_value("VmLib", "VmLib");
++      put_kb_value("VmPTE", "VmPTE");
++      long long threads = find_value("Threads");
++      if (threads >= 0) {
++         put(" Threads ");
++         put_dec((unsigned long long)threads);
++      }
++   }
++   end_line();
++
++   begin_line();
++   put("System:");
++   if (read_small("/proc/meminfo")) {
++      put_kb_value("MemTotal", "MemTotal");
++      put_kb_value("MemFree", "MemFree");
++      put_kb_value("Cached", "Cached");
++      put_kb_value("SwapFree", "SwapFree");
++      put_kb_value("CommitLimit", "CommitLimit");
++      put_kb_value("Committed_AS", "Committed_AS");
++   }
++   end_line();
++
++   begin_line();
++   put("Grenzen:");
++   put_file_number("overcommit_memory", "/proc/sys/vm/overcommit_memory");
++   put_file_number("overcommit_ratio", "/proc/sys/vm/overcommit_ratio");
++   put_file_number("max_map_count", "/proc/sys/vm/max_map_count");
++   put_file_number("mmap_min_addr", "/proc/sys/vm/mmap_min_addr");
++   put_file_number("legacy_va_layout", "/proc/sys/vm/legacy_va_layout");
++   put_rlimit("RLIMIT_AS", RLIMIT_AS);
++   put_rlimit("RLIMIT_DATA", RLIMIT_DATA);
++   put_rlimit("RLIMIT_STACK", RLIMIT_STACK);
++   end_line();
++
++   scan_maps();
++   begin_line();
++   put("Adressraum: ");
++   put_dec(map_count);
++   put(" Bereiche, belegt ");
++   put_size(total_mapped);
++   put(", davon ohne Zugriff (reserviert) ");
++   put_size(total_none);
++   put(", Stapel dieses Threads");
++   if (stack_hi) {
++      put(" ");
++      put_hex(stack_lo, 8);
++      put("-");
++      put_hex(stack_hi, 8);
++   } else {
++      put(" ?");
++   }
++   end_line();
++
++   begin_line();
++   put("Größte Lücken:");
++   for (int i = 0; i < TOP && gaps[i].end; i++)
++      put_range(gaps[i], false);
++   end_line();
++
++   for (int half = 0; half < 2; half++) {
++      begin_line();
++      put(half ? "  " : "Größte Bereiche:");
++      for (int i = half * TOP / 2; i < (half + 1) * TOP / 2 && biggest[i].end; i++)
++         put_range(biggest[i], true);
++      end_line();
++   }
++
++   begin_line();
++   put("Belegung je 16 MB (. frei  , kaum  + teils  # voll  - teils reserviert  = voll reserviert):");
++   end_line();
++   for (unsigned row = 0; row < SLICES / 64; row++) {
++      begin_line();
++      put_hex((unsigned long long)row << (SLICE_SHIFT + 6), 8);
++      put(" ");
++      for (unsigned s = row * 64; s < (row + 1) * 64; s++) {
++         uint32_t used = slice_used[s], none = slice_none[s];
++         const uint32_t full = (1u << SLICE_SHIFT) - (1u << 20);
++         char c;
++         if (!used)
++            c = '.';
++         else if (used < (1u << 20))
++            c = ',';
++         else if (none * 2 >= used)
++            c = used >= full ? '=' : '-';
++         else
++            c = used >= full ? '#' : '+';
++         put_char(c);
++      }
++      end_line();
++   }
++
++   stack_scan(caller);
++}
++
++/* Zum Prüfen der Diagnose: WINLATOR_OOM_TEST=n lässt die n-te Anforderung scheitern */
++std::atomic<long> test_countdown{0};
++
++__attribute__((constructor)) void read_test_setting()
++{
++   const char *v = getenv("WINLATOR_OOM_TEST");
++   if (v)
++      test_countdown.store(strtol(v, nullptr, 10), std::memory_order_relaxed);
++}
++
++void *alloc_or_report(std::size_t size, uintptr_t caller)
++{
++   if (__builtin_expect(test_countdown.load(std::memory_order_relaxed) > 0, 0) &&
++       test_countdown.fetch_sub(1) == 1) {
++      report("Speicheranforderung (operator new, Test über WINLATOR_OOM_TEST)", size, ENOMEM, caller);
++      errno = ENOMEM;
++      return nullptr;
++   }
++   void *p = std::malloc(size ? size : 1);
++   if (__builtin_expect(!p, 0))
++      report("Speicheranforderung (operator new)", size, errno, caller);
++   return p;
++}
++
++/* Anforderungen, die in libstdc++ selbst scheitern (z. B. std::string), kommen hier an:
++ * melden, Handler abmelden, libstdc++ wirft dann wie gewohnt std::bad_alloc */
++void new_handler_report()
++{
++   std::set_new_handler(nullptr);
++   report("Speicheranforderung in libstdc++", 0, errno, (uintptr_t)__builtin_return_address(0));
++}
++
++__attribute__((constructor)) void install_new_handler()
++{
++   if (!std::get_new_handler())
++      std::set_new_handler(new_handler_report);
++}
++
++} /* namespace */
++
++void *operator new(std::size_t size)
++{
++   void *p = alloc_or_report(size, (uintptr_t)__builtin_return_address(0));
++   if (!p)
++      throw std::bad_alloc();
++   return p;
++}
++
++void *operator new[](std::size_t size)
++{
++   void *p = alloc_or_report(size, (uintptr_t)__builtin_return_address(0));
++   if (!p)
++      throw std::bad_alloc();
++   return p;
++}
++
++void *operator new(std::size_t size, const std::nothrow_t &) noexcept
++{
++   return alloc_or_report(size, (uintptr_t)__builtin_return_address(0));
++}
++
++void *operator new[](std::size_t size, const std::nothrow_t &) noexcept
++{
++   return alloc_or_report(size, (uintptr_t)__builtin_return_address(0));
++}
++
++/* std::allocator<T>::allocate(n) mit n über max_size() (mehr als 2 GB) wirft über diese
++ * Funktion, ohne operator new aufzurufen: ein unsinnig großer Wert statt Speichermangel */
++namespace std {
++[[noreturn]] void __throw_bad_alloc();
++void __throw_bad_alloc()
++{
++   report("Anforderung über std::allocator (Anzahl größer als max_size)", 0, 0,
++          (uintptr_t)__builtin_return_address(0));
++   throw std::bad_alloc();
++}
++} /* namespace std */

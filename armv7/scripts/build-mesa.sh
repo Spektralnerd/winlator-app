@@ -134,4 +134,18 @@ for v in $VARIANTS; do
         grep -q "^#define LLVM_AVAILABLE\|-DLLVM_AVAILABLE" "$B/build.ninja" \
             || { echo "Mesa wurde ohne LLVM gebaut (kein llvmpipe)"; exit 1; }
     fi
+    # Symboldatei für die Aufrufketten der Speicherdiagnose (patches/mesa/0002-oom-report.patch):
+    # die Bibliothek im Bauordner ist noch nicht gestrippt. Kommt nicht ins APK, sondern ins
+    # Release armv7-rootfs. Erste Zeile: build-id, damit sie zur Diagnose passt.
+    UNSTRIPPED="$(find "$B/src/gallium/targets" -name 'libGL.so.1.*' -type f | head -1)"
+    if [ "$v" = virgl ] && [ -n "$UNSTRIPPED" ]; then
+        { echo "# libGL $DIR build-id $(readelf -n "$UNSTRIPPED" | sed -n 's/.*Build ID: //p')"
+          "$TARGET-nm" -n -C --defined-only "$UNSTRIPPED" | grep -E '^[0-9a-f]+ [tTwW] ' || true
+        } | xz -6 > "$OUT_DIR/libGL-$v-symbole.txt.xz"
+        ls -la "$OUT_DIR/libGL-$v-symbole.txt.xz"
+        # alle C++-Anforderungen der libGL laufen über die Diagnose (kein operator new von außen)
+        if readelf --dyn-syms -W "$DEST/usr/lib/libGL.so.1.7.0" | grep -E ' UND (_Znwj|_Znaj)@'; then
+            echo "operator new wird nicht von der Diagnose ersetzt"; exit 1
+        fi
+    fi
 done

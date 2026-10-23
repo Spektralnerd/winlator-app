@@ -48,7 +48,10 @@ public final class StartLog {
     private static File logDir;
     private static File startFile;
     private static File markerFile;
+    private static final String DIAG_PREFIX = "[diag]";
     private static int guestLines = 0;
+    private static String lastLine = null;
+    private static int repeats = 0;
     private static boolean guestDone = false;
     private static volatile long lastGuestLineTime = 0;
     private static boolean crashHandlerInstalled = false;
@@ -161,6 +164,8 @@ public final class StartLog {
         if (!ENABLED) return;
         startFile = new File(getDir(context), "start.txt");
         guestLines = 0;
+        lastLine = null;
+        repeats = 0;
         guestDone = false;
         tail.clear();
         write(startFile, now() + " " + title + "\n" + now() + " " + deviceInfo() + "\n" + systemInfo(context) + "\n", false);
@@ -176,6 +181,23 @@ public final class StartLog {
     private static synchronized void guestLine(String line) {
         if (startFile == null) return;
         lastGuestLineTime = SystemClock.uptimeMillis();
+        // gleiche Zeilen hintereinander (z. B. eine Fehlermeldung in einer Schleife) nur einmal,
+        // sonst verdrängen sie alles Wichtige aus Anfang und Ende
+        if (line.equals(lastLine)) {
+            repeats++;
+            return;
+        }
+        flushRepeats();
+        lastLine = line;
+        // Diagnosezeilen (z. B. der libGL bei Speichermangel) immer sofort übernehmen
+        if (line.startsWith(DIAG_PREFIX)) {
+            write(startFile, "| " + line + "\n", true);
+            return;
+        }
+        guestOutput(line);
+    }
+
+    private static void guestOutput(String line) {
         if (guestLines < HEAD_LINES || guestDone) {
             write(startFile, "| " + line + "\n", true);
         }
@@ -184,6 +206,12 @@ public final class StartLog {
             if (tail.size() > TAIL_LINES) tail.removeFirst();
         }
         guestLines++;
+    }
+
+    private static void flushRepeats() {
+        if (repeats == 0) return;
+        guestOutput("… vorige Zeile noch " + repeats + "× wiederholt");
+        repeats = 0;
     }
 
     private static String describeStatus(int status) {
@@ -233,7 +261,9 @@ public final class StartLog {
 
     /** Die zurückgehaltenen letzten Ausgabezeilen ins Startprotokoll schreiben */
     private static synchronized void flushTail() {
-        if (startFile == null || tail.isEmpty()) return;
+        if (startFile == null) return;
+        flushRepeats();
+        if (tail.isEmpty()) return;
         int skipped = guestLines - HEAD_LINES - tail.size();
         StringBuilder sb = new StringBuilder();
         if (skipped > 0) sb.append("| … ").append(skipped).append(" Zeilen ausgelassen …\n");

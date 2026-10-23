@@ -142,6 +142,16 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    selbst die Register und die Aufrufkette aus (Rücksprungadressen auf dem Stapel als
    `modul+offset`), die Zeilen beginnen mit `wine:` und stehen in `start.txt`.
 
+   Scheitert in der libGL (llvmpipe/LLVM) eine Speicheranforderung, endete das bisher nur mit
+   „terminate called after throwing an instance of 'std::bad_alloc'“. Die libGL ersetzt darum
+   `operator new` (`patches/mesa/0002-oom-report.patch`) und schreibt vorher Zeilen `[diag] …`
+   nach `start.txt`: Größe, Speicherstand, Grenzen (overcommit, max_map_count, rlimit), eine
+   Übersicht des Adressraums je 16 MB und die Rücksprungadressen in die libGL. Die Offsets löst
+   die Symboldatei `libGL-virgl-symbole.txt.xz` aus dem Release `armv7-rootfs` auf (erste Zeile:
+   build-id, muss zur Diagnosezeile passen). `WINLATOR_OOM_TEST=n` lässt zum Ausprobieren die
+   n-te Anforderung scheitern. `start.txt` fasst gleiche Zeilen hintereinander zusammen und
+   übernimmt `[diag]`-Zeilen immer, auch jenseits der ersten 600 Zeilen.
+
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`
 nur als Ressourcen-ID und bekommt dann gar keinen Hintergrund; das Fenster gilt trotzdem als

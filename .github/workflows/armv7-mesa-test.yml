@@ -45,6 +45,7 @@ jobs:
           if [ -f armv7/work/stage/mesa-virgl/usr/lib/libGL.so.1.7.0 ]; then
             tar -C armv7/work/stage/mesa-virgl -czf out/mesa-virgl.tar.gz usr
           fi
+          cp armv7/work/out/libGL-*-symbole.txt.xz out/ 2>/dev/null || true
           ls -la out
 
       - uses: actions/upload-artifact@v4

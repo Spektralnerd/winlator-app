@@ -175,11 +175,14 @@ jobs:
           NOTES="Assets für app/src/armv7/assets (siehe armv7/README.md).
           Gebaut aus $(git rev-parse --short HEAD) am $(date -u '+%Y-%m-%d %H:%M UTC').
           Schlüssel: ${{ needs.plan.outputs.key }}"
+          # dazu die Symboldatei der libGL (Aufrufketten der Speicherdiagnose auflösen)
+          FILES=(armv7/work/out/armv7-assets.tar)
+          for f in armv7/work/out/libGL-*-symbole.txt.xz; do [ -f "$f" ] && FILES+=("$f"); done
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" armv7/work/out/armv7-assets.tar --clobber
+            gh release upload "$TAG" "${FILES[@]}" --clobber
             gh release edit "$TAG" --notes "$NOTES"
           else
-            gh release create "$TAG" armv7/work/out/armv7-assets.tar --prerelease \
+            gh release create "$TAG" "${FILES[@]}" --prerelease \
               --title "Winlator armv7: 32-Bit-Unterbau" --notes "$NOTES" --target "$GITHUB_SHA"
           fi
 
