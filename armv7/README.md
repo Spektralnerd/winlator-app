@@ -145,8 +145,9 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    Scheitert in der libGL (llvmpipe/LLVM) eine Speicheranforderung, endete das bisher nur mit
    „terminate called after throwing an instance of 'std::bad_alloc'“. Die libGL ersetzt darum
    `operator new` (`patches/mesa/0002-oom-report.patch`) und schreibt vorher Zeilen `[diag] …`
-   nach `start.txt`: Größe, Speicherstand, Grenzen (overcommit, max_map_count, rlimit), eine
-   Übersicht des Adressraums je 16 MB und die Rücksprungadressen in die libGL. Die Offsets löst
+   nach `start.txt`: Größe, Speicherstand, Grenzen (overcommit, max_map_count, rlimit), die
+   malloc-Statistik, den Adressraum (größte Lücken und Bereiche, Summen je Datei, Belegung je
+   16 MB) und die Rücksprungadressen in die libGL. Die Offsets löst
    die Symboldatei `libGL-virgl-symbole.txt.xz` aus dem Release `armv7-rootfs` auf (erste Zeile:
    build-id, muss zur Diagnosezeile passen). `WINLATOR_OOM_TEST=n` lässt zum Ausprobieren die
    n-te Anforderung scheitern. Eine nicht abgefangene C++-Ausnahme beendet den Prozess danach

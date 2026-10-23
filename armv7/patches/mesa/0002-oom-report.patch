@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..d34686f
+index 0000000..12bad1d
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,807 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -50,6 +50,7 @@ index 0000000..d34686f
 +#include <elf.h>
 +#include <fcntl.h>
 +#include <link.h>
++#include <malloc.h>
 +#include <sys/prctl.h>
 +#include <sys/resource.h>
 +#include <sys/syscall.h>
@@ -289,6 +290,43 @@ index 0000000..d34686f
 +range gaps[TOP];
 +unsigned long long total_mapped, total_none;
 +unsigned map_count;
++
++/* Summen je Name (Datei oder "(anonym rw-)"), um viele kleine Bereiche zuordnen zu können */
++struct name_total {
++   char name[40];
++   unsigned long long size;
++   unsigned count;
++};
++const int NAMES = 128;
++name_total names[NAMES];
++int name_count;
++name_total other_names;
++
++void add_name(const char *name, const char *perms, uintptr_t size)
++{
++   char key[sizeof(names[0].name)];
++   memset(key, 0, sizeof(key));
++   if (name[0]) {
++      for (size_t i = 0; i < sizeof(key) - 1 && name[i]; i++)
++         key[i] = name[i];
++   } else {
++      memcpy(key, "(anonym ", 8);
++      memcpy(key + 8, perms, 3);
++      key[11] = ')';
++   }
++   for (int i = 0; i < name_count; i++) {
++      if (!strcmp(names[i].name, key)) {
++         names[i].size += size;
++         names[i].count++;
++         return;
++      }
++   }
++   name_total *t = name_count < NAMES ? &names[name_count++] : &other_names;
++   if (t != &other_names)
++      memcpy(t->name, key, sizeof(key));
++   t->size += size;
++   t->count++;
++}
 +uintptr_t prev_end;
 +uintptr_t stack_lo, stack_hi, cur_sp;
 +
@@ -384,6 +422,7 @@ index 0000000..d34686f
 +   }
 +   prev_end = r.end;
 +   insert_top(biggest, r);
++   add_name(r.name, r.perms, size);
 +   if (cur_sp >= r.start && cur_sp < r.end) {
 +      stack_lo = r.start;
 +      stack_hi = r.end;
@@ -616,6 +655,50 @@ index 0000000..d34686f
 +      put(half ? "  " : "Größte Bereiche:");
 +      for (int i = half * TOP / 2; i < (half + 1) * TOP / 2 && biggest[i].end; i++)
 +         put_range(biggest[i], true);
++      end_line();
++   }
++
++   /* die zehn größten Summen je Name */
++   for (int row = 0; row < 2; row++) {
++      begin_line();
++      put(row ? "  " : "Summen je Name:");
++      for (int k = 0; k < 5; k++) {
++         int best = -1;
++         for (int i = 0; i < name_count; i++)
++            if (names[i].count && (best < 0 || names[i].size > names[best].size))
++               best = i;
++         if (best < 0)
++            break;
++         put(" ");
++         put(names[best].name);
++         put(" ");
++         put_size(names[best].size);
++         put("/");
++         put_dec(names[best].count);
++         names[best].count = 0; /* erledigt */
++      }
++      if (row && other_names.count) {
++         put(" (weitere Namen ");
++         put_size(other_names.size);
++         put(")");
++      }
++      end_line();
++   }
++
++   {
++      struct mallinfo2 mi = mallinfo2();
++      begin_line();
++      put("malloc: Arenen ");
++      put_size(mi.arena);
++      put(", davon belegt ");
++      put_size(mi.uordblks);
++      put(", frei ");
++      put_size(mi.fordblks);
++      put("; einzeln per mmap ");
++      put_size(mi.hblkhd);
++      put(" in ");
++      put_dec(mi.hblks);
++      put(" Blöcken");
 +      end_line();
 +   }
 +
