@@ -1,0 +1,96 @@
+diff --git a/dlls/kernelbase/debug.c b/dlls/kernelbase/debug.c
+index 9d9b4b3..b21a2b5 100755
+--- a/dlls/kernelbase/debug.c
++++ b/dlls/kernelbase/debug.c
+@@ -524,6 +524,81 @@ static void format_exception_msg( const EXCEPTION_POINTERS *ptr, char *buffer, i
+ }
+ 
+ 
++#ifdef __i386__
++/* Winlator armv7: Box86 does not start winedbg ("winedbg detected, not launching it"),
++ * so print the registers and the probable return addresses on the stack (module+offset)
++ * to make a crash attributable without a debugger. */
++static BOOL is_code_address( const BYTE *p )
++{
++    MEMORY_BASIC_INFORMATION mbi;
++
++    if (!VirtualQuery( p, &mbi, sizeof(mbi) )) return FALSE;
++    if (mbi.State != MEM_COMMIT || mbi.Type != MEM_IMAGE) return FALSE;
++    return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
++                           PAGE_EXECUTE_WRITECOPY)) != 0;
++}
++
++/* does a call instruction end right before this return address? */
++static BOOL follows_call( const BYTE *ret )
++{
++    if (!is_code_address( ret - 7 )) return FALSE;
++    if (ret[-5] == 0xe8) return TRUE;                              /* call rel32 */
++    if (ret[-2] == 0xff && (ret[-1] & 0x38) == 0x10) return TRUE;  /* call reg / [reg] */
++    if (ret[-3] == 0xff && (ret[-2] & 0x38) == 0x10) return TRUE;  /* call [reg+disp8] / [sib] */
++    if (ret[-4] == 0xff && (ret[-3] & 0x38) == 0x10) return TRUE;  /* call [sib+disp8] */
++    if (ret[-6] == 0xff && (ret[-5] & 0x38) == 0x10) return TRUE;  /* call [disp32] / [reg+disp32] */
++    if (ret[-7] == 0xff && (ret[-6] & 0x38) == 0x10) return TRUE;  /* call [sib+disp32] */
++    return FALSE;
++}
++
++static void print_code_address( const char *what, const void *addr )
++{
++    HMODULE module = NULL;
++    WCHAR path[MAX_PATH];
++    char name[64];
++    const WCHAR *base;
++    unsigned int i;
++
++    if (!RtlPcToFileHeader( (void *)addr, (void **)&module ) || !module ||
++        !GetModuleFileNameW( module, path, ARRAY_SIZE(path) ))
++    {
++        MESSAGE( "wine:   %s %p\n", what, addr );
++        return;
++    }
++    base = wcsrchr( path, '\\' );
++    base = base ? base + 1 : path;
++    for (i = 0; base[i] && i < sizeof(name) - 1; i++) name[i] = base[i] < 0x80 ? base[i] : '?';
++    name[i] = 0;
++    MESSAGE( "wine:   %s %p %s+0x%lx\n", what, addr, name,
++             (ULONG)((const char *)addr - (const char *)module) );
++}
++
++static void print_backtrace( const EXCEPTION_POINTERS *ptr )
++{
++    const CONTEXT *ctx = ptr->ContextRecord;
++    const NT_TIB *tib = &NtCurrentTeb()->Tib;
++    const DWORD *sp, *end;
++    int count = 0;
++
++    MESSAGE( "wine: eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx\n",
++             ctx->Eax, ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi );
++    MESSAGE( "wine: eip=%08lx esp=%08lx ebp=%08lx, call chain (stack scan):\n",
++             ctx->Eip, ctx->Esp, ctx->Ebp );
++    print_code_address( "at", ptr->ExceptionRecord->ExceptionAddress );
++    sp = (const DWORD *)ctx->Esp;
++    end = (const DWORD *)tib->StackBase;
++    if (sp < (const DWORD *)tib->StackLimit || sp >= end) return;
++    if (end - sp > 8192) end = sp + 8192;
++    for (; sp < end && count < 40; sp++)
++    {
++        const BYTE *ret = (const BYTE *)*sp;
++        if (!is_code_address( ret ) || !follows_call( ret )) continue;
++        print_code_address( "from", ret );
++        count++;
++    }
++}
++#endif
++
+ /******************************************************************
+  *		start_debugger
+  *
+@@ -543,6 +618,9 @@ static BOOL start_debugger( EXCEPTION_POINTERS *epointers, HANDLE event )
+ 
+     format_exception_msg( epointers, buffer, sizeof(buffer) );
+     MESSAGE( "wine: %s (thread %04lx), starting debugger...\n", buffer, GetCurrentThreadId() );
++#ifdef __i386__
++    print_backtrace( epointers );
++#endif
+ 
+     InitializeObjectAttributes( &attr, &nameW, 0, 0, NULL );
+     if (!NtOpenKey( &dbg_key, KEY_READ, &attr ))

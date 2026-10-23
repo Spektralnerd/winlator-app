@@ -19,6 +19,14 @@ if [ ! -d "$SRC/.git" ]; then
 fi
 git -C "$SRC" sparse-checkout set virgl-23.1.9 zink-22.2.5
 git -C "$SRC" checkout -q --force "$MESA_COMMIT"
+git -C "$SRC" checkout -q --force . && git -C "$SRC" clean -qfdx
+# u. a.: softpipe auch neben VirGL (sonst hat „Software“ ohne llvmpipe keinen Treiber und
+# jeder OpenGL-Kontext scheitert)
+for p in "$ARMV7_DIR"/patches/mesa/*.patch; do
+    [ -f "$p" ] || continue
+    log "Patch $(basename "$p")"
+    git -C "$SRC" apply "$p"
+done
 
 # pkg-config für armhf
 mkdir -p "$BUILD_DIR/bin"

@@ -20,7 +20,11 @@ In `armv7` gilt:
   (DXVK, VKD3D, WineD3D, D8VK, D7VK, cnc-ddraw, Windows-Komponenten), werden beim Entpacken
   umgelenkt (`syswow64/` → `system32/`, 64-Bit-Teile entfallen).
 - Zusätzlicher OpenGL-Treiber **Software** (Mesa softpipe auf der CPU, steckt in der
-  VirGL-Bibliothek; langsam, aber ohne Anforderungen an die GPU)
+  VirGL-Bibliothek; langsam, aber ohne Anforderungen an die GPU). Das Winlator-Mesa schaltet
+  softpipe ab, sobald VirGL mitgebaut wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt
+  das zurück (ohne GALLIUM_DRIVER nimmt Mesa softpipe, mit `virpipe` weiterhin nur VirGL).
+  Ohne den Patch scheiterte jeder OpenGL-Kontext („couldn't initialize OpenGL“), und Programme,
+  die trotzdem weitermachen, stürzten z. B. in glu32 mit 0xc0000417 ab.
 - adrenotools gibt es nur für arm64 (eigene Qualcomm-Treiber für Vortek entfallen)
 - winhandler.exe ist ein 32-Bit-Nachbau (`armv7/winhandler`), winpreexec ein armhf-Nachbau
   (`armv7/winpreexec`), wfm.exe und libcdio.dll werden aus den Quellen von brunodev85 für i686 gebaut
@@ -126,6 +130,11 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
 
    Mehr Ausgabe: in den Einstellungen „Enable Wine debug“ und „Box86 Logs“ einschalten.
    Mit „Save logs to file“ landet das Protokoll zusätzlich in `Documents/Winlator/logs.txt`.
+
+   Stürzt ein Windows-Programm ab („Unhandled exception …“), kann Box86 den Wine-Debugger nicht
+   starten. Das Wine des Root-FS (`patches/wine/0001-kernelbase-backtrace.patch`) gibt darum
+   selbst die Register und die Aufrufkette aus (Rücksprungadressen auf dem Stapel als
+   `modul+offset`), die Zeilen beginnen mit `wine:` und stehen in `start.txt`.
 
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`

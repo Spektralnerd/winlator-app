@@ -19,6 +19,12 @@ PREFIX="$ROOT_PREFIX/opt/wine"
 
 log "Quellen holen"
 git_fetch "$WINE_REPO" "$WINE_COMMIT" "$SRC"
+git -C "$SRC" checkout -q --force . && git -C "$SRC" clean -qfdx
+for p in "$ARMV7_DIR"/patches/wine/*.patch; do
+    [ -f "$p" ] || continue
+    log "Patch $(basename "$p")"
+    git -C "$SRC" apply "$p"
+done
 
 log "Konfigurieren"
 rm -rf "$BUILD" && mkdir -p "$BUILD" && cd "$BUILD"

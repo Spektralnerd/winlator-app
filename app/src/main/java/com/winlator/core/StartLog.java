@@ -40,8 +40,8 @@ import java.util.Locale;
  */
 public final class StartLog {
     public static final boolean ENABLED = !Arch.APP_IS_64BIT;
-    private static final int HEAD_LINES = 400;
-    private static final int TAIL_LINES = 150;
+    private static final int HEAD_LINES = 600;
+    private static final int TAIL_LINES = 600;
     private static final int LOGCAT_LINES = 5000;
     private static final String MARKER_NAME = "startlog-running";
     private static final ArrayDeque<String> tail = new ArrayDeque<>();
@@ -222,20 +222,26 @@ public final class StartLog {
 
         File dir;
         synchronized (StartLog.class) {
-            if (!tail.isEmpty()) {
-                int skipped = guestLines - HEAD_LINES - tail.size();
-                StringBuilder sb = new StringBuilder();
-                if (skipped > 0) sb.append("| … ").append(skipped).append(" Zeilen ausgelassen …\n");
-                for (String line : tail) sb.append("| ").append(line).append('\n');
-                write(startFile, sb.toString(), true);
-                tail.clear();
-            }
+            flushTail();
             guestDone = true;
             add("Gastprogramm beendet, Status " + describeStatus(status));
             dir = startFile.getParentFile();
             if (markerFile != null) markerFile.delete();
         }
         if (dir != null) saveLogcat(dir, "Gastprogramm beendet, Status " + describeStatus(status));
+    }
+
+    /** Die zurückgehaltenen letzten Ausgabezeilen ins Startprotokoll schreiben */
+    private static synchronized void flushTail() {
+        if (startFile == null || tail.isEmpty()) return;
+        int skipped = guestLines - HEAD_LINES - tail.size();
+        StringBuilder sb = new StringBuilder();
+        if (skipped > 0) sb.append("| … ").append(skipped).append(" Zeilen ausgelassen …\n");
+        for (String line : tail) sb.append("| ").append(line).append('\n');
+        write(startFile, sb.toString(), true);
+        tail.clear();
+        // ab hier neu zählen, damit „ausgelassen“ bei einem weiteren Aufruf stimmt
+        guestLines = HEAD_LINES;
     }
 
     /**
@@ -249,6 +255,7 @@ public final class StartLog {
         synchronized (StartLog.class) {
             if (!ENABLED || startFile == null) return;
             if (markerFile != null) markerFile.delete();
+            flushTail();
             add("Container verlassen");
             dir = startFile.getParentFile();
             saveLog = !guestDone;

@@ -1,0 +1,13 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/target-helpers/inline_sw_helper.h b/virgl-23.1.9/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+index 6cf5331..aeaf81f 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
++++ b/virgl-23.1.9/src/gallium/auxiliary/target-helpers/inline_sw_helper.h
+@@ -51,7 +51,7 @@ sw_screen_create_named(struct sw_winsys *winsys, const char *driver)
+    }
+ #endif
+ 
+-#if defined(GALLIUM_SOFTPIPE) && !defined(GALLIUM_VIRGL)
++#if defined(GALLIUM_SOFTPIPE)
+    if (screen == NULL && strcmp(driver, "softpipe") == 0)
+       screen = softpipe_create_screen(winsys);
+ #endif
