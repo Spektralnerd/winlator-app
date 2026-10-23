@@ -23,7 +23,10 @@ In `armv7` gilt:
   VirGL-Bibliothek; ohne Anforderungen an die GPU). llvmpipe übersetzt die Shader mit LLVM 15
   (aus Debian armhf, statisch gelinkt) und rastert mit `LP_NUM_THREADS` Threads (die App setzt
   die Zahl der Kerne). `GALLIUM_DRIVER=softpipe` in den Container-Umgebungsvariablen nimmt den
-  einfachen Rasterer ohne JIT. Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
+  einfachen Rasterer ohne JIT. Die App setzt für „Software“ `GALLIVM_PERF=no_aos_sampling`: Der
+  8-Bit-Pfad (AoS) von llvmpipe liefert auf 32-Bit-ARM mit LINEAR gefilterte Texturen schwarz
+  (unter qemu nachgestellt: `GL_NEAREST` stimmt, `GL_LINEAR` gibt (0,0,0,255)); der
+  Gleitkomma-Pfad rechnet richtig. Ein eigener Wert in den Umgebungsvariablen hat Vorrang. Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
   wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt das zurück (mit `virpipe` bleibt es
   weiterhin bei VirGL, ohne Ausweichen).
   Ohne den Patch scheiterte jeder OpenGL-Kontext („couldn't initialize OpenGL“), und Programme,
