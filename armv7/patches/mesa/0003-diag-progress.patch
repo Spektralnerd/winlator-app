@@ -1,0 +1,61 @@
+diff --git a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+index 24d0823..0a0168e 100755
+--- a/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
++++ b/virgl-23.1.9/src/gallium/auxiliary/gallivm/lp_bld_init.c
+@@ -40,6 +40,12 @@
+ #include "lp_bld_coro.h"
+ #include "lp_bld_printf.h"
+ 
++/* Winlator armv7: Fortschritt der Shader-Übersetzung ins Startprotokoll (Dauer je Shader,
++ * Wachhund bei Stillstand). Definiert in targets/libgl-xlib/winlator_oom_report.cpp; schwach,
++ * damit andere Ziele ohne diese Datei weiter linken. */
++extern void winlator_diag_compile_begin(const char *name) __attribute__((weak));
++extern void winlator_diag_compile_end(const char *name) __attribute__((weak));
++
+ #include <llvm/Config/llvm-config.h>
+ #include <llvm-c/Analysis.h>
+ #include <llvm-c/Transforms/Scalar.h>
+@@ -560,6 +566,9 @@ gallivm_compile_module(struct gallivm_state *gallivm)
+ 
+    assert(!gallivm->compiled);
+ 
++   if (winlator_diag_compile_begin)
++      winlator_diag_compile_begin(gallivm->module_name);
++
+    if (gallivm->builder) {
+       LLVMDisposeBuilder(gallivm->builder);
+       gallivm->builder = NULL;
+@@ -729,6 +738,9 @@ gallivm_jit_function(struct gallivm_state *gallivm,
+    assert(code);
+    jit_func = pointer_to_func(code);
+ 
++   if (winlator_diag_compile_end)
++      winlator_diag_compile_end(gallivm->module_name);
++
+    if (gallivm_debug & GALLIVM_DEBUG_PERF) {
+       int64_t time_end = os_time_get();
+       int time_msec = (int)(time_end - time_begin) / 1000;
+diff --git a/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c b/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c
+index 4777ce8..096d53d 100755
+--- a/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c
++++ b/virgl-23.1.9/src/gallium/winsys/sw/xlib/xlib_sw_winsys.c
+@@ -382,6 +382,10 @@ xlib_sw_display(struct xlib_drawable *xlib_drawable,
+ }
+ 
+ 
++/* Winlator armv7: Bilder zählen (Bilder pro Sekunde, Stillstand) fürs Startprotokoll.
++ * Definiert in targets/libgl-xlib/winlator_oom_report.cpp; schwach, damit andere Ziele linken. */
++extern void winlator_diag_frame(void) __attribute__((weak));
++
+ /**
+  * Display/copy the image in the surface into the X window specified
+  * by the display target.
+@@ -394,6 +398,8 @@ xlib_displaytarget_display(struct sw_winsys *ws,
+ {
+    struct xlib_drawable *xlib_drawable = (struct xlib_drawable *)context_private;
+    xlib_sw_display(xlib_drawable, dt, box);
++   if (winlator_diag_frame)
++      winlator_diag_frame();
+ }
+ 
+ 

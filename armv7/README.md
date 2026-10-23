@@ -156,6 +156,15 @@ ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekomm
    `start.txt` fasst gleiche Zeilen hintereinander zusammen und übernimmt `[diag]`-Zeilen
    immer, auch jenseits der ersten 600 Zeilen.
 
+   Dazu schreibt die libGL den Fortschritt von llvmpipe mit (`patches/mesa/0003-diag-progress.patch`):
+   die ersten 40 übersetzten Shader mit Dauer (danach nur langsame und jeden hundertsten), das
+   erste Bild und alle 30 s die Bilder pro Sekunde (nach 5 Minuten alle 5 Minuten). Ein
+   Wachhund-Thread meldet Stillstände – eine Übersetzung dauert über 15 s, seit 15 s kein neues
+   Bild, 30 s nach dem ersten Shader noch kein Bild – und gibt dann für jeden Thread Zustand,
+   Wartestelle im Kernel, CPU-Zeit, Programmzähler und die Rücksprünge in die libGL aus
+   (höchstens dreimal je Prozess; Kernel 3.0 liefert dafür Stapel- und Befehlszeiger in
+   `/proc/self/task/*/stat`). `WINLATOR_DIAG=0` schaltet den Fortschritt ab.
+
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`
 nur als Ressourcen-ID und bekommt dann gar keinen Hintergrund; das Fenster gilt trotzdem als

@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..12bad1d
+index 0000000..fd1a3ba
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,1282 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -34,6 +34,11 @@ index 0000000..12bad1d
 + * (sofort mit _exit statt über abort, siehe terminate_now). Im Normalfall kostet das nichts.
 + * WINLATOR_OOM_TEST=n lässt zum Ausprobieren die n-te Anforderung scheitern.
 + * Kommt ohne malloc aus (es ist ja gerade keiner mehr zu haben).
++ *
++ * Außerdem Fortschritt (ebenfalls "[diag]"-Zeilen): übersetzte Shader mit Dauer, Bilder pro
++ * Sekunde, und ein Wachhund-Thread, der bei Stillstand (Übersetzung dauert, kein neues Bild)
++ * für jeden Thread Zustand, Kernel-Wartestelle, CPU-Zeit, Programmzähler und die
++ * Rücksprungadressen in die libGL ausgibt. WINLATOR_DIAG=0 schaltet den Fortschritt ab.
 + */
 +#include <atomic>
 +#include <cerrno>
@@ -47,10 +52,14 @@ index 0000000..12bad1d
 +
 +#include <cxxabi.h>
 +
++#include <dirent.h>
++#include <dlfcn.h>
 +#include <elf.h>
 +#include <fcntl.h>
 +#include <link.h>
 +#include <malloc.h>
++#include <pthread.h>
++#include <time.h>
 +#include <sys/prctl.h>
 +#include <sys/resource.h>
 +#include <sys/syscall.h>
@@ -64,6 +73,20 @@ index 0000000..12bad1d
 +
 +char line[600];
 +size_t line_len;
++
++/* eine Zeile (begin_line .. end_line) bzw. ein ganzer Bericht gehört einem Thread */
++pthread_mutex_t out_mutex = PTHREAD_MUTEX_INITIALIZER;
++
++/* für den Bericht bei Speichermangel: höchstens eine Sekunde warten, dann ohne Sperre */
++bool lock_out_try()
++{
++   for (int i = 0; i < 100; i++) {
++      if (!pthread_mutex_trylock(&out_mutex))
++         return true;
++      usleep(10000);
++   }
++   return false;
++}
 +
 +void put_char(char c)
 +{
@@ -497,17 +520,14 @@ index 0000000..12bad1d
 +          (insn & 0x0ffffff0) == 0x012fff30;
 +}
 +
-+void stack_scan(uintptr_t caller)
++/* Rücksprungadressen in die libGL im Stapelbereich [sp, hi) ausgeben (nach dem schon begonnenen
++ * Zeilenanfang), höchstens max, je Zeile per_line; caller zuerst, falls in der libGL */
++int scan_returns(uintptr_t sp, uintptr_t hi, uintptr_t caller, int max, int per_line)
 +{
-+   begin_line();
-+   put("Aufrufkette (libGL+Offset, neueste zuerst):");
-+   if (!gl_text_hi) {
-+      put(" libGL nicht gefunden");
-+      end_line();
-+      return;
-+   }
 +   /* jede Adresse nur einmal (auf dem Stapel liegen oft alte Kopien) */
 +   static uintptr_t seen[64];
++   if (max > 64)
++      max = 64;
 +   int shown = 0, in_line = 1;
 +   if (caller >= gl_text_lo && caller < gl_text_hi) {
 +      put(" ");
@@ -515,10 +535,7 @@ index 0000000..12bad1d
 +      seen[shown++] = caller;
 +      in_line++;
 +   }
-+   uintptr_t hi = stack_hi > cur_sp ? stack_hi : cur_sp + 16384;
-+   if (hi - cur_sp > 1024 * 1024)
-+      hi = cur_sp + 1024 * 1024;
-+   for (uintptr_t a = cur_sp & ~(uintptr_t)3; a + 4 <= hi && shown < 64; a += 4) {
++   for (uintptr_t a = sp & ~(uintptr_t)3; a + 4 <= hi && shown < max; a += 4) {
 +      uintptr_t w = *(const uintptr_t *)a;
 +      if (w < gl_text_lo || w >= gl_text_hi || !after_call(w))
 +         continue;
@@ -528,7 +545,7 @@ index 0000000..12bad1d
 +      if (dup)
 +         continue;
 +      seen[shown] = w;
-+      if (in_line == 10) {
++      if (in_line == per_line) {
 +         end_line();
 +         begin_line();
 +         put("  ");
@@ -539,9 +556,442 @@ index 0000000..12bad1d
 +      shown++;
 +      in_line++;
 +   }
-+   if (!shown)
++   return shown;
++}
++
++void stack_scan(uintptr_t caller)
++{
++   begin_line();
++   put("Aufrufkette (libGL+Offset, neueste zuerst):");
++   if (!gl_text_hi) {
++      put(" libGL nicht gefunden");
++      end_line();
++      return;
++   }
++   uintptr_t hi = stack_hi > cur_sp ? stack_hi : cur_sp + 16384;
++   if (hi - cur_sp > 1024 * 1024)
++      hi = cur_sp + 1024 * 1024;
++   if (!scan_returns(cur_sp, hi, caller, 64, 10))
 +      put(" keine gefunden");
 +   end_line();
++}
++
++/* ---- Fortschritt: übersetzte Shader, Bilder, Wachhund bei Stillstand ---- */
++
++uint32_t now_ms()
++{
++   struct timespec ts;
++   clock_gettime(CLOCK_MONOTONIC, &ts);
++   return (uint32_t)ts.tv_sec * 1000u + (uint32_t)(ts.tv_nsec / 1000000);
++}
++
++/* "1234 ms" bzw. "12,3 s" */
++void put_ms(uint32_t ms)
++{
++   if (ms < 10000) {
++      put_dec(ms);
++      put(" ms");
++   } else {
++      put_dec(ms / 1000);
++      put_char(',');
++      put_dec((ms / 100) % 10);
++      put(" s");
++   }
++}
++
++bool progress_enabled = true;        /* WINLATOR_DIAG=0 schaltet ab */
++std::atomic<uint32_t> compiles{0};   /* begonnene Übersetzungen */
++std::atomic<uint32_t> compile_ms_total{0};
++std::atomic<uint32_t> compile_since{0};    /* Beginn der laufenden Übersetzung, 0 = keine */
++std::atomic<uint32_t> compile_nr_now{0};
++char compile_name[48];               /* Name der laufenden Übersetzung (nur zur Ausgabe) */
++std::atomic<uint32_t> frames{0};
++std::atomic<uint32_t> first_compile_ms{0}, last_frame_ms{0};
++thread_local uint32_t tl_compile_t0; /* Beginn in diesem Thread, 0 = keine */
++thread_local uint32_t tl_compile_nr;
++std::atomic<int> watchdog_started{0};
++
++/* Bereich aus /proc/self/maps, der addr enthält */
++bool find_mapping(uintptr_t addr, uintptr_t *lo, uintptr_t *hi)
++{
++   int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC);
++   if (fd < 0)
++      return false;
++   bool found = false;
++   size_t have = 0;
++   while (!found) {
++      ssize_t r = read(fd, mapsbuf + have, sizeof(mapsbuf) - have);
++      if (r < 0 && errno == EINTR)
++         continue;
++      if (r <= 0)
++         break;
++      have += (size_t)r;
++      size_t pos = 0;
++      for (;;) {
++         const char *nl = (const char *)memchr(mapsbuf + pos, '\n', have - pos);
++         if (!nl)
++            break;
++         const char *p = mapsbuf + pos;
++         uintptr_t start = parse_hex(p);
++         if (*p == '-') {
++            p++;
++            uintptr_t end = parse_hex(p);
++            if (addr >= start && addr < end) {
++               *lo = start;
++               *hi = end;
++               found = true;
++               break;
++            }
++         }
++         pos = (size_t)(nl - mapsbuf) + 1;
++      }
++      memmove(mapsbuf, mapsbuf + pos, have - pos);
++      have -= pos;
++      if (have == sizeof(mapsbuf))
++         have = 0;
++   }
++   close(fd);
++   return found;
++}
++
++/* Datei aus /proc/self/task/<tid>/ lesen */
++size_t read_task_file(int tid, const char *name)
++{
++   char path[64] = "/proc/self/task/";
++   size_t n = strlen(path);
++   char num[16];
++   int i = 0;
++   do {
++      num[i++] = (char)('0' + tid % 10);
++      tid /= 10;
++   } while (tid);
++   while (i)
++      path[n++] = num[--i];
++   path[n++] = '/';
++   for (const char *q = name; *q && n < sizeof(path) - 1; q++)
++      path[n++] = *q;
++   path[n] = 0;
++   return read_small(path);
++}
++
++/* Programmzähler als datei+offset */
++void put_code_address(uintptr_t pc)
++{
++   Dl_info info;
++   if (pc && dladdr((void *)pc, &info) && info.dli_fname) {
++      const char *base = strrchr(info.dli_fname, '/');
++      put(base ? base + 1 : info.dli_fname);
++      put("+0x");
++      uintptr_t off = pc - (uintptr_t)info.dli_fbase;
++      int digits = 1;
++      while (digits < 8 && (off >> (digits * 4)))
++         digits++;
++      put_hex(off, digits);
++   } else {
++      put_hex(pc, 8);
++   }
++}
++
++/* Zustand aller Threads: für Stillstände (Übersetzung hängt, kein neues Bild) */
++int dumps_left = 3;
++
++void dump_threads()
++{
++   if (dumps_left <= 0)
++      return;
++   dumps_left--;
++   begin_line();
++   put("Threads (Zustand, Wartestelle im Kernel, CPU-Zeit, Programmzähler; darunter Rücksprünge in die libGL):");
++   end_line();
++   DIR *dir = opendir("/proc/self/task");
++   if (!dir) {
++      begin_line();
++      put("  /proc/self/task nicht lesbar");
++      end_line();
++      return;
++   }
++   int self = (int)syscall(SYS_gettid);
++   long ticks = sysconf(_SC_CLK_TCK);
++   if (ticks <= 0)
++      ticks = 100;
++   int count = 0;
++   struct dirent *entry;
++   while ((entry = readdir(dir)) && count < 48) {
++      if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
++         continue;
++      int tid = atoi(entry->d_name);
++      count++;
++      if (!read_task_file(tid, "stat"))
++         continue;
++      /* "tid (name) S ...": Name zwischen der ersten '(' und der letzten ')' */
++      char *open_paren = strchr(filebuf, '(');
++      char *close_paren = strrchr(filebuf, ')');
++      if (!open_paren || !close_paren || close_paren < open_paren)
++         continue;
++      char comm[20];
++      size_t clen = (size_t)(close_paren - open_paren - 1);
++      if (clen > sizeof(comm) - 1)
++         clen = sizeof(comm) - 1;
++      memcpy(comm, open_paren + 1, clen);
++      comm[clen] = 0;
++      /* Felder ab dem Zustand (Feld 3): utime 14, stime 15, kstkesp 29, kstkeip 30 */
++      unsigned long long field[32];
++      memset(field, 0, sizeof(field));
++      char state = '?';
++      const char *q = close_paren + 1;
++      for (int f = 3; f <= 30 && *q; f++) {
++         while (*q == ' ')
++            q++;
++         if (f == 3)
++            state = *q;
++         else {
++            unsigned long long v = 0;
++            while (*q >= '0' && *q <= '9')
++               v = v * 10 + (unsigned long long)(*q++ - '0');
++            field[f] = v;
++         }
++         while (*q && *q != ' ')
++            q++;
++      }
++      unsigned long long cpu_ticks = field[14] + field[15];
++      uintptr_t esp = field[29] <= 0xffffffffull ? (uintptr_t)field[29] : 0;
++      uintptr_t eip = field[30] <= 0xffffffffull ? (uintptr_t)field[30] : 0;
++
++      begin_line();
++      put("  ");
++      put_dec((unsigned)tid);
++      put(" \"");
++      for (const char *c = comm; *c; c++)
++         put_char(*c >= 32 && *c < 127 ? *c : '?');
++      put("\" ");
++      put_char(state);
++      put(" ");
++      if (read_task_file(tid, "wchan") && filebuf[0] && filebuf[0] != '0')
++         put(filebuf);
++      else
++         put("-");
++      put(" CPU ");
++      put_ms((uint32_t)(cpu_ticks * 1000 / (unsigned long long)ticks));
++      if (tid == self) {
++         put(" (dieser Wachhund)");
++         end_line();
++         continue;
++      }
++      put(" pc ");
++      put_code_address(eip);
++      end_line();
++
++      uintptr_t lo, hi;
++      if (esp && gl_text_hi && find_mapping(esp, &lo, &hi)) {
++         if (hi - esp > 512 * 1024)
++            hi = esp + 512 * 1024;
++         begin_line();
++         put("    libGL:");
++         if (!scan_returns(esp, hi, 0, 24, 12))
++            put(" -");
++         end_line();
++      }
++   }
++   closedir(dir);
++}
++
++void put_progress()
++{
++   put("bisher ");
++   put_dec(compiles.load());
++   put(" Shader übersetzt (zusammen ");
++   put_ms(compile_ms_total.load());
++   put("), ");
++   put_dec(frames.load());
++   put(" Bilder");
++   uint32_t since = compile_since.load();
++   if (since) {
++      put(", gerade in Arbeit: Nr. ");
++      put_dec(compile_nr_now.load());
++      put(" ");
++      put(compile_name);
++      put(" seit ");
++      put_ms(now_ms() - since);
++   }
++}
++
++void *watchdog_main(void *)
++{
++   prctl(PR_SET_NAME, "winlator-diag", 0, 0, 0);
++   uint32_t started = now_ms();
++   uint32_t window_start = started, window_frames = frames.load(), interval = 30000;
++   uint32_t compile_reported = 0;
++   bool stall_reported = false, nofirst_reported = false;
++   for (;;) {
++      sleep(1);
++      uint32_t t = now_ms();
++      uint32_t since = compile_since.load();
++      /* eine Übersetzung ohne Ende (z. B. Modul nie ausgeführt) blockiert die Prüfungen nicht ewig */
++      bool compiling = since && t - since < 120000;
++      uint32_t f = frames.load();
++      uint32_t last = last_frame_ms.load();
++      uint32_t first_compile = first_compile_ms.load();
++
++      /* eine Übersetzung dauert ungewöhnlich lange */
++      if (since && t - since >= 15000 && compile_reported != since) {
++         compile_reported = since;
++         pthread_mutex_lock(&out_mutex);
++         begin_line();
++         put("llvmpipe: Übersetzung dauert, ");
++         put_progress();
++         end_line();
++         dump_threads();
++         pthread_mutex_unlock(&out_mutex);
++      }
++
++      /* Bilder pro Sekunde */
++      if (t - window_start >= interval) {
++         uint32_t n = f - window_frames;
++         if (n) {
++            pthread_mutex_lock(&out_mutex);
++            begin_line();
++            put_dec(n);
++            put(" Bilder in den letzten ");
++            put_dec((t - window_start) / 1000);
++            put(" s (");
++            uint32_t tenth = n * 10000u / (t - window_start);
++            put_dec(tenth / 10);
++            put_char(',');
++            put_dec(tenth % 10);
++            put(" pro Sekunde), ");
++            put_progress();
++            end_line();
++            pthread_mutex_unlock(&out_mutex);
++         }
++         window_start = t;
++         window_frames = f;
++         if (t - started > 300000)
++            interval = 300000;
++      }
++
++      /* Bilder kamen, jetzt seit 15 s keins mehr (und es wird nicht übersetzt) */
++      if (last && !compiling && t - last >= 15000) {
++         if (!stall_reported) {
++            stall_reported = true;
++            pthread_mutex_lock(&out_mutex);
++            begin_line();
++            put("seit ");
++            put_ms(t - last);
++            put(" kein neues Bild, ");
++            put_progress();
++            end_line();
++            dump_threads();
++            pthread_mutex_unlock(&out_mutex);
++         }
++      } else if (last && t - last < 15000) {
++         stall_reported = false;
++      }
++
++      /* noch nie ein Bild, 30 s nach dem ersten Shader */
++      if (!f && first_compile && !compiling && t - first_compile >= 30000 && !nofirst_reported) {
++         nofirst_reported = true;
++         pthread_mutex_lock(&out_mutex);
++         begin_line();
++         put("30 s nach dem ersten Shader noch kein Bild, ");
++         put_progress();
++         end_line();
++         dump_threads();
++         pthread_mutex_unlock(&out_mutex);
++      }
++   }
++   return nullptr;
++}
++
++void start_watchdog()
++{
++   if (watchdog_started.exchange(1))
++      return;
++   pthread_attr_t attr;
++   pthread_attr_init(&attr);
++   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
++   pthread_attr_setstacksize(&attr, 256 * 1024);
++   pthread_t thread;
++   pthread_create(&thread, &attr, watchdog_main, nullptr);
++   pthread_attr_destroy(&attr);
++}
++
++void compile_begin(const char *name)
++{
++   if (!progress_enabled)
++      return;
++   uint32_t t = now_ms() | 1;
++   uint32_t nr = compiles.fetch_add(1) + 1;
++   tl_compile_t0 = t;
++   tl_compile_nr = nr;
++   size_t i = 0;
++   for (; name && name[i] && i < sizeof(compile_name) - 1; i++)
++      compile_name[i] = name[i];
++   compile_name[i] = 0;
++   compile_nr_now.store(nr);
++   compile_since.store(t);
++   uint32_t zero = 0;
++   first_compile_ms.compare_exchange_strong(zero, t);
++   start_watchdog();
++}
++
++void compile_end(const char *name)
++{
++   if (!progress_enabled || !tl_compile_t0)
++      return;
++   uint32_t ms = now_ms() - tl_compile_t0;
++   uint32_t nr = tl_compile_nr;
++   tl_compile_t0 = 0;
++   compile_since.store(0);
++   uint32_t total = compile_ms_total.fetch_add(ms) + ms;
++   if (nr <= 40 || ms >= 3000 || nr % 100 == 0) {
++      pthread_mutex_lock(&out_mutex);
++      begin_line();
++      put("llvmpipe: Shader Nr. ");
++      put_dec(nr);
++      put(" ");
++      put(name ? name : "?");
++      put(" in ");
++      put_ms(ms);
++      put(" übersetzt");
++      if (nr % 100 == 0) {
++         put(", zusammen ");
++         put_ms(total);
++      }
++      end_line();
++      pthread_mutex_unlock(&out_mutex);
++   }
++}
++
++void frame_presented()
++{
++   if (!progress_enabled)
++      return;
++   uint32_t t = now_ms() | 1;
++   uint32_t n = frames.fetch_add(1) + 1;
++   last_frame_ms.store(t);
++   if (n == 1) {
++      pthread_mutex_lock(&out_mutex);
++      begin_line();
++      put("erstes Bild");
++      uint32_t first_compile = first_compile_ms.load();
++      if (first_compile) {
++         put(" ");
++         put_ms(t - first_compile);
++         put(" nach dem ersten Shader");
++      }
++      put(", ");
++      put_progress();
++      end_line();
++      pthread_mutex_unlock(&out_mutex);
++      start_watchdog();
++   }
++}
++
++__attribute__((constructor)) void read_progress_setting()
++{
++   const char *v = getenv("WINLATOR_DIAG");
++   if (v && v[0] == '0')
++      progress_enabled = false;
 +}
 +
 +std::atomic<int> reported{0};
@@ -551,6 +1001,7 @@ index 0000000..12bad1d
 +{
 +   if (reported.exchange(1))
 +      return;
++   bool locked = lock_out_try();
 +   int dummy;
 +   cur_sp = (uintptr_t)&dummy;
 +
@@ -726,7 +1177,14 @@ index 0000000..12bad1d
 +      end_line();
 +   }
 +
++   begin_line();
++   put("Stand: ");
++   put_progress();
++   end_line();
++
 +   stack_scan(caller);
++   if (locked)
++      pthread_mutex_unlock(&out_mutex);
 +}
 +
 +/* Zum Prüfen der Diagnose: WINLATOR_OOM_TEST=n lässt die n-te Anforderung scheitern */
@@ -766,6 +1224,7 @@ index 0000000..12bad1d
 + * in einer Endlosschleife (Ton lief weiter, Fenster blieb schwarz). */
 +void terminate_now()
 +{
++   lock_out_try();
 +   begin_line();
 +   put("std::terminate");
 +   const std::type_info *type = abi::__cxa_current_exception_type();
@@ -824,3 +1283,19 @@ index 0000000..12bad1d
 +   throw std::bad_alloc();
 +}
 +} /* namespace std */
++
++/* Aufgerufen aus Mesa (dort als schwache Symbole deklariert) */
++extern "C" void winlator_diag_compile_begin(const char *name)
++{
++   compile_begin(name);
++}
++
++extern "C" void winlator_diag_compile_end(const char *name)
++{
++   compile_end(name);
++}
++
++extern "C" void winlator_diag_frame(void)
++{
++   frame_presented();
++}

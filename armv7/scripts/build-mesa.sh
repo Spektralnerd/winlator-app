@@ -147,5 +147,9 @@ for v in $VARIANTS; do
         if readelf --dyn-syms -W "$DEST/usr/lib/libGL.so.1.7.0" | grep -E ' UND (_Znwj|_Znaj)@'; then
             echo "operator new wird nicht von der Diagnose ersetzt"; exit 1
         fi
+        # Fortschritt (patches/mesa/0003): die schwachen Haken müssen aufgelöst sein
+        if "$TARGET-nm" "$UNSTRIPPED" | grep -E ' [wU] winlator_diag_'; then
+            echo "Diagnose-Haken (winlator_diag_*) nicht verbunden"; exit 1
+        fi
     fi
 done
