@@ -22,6 +22,9 @@ typedef struct GLESCaps {
     bool detected;
     bool es2;
     bool contextInit;
+    /* EGL_KHR_surfaceless_context: eglMakeCurrent ohne Oberfläche. Fehlt es (Mali-400:
+     * EGL_BAD_MATCH), bekommt jeder GLX-Kontext einen 1x1-Pbuffer als Oberfläche. */
+    bool surfaceless;
 
     /* Erweiterungen des ES-2.0-Treibers */
     bool vertexArrayObject;   /* GL_OES_vertex_array_object */
@@ -80,6 +83,8 @@ extern const char* GLES_shadingLanguageVersionString(void);
 extern int GLES_majorVersion(void);
 extern int GLES_minorVersion(void);
 extern bool GLES_isCapabilitySupported(GLenum cap);
+/* Pufferziele, die der Treiber kennt (ES 2.0: nur ARRAY und ELEMENT_ARRAY). */
+extern bool GLES_isBufferTarget(GLenum target);
 /* Bildet Typen der Vertexattribute auf ES 2.0 ab (z. B. GL_HALF_FLOAT -> GL_HALF_FLOAT_OES). */
 extern GLenum GLES_vertexAttribType(GLenum type);
 /* Erweiterungsliste, die der Server dem Client meldet. */

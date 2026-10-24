@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Passt den Gladio-Client (github.com/brunodev85/gladio, libGL.so in der Root-FS) an den
+geänderten Server in der App an – gemeinsam für den armhf-Bau (build-clients.sh) und das
+PC-Testgeschirr (armv7/tools/gladio-pc).
+
+    patch-gladio-client.py QUELLE            # an Ort und Stelle patchen
+    patch-gladio-client.py QUELLE ZIEL       # Kopie anlegen und die Kopie patchen
+    ... [--align64]                          # Ringpufferkopf wie auf einem 64-Bit-Server
+                                             # (32-Bit-Client am PC-Server)
+
+Änderungen:
+- "long"-Felder des Protokolls fest 8 Byte breit (der Server in der App erwartet das)
+- Socket-Pfad über die Umgebungsvariable GLADIO_SOCKET wählbar (Vorgabe: fester Pfad)
+- glXGetProcAddressARB liefert auch GL-Funktionen dieser Bibliothek (Wine und viele
+  Programme holen Erweiterungsfunktionen darüber; im Original gab es nur glX-Funktionen)
+- Visuals in der Tiefe des Standard-Visuals statt fest 32 (Wine lässt nur Pixelformate zu,
+  deren Visual die Tiefe des Standard-Visuals hat; Winlators X-Server: 32, Xvfb: 24)
+- glLightModelfv/glLightModeliv werden übertragen statt nur "unimplemented" zu melden
+  (Worms 3D ruft sie in jedem Bild auf)
+"""
+import pathlib
+import shutil
+import sys
+
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+flags = [a for a in sys.argv[1:] if a.startswith("--")]
+if not args or len(args) > 2 or any(f != "--align64" for f in flags):
+    raise SystemExit(__doc__)
+src = pathlib.Path(args[0])
+dst = pathlib.Path(args[1]) if len(args) == 2 else src
+align64 = "--align64" in flags
+
+if dst != src:
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, ignore=shutil.ignore_patterns(".git"))
+
+
+def sub(rel, old, new, count=1):
+    p = dst / rel
+    s = p.read_text()
+    n = s.count(old)
+    if n != count:
+        raise SystemExit(f"{rel}: erwartet {count}x, gefunden {n}x: {old!r}")
+    p.write_text(s.replace(old, new))
+
+
+# ---- Protokoll: long -> int64_t ----
+sub("include/arrays.h", "extern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value);",
+    "#include <stdint.h>\nextern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value);")
+sub("include/arrays.h", "extern long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);",
+    "extern int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);")
+sub("src/arrays.c", "void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value) {\n    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, long, value);",
+    "void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value) {\n    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, int64_t, value);")
+sub("src/arrays.c", "long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {\n    ARRAY_BUFFER_GET_TYPE(arrayBuffer, long);",
+    "int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {\n    ARRAY_BUFFER_GET_TYPE(arrayBuffer, int64_t);")
+sub("src/gl_calls.c", "ArrayBuffer_putLong(&outputBuffer, (long)sync);", "ArrayBuffer_putLong(&outputBuffer, (int64_t)(intptr_t)sync);", 2)
+sub("src/gl_calls.c", "GLsync sync = (GLsync)ArrayBuffer_getLong(&inputBuffer);", "GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);")
+sub("src/gl_calls.c", "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &sync, sizeof(long));",
+    "int64_t syncValue = (int64_t)(intptr_t)sync;\n    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));")
+sub("src/gl_calls.c", "GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &sync, sizeof(long), GL_RETURN);",
+    "int64_t syncValue = (int64_t)(intptr_t)sync;\n    GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &syncValue, sizeof(int64_t), GL_RETURN);")
+
+# ---- Socket-Pfad ----
+sub("src/main.c", "strncpy(server_addr.sun_path, X11_SERVER_PATH,",
+    'const char* gladioSock = getenv("GLADIO_SOCKET"); strncpy(server_addr.sun_path, gladioSock ? gladioSock : X11_SERVER_PATH,')
+
+# ---- glXGetProcAddressARB: GL-Funktionen aus dieser Bibliothek ----
+sub("src/glx_calls.c", "    else if (strcmp(name, \"glXWaitX\") == 0) return (__GLXextFuncPtr)glXWaitX;\n    return NULL;\n}",
+    "    else if (strcmp(name, \"glXWaitX\") == 0) return (__GLXextFuncPtr)glXWaitX;\n"
+    "    /* GL-Funktionen aus dieser Bibliothek selbst */\n"
+    "    static void* self = NULL;\n"
+    "    if (!self) {\n"
+    "        Dl_info info;\n"
+    "        if (dladdr((void*)glXGetProcAddressARB, &info) && info.dli_fname) self = dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD);\n"
+    "        if (!self) self = RTLD_DEFAULT;\n"
+    "    }\n"
+    "    return (__GLXextFuncPtr)dlsym(self, name);\n}")
+sub("src/glx_calls.c", "#include \"gladio.h\"\n", "#define _GNU_SOURCE\n#include <dlfcn.h>\n#include \"gladio.h\"\n")
+
+# ---- Visuals in der Tiefe des Standard-Visuals ----
+sub("src/glx_calls.c", "    visualInfo.depth = 32;\n    visualInfo.class = TrueColor;",
+    "    visualInfo.depth = DefaultDepth(dpy, DefaultScreen(dpy));\n    visualInfo.class = TrueColor;", 2)
+
+# ---- glLightModelfv / glLightModeliv ----
+sub("src/gl_calls.c",
+    "void glLightModelfv(GLenum pname, const GLfloat* params) {\n    println(MSG_DEBUG_UNIMPLEMENTED_GLCALL, \"glLightModelfv\");\n}",
+    "void glLightModelfv(GLenum pname, const GLfloat* params) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    ArrayBuffer_rewind(&outputBuffer);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, pname);\n"
+    "    GLfloat values[4] = {0.0f, 0.0f, 0.0f, 0.0f};\n"
+    "    memcpy(values, params, (pname == GL_LIGHT_MODEL_AMBIENT ? 4 : 1) * sizeof(GLfloat));\n"
+    "    ArrayBuffer_putBytes(&outputBuffer, values, sizeof(values));\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LIGHT_MODELFV, outputBuffer.buffer, outputBuffer.size);\n"
+    "    GL_CALL_UNLOCK();\n}")
+sub("src/gl_calls.c",
+    "void glLightModeliv(GLenum pname, const GLint* params) {\n    println(MSG_DEBUG_UNIMPLEMENTED_GLCALL, \"glLightModeliv\");\n}",
+    "void glLightModeliv(GLenum pname, const GLint* params) {\n"
+    "    GLfloat values[4] = {0.0f, 0.0f, 0.0f, 0.0f};\n"
+    "    if (pname == GL_LIGHT_MODEL_AMBIENT) {\n"
+    "        for (int p = 0; p < 4; p++) values[p] = (GLfloat)((double)params[p] / (double)INT32_MAX);\n"
+    "    }\n"
+    "    else values[0] = (GLfloat)params[0];\n"
+    "    glLightModelfv(pname, values);\n}")
+
+if align64:
+    sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",
+        "        uint32_t status; \\\n        void* buffer __attribute__((aligned(8))); \\")
+
+print(f"Gladio-Client in {dst} gepatcht{' (Ringpuffer 64-Bit-Ausrichtung)' if align64 else ''}")

@@ -23,9 +23,12 @@ Server ohne Gerät testen und umbauen kann – insbesondere für den GLES-2.0-Pf
   der Kontext der `GLSurfaceView`).
 
 Der Server-Quelltext wird unverändert aus `app/src/main/cpp` übersetzt (`-DGL_SERVER=1`,
-`shim/android/log.h` ersetzt `<android/log.h>`), der Client aus dem Gladio-Repo; nur der
-fest einkompilierte Socket-Pfad wird im Client durch die Umgebungsvariable
-`GLADIO_SOCKET` wählbar gemacht.
+`shim/android/log.h` ersetzt `<android/log.h>`), der Client aus dem Gladio-Repo mit denselben
+Anpassungen wie der armhf-Client in der Root-FS (`armv7/scripts/patch-gladio-client.py`:
+8-Byte-`long` im Protokoll, Socket-Pfad über `GLADIO_SOCKET`, GL-Funktionen über
+`glXGetProcAddressARB`, Visuals in der Standardtiefe, `glLightModelfv`). `make client32` baut
+zusätzlich einen i386-Client für Wine (32 Bit) mit auf den 64-Bit-Server ausgerichtetem
+Ringpufferkopf (`--align64`).
 
 ## Bauen
 
@@ -37,7 +40,8 @@ Auf Arch/CachyOS: `mesa libglvnd libx11 jdk-openjdk xorg-server-xvfb`.
     make GLADIO_SRC=/pfad/zu/gladio   # vorhandener Klon
     make DEBUG_MODE=0                 # ohne glGetError-/Shader-Protokoll (schneller)
 
-Ergebnis: `build/gladio-pc-server` und `build/client/libGL.so.1`.
+Ergebnis: `build/gladio-pc-server` und `build/client/libGL.so.1` (`make client32`:
+`build/client32/libGL.so.1`, braucht `gcc -m32` und `libX11.so.6` für i386).
 
 ## Ausführen
 
@@ -55,7 +59,20 @@ Mit `--dump VERZ` landen die Bilder, die der Server bei `glXSwapBuffers` fertigs
 
 Umgebungsvariablen des Servers: `GLADIO_SOCKET`, `GLADIO_PC_ES` (2|3), `GLADIO_PC_DUMP`,
 `GLADIO_PC_DUMP_FRAMES`, `GLADIO_PC_SIZE` (Fenstergröße ohne `$DISPLAY`), `EGL_PLATFORM`
-(`x11` mit laufendem X-Server, sonst `surfaceless`).
+(`x11` mit laufendem X-Server, sonst `surfaceless`). Vom Server selbst (gelten auch in der
+App): `GLADIO_GLES=2|3` erzwingt den Pfad, `GLADIO_GLES_EXTENSIONS="GL_OES_… …"` ersetzt die
+Erweiterungsliste des Treibers (z. B. die der Mali-400, um deren Lücken – kein VAO, kein
+glMapBuffer, keine 32-Bit-Indizes – mit Mesa nachzustellen), `GLADIO_PBUFFER=1` erzwingt den
+Pbuffer-Pfad für Treiber ohne `EGL_KHR_surfaceless_context`.
+
+Windows-Programme über Wine: `make client32`, dann z. B.
+
+    GLADIO_SOCKET=/tmp/w3d.sock GLADIO_PC_ES=2 GLADIO_GLES=2 GLADIO_PBUFFER=1 EGL_PLATFORM=x11 \
+        MESA_GLES_VERSION_OVERRIDE=2.0 MESA_GLSL_VERSION_OVERRIDE=100 ./build/gladio-pc-server &
+    GLADIO_SOCKET=/tmp/w3d.sock LD_LIBRARY_PATH=$PWD/build/client32 WINEARCH=win32 wine Worms3D.exe
+
+(Wine lädt seine `libGL.so.1` über `LD_LIBRARY_PATH`; die Xlib-Seite geht an den X-Server
+unter `$DISPLAY`.)
 
 Wer eigene Programme testet, muss im Client-Programm nur `LD_LIBRARY_PATH` auf
 `build/client` und `GLADIO_SOCKET` auf den Socket des Servers zeigen lassen; Xlib geht
@@ -87,4 +104,11 @@ Kanal und Anteil abweichender Pixel).
 * Nebenbefunde aus den Kontrollläufen (in beiden Pfaden behoben): festes Licht war schwarz,
   wenn die Anwendung kein glMaterial aufrief (kein Vorgabematerial); das Umgebungslicht der
   Szene (GL_LIGHT_MODEL_AMBIENT, Vorgabe 0.2) fehlte; glReadPixels mit GL_BGRA vertauschte
-  Rot und Blau falsch (In-place-Tausch).
+  Rot und Blau falsch (In-place-Tausch); glLightModelfv/-iv wurden vom Client nicht übertragen.
+* Mit der Erweiterungsliste der Mali-400 (Galaxy Note 8.0) und erzwungenem Pbuffer-Pfad liefern
+  beide Testprogramme weiterhin dasselbe Bild; Worms 3D (eigener OpenGL-Renderer des Spiels,
+  Wine 9 i386 über `build/client32`) zeigt über ES 2.0 den Titelbildschirm korrekt (llvmpipe:
+  ~20 Bilder/s, wie über ES 3.2).
+* Auf dem Galaxy Note 8.0 selbst scheiterte der erste Versuch an `eglMakeCurrent` ohne
+  Oberfläche (`EGL_BAD_MATCH`: die Mali-400-EGL kennt `EGL_KHR_surfaceless_context` nicht) –
+  daher der Pbuffer-Pfad.

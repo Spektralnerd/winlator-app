@@ -6,6 +6,7 @@
 #include "gl_es2.h"
 
 extern EGLContext globalEGLContext;
+static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context);
 
 pthread_mutex_t glx_context_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -167,7 +168,7 @@ static void* requestHandlerThread(void* param) {
 
                 if (glxContext && context->glxContext != glxContext) {
                     destroyDisplayBuffer();
-                    eglMakeCurrent(eglGetDisplay(EGL_DEFAULT_DISPLAY), EGL_NO_SURFACE, EGL_NO_SURFACE, glxContext->eglContext);
+                    makeGLXContextCurrent(eglGetDisplay(EGL_DEFAULT_DISPLAY), glxContext);
                     context->glxContext = glxContext;
                     currentRenderer = &glxContext->renderer;
                     GLRenderer_resetFrameCount(currentRenderer);
@@ -278,28 +279,23 @@ void destroyGLContext(JNIEnv* env, GLContext* context) {
     free(context);
 }
 
+/* Macht den GLX-Kontext aktuell; mit seinem Pbuffer, wenn EGL keine oberflächenlosen Kontexte kann. */
+static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context) {
+    if (!eglMakeCurrent(eglDisplay, context->eglSurface, context->eglSurface, context->eglContext)) {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            println("gladio: eglMakeCurrent fehlgeschlagen: 0x%x (Pbuffer %d)", eglGetError(), context->eglSurface != EGL_NO_SURFACE);
+        }
+    }
+}
+
 GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
-    static const EGLint confAttribListES3[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_NONE,
-    };
     static const EGLint ctxAttribListES3[] = {
         EGL_CONTEXT_CLIENT_VERSION, 3,
         EGL_NONE
     };
     /* ES-2.0-Pfad (z. B. Mali-400): Config ohne ES3-Bit, Kontext der Version 2 */
-    static const EGLint confAttribListES2[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-        EGL_RED_SIZE, 8,
-        EGL_GREEN_SIZE, 8,
-        EGL_BLUE_SIZE, 8,
-        EGL_ALPHA_SIZE, 8,
-        EGL_NONE,
-    };
     static const EGLint ctxAttribListES2[] = {
         EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
@@ -314,8 +310,18 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
     if (!success) return NULL;
 
     GLES_detect(eglDisplay);
-    const EGLint* confAttribList = GLES2 ? confAttribListES2 : confAttribListES3;
     const EGLint* ctxAttribList = GLES2 ? ctxAttribListES2 : ctxAttribListES3;
+
+    /* Ohne EGL_KHR_surfaceless_context braucht die Config Pbuffer-Unterstützung. */
+    EGLint confAttribList[16];
+    int n = 0;
+    confAttribList[n++] = EGL_RENDERABLE_TYPE; confAttribList[n++] = GLES2 ? EGL_OPENGL_ES2_BIT : EGL_OPENGL_ES3_BIT;
+    confAttribList[n++] = EGL_RED_SIZE; confAttribList[n++] = 8;
+    confAttribList[n++] = EGL_GREEN_SIZE; confAttribList[n++] = 8;
+    confAttribList[n++] = EGL_BLUE_SIZE; confAttribList[n++] = 8;
+    confAttribList[n++] = EGL_ALPHA_SIZE; confAttribList[n++] = 8;
+    if (!gles.surfaceless) { confAttribList[n++] = EGL_SURFACE_TYPE; confAttribList[n++] = EGL_PBUFFER_BIT; }
+    confAttribList[n++] = EGL_NONE;
 
     int numConfigs;
     EGLConfig eglConfig;
@@ -331,14 +337,26 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
         return NULL;
     }
 
+    EGLSurface eglSurface = EGL_NO_SURFACE;
+    if (!gles.surfaceless) {
+        static const EGLint pbufferAttribList[] = {
+            EGL_WIDTH, 1,
+            EGL_HEIGHT, 1,
+            EGL_NONE
+        };
+        eglSurface = eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribList);
+        if (eglSurface == EGL_NO_SURFACE) println("gladio: eglCreatePbufferSurface fehlgeschlagen: 0x%x", eglGetError());
+    }
+
     GLXContext* context = calloc(1, sizeof(GLXContext));
     context->eglContext = eglContext;
+    context->eglSurface = eglSurface;
     context->renderer.contextId = contextId;
     GLVertexArrayObject_setBound(&context->renderer.clientState, 0);
     GLClientState_init(&context->renderer.clientState, sharedContext ? &sharedContext->renderer.clientState : NULL);
 
     GLX_CONTEXT_LOCK();
-    eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, context->eglContext);
+    makeGLXContextCurrent(eglDisplay, context);
     GLES_initOnContext();
     GLRenderer_initOnEGLContext(&context->renderer);
     eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
@@ -350,11 +368,12 @@ void destroyGLXContext(GLXContext* context) {
     GLX_CONTEXT_LOCK();
     GLClientState_destroy(&context->renderer.clientState);
     EGLDisplay eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, context->eglContext);
+    makeGLXContextCurrent(eglDisplay, context);
     GLRenderer_destroy(&context->renderer);
     eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     GLX_CONTEXT_UNLOCK();
     eglDestroyContext(eglDisplay, context->eglContext);
+    if (context->eglSurface != EGL_NO_SURFACE) eglDestroySurface(eglDisplay, context->eglSurface);
 }
 
 static void internalReadVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx, ArrayBuffer* dstBuffer, float* constValue) {

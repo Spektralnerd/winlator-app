@@ -5,8 +5,7 @@
 
 static bool isGLBufferTarget(GLenum target) {
     if (target == GL_PIXEL_UNPACK_BUFFER) return false;
-    if (GLES2) return target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER;
-    return true;
+    return GLES_isBufferTarget(target);
 }
 
 GLBuffer* GLBuffer_getBound(GLenum target) {

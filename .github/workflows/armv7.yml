@@ -52,7 +52,7 @@ jobs:
           FORCE: ${{ inputs.rootfs }}
         run: |
           # nur, was in den Unterbau eingeht (CI-Hilfsskripte wie ci-report.sh zählen nicht)
-          KEY="$(git ls-files -s 'armv7/scripts/build-*' 'armv7/scripts/ci-armhf.sh' 'armv7/scripts/ci-wine.sh' \
+          KEY="$(git ls-files -s 'armv7/scripts/build-*' 'armv7/scripts/patch-*' 'armv7/scripts/ci-armhf.sh' 'armv7/scripts/ci-wine.sh' \
                  armv7/scripts/env.sh armv7/scripts/fetch-armhf-libs.sh armv7/scripts/assemble.sh \
                  armv7/scripts/check-rootfs.py armv7/scripts/make-container-pattern.py \
                  armv7/winhandler armv7/winpreexec armv7/patches \

@@ -51,9 +51,32 @@ static bool hasExtension(const char* extensions, const char* name) {
     return false;
 }
 
+/* Gibt eine lange Liste in Stücken aus (die Protokollzeilen sind begrenzt). */
+static void printlnList(const char* prefix, const char* list) {
+    if (!list) list = "(null)";
+    const int chunk = 180;
+    int len = strlen(list);
+    for (int pos = 0; pos < len || pos == 0; pos += chunk) {
+        char buf[200];
+        snprintf(buf, sizeof(buf), "%.*s", chunk, list + pos);
+        println("%s%s%s", prefix, pos ? "… " : "", buf);
+    }
+}
+
 void GLES_detect(EGLDisplay eglDisplay) {
     if (gles.detected) return;
     gles.detected = true;
+
+    const char* eglExtensions = eglQueryString(eglDisplay, EGL_EXTENSIONS);
+    gles.surfaceless = hasExtension(eglExtensions, "EGL_KHR_surfaceless_context");
+    const char* pbuffer = getenv("GLADIO_PBUFFER");
+    if (pbuffer && pbuffer[0] == '1') {
+        gles.surfaceless = false;
+        println("gladio: Pbuffer-Oberflächen durch GLADIO_PBUFFER erzwungen");
+    }
+    println("gladio: EGL %s, %s", eglQueryString(eglDisplay, EGL_VERSION), eglQueryString(eglDisplay, EGL_VENDOR));
+    printlnList("gladio: EGL-Erweiterungen: ", eglExtensions);
+    if (!gles.surfaceless) println("gladio: kein EGL_KHR_surfaceless_context, Kontexte bekommen einen 1x1-Pbuffer");
 
     const char* force = getenv("GLADIO_GLES");
     if (force && force[0] == '2') {
@@ -190,6 +213,11 @@ bool GLES_isCapabilitySupported(GLenum cap) {
         default:
             return false;
     }
+}
+
+bool GLES_isBufferTarget(GLenum target) {
+    if (!gles.es2) return true;
+    return target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER;
 }
 
 GLenum GLES_vertexAttribType(GLenum type) {

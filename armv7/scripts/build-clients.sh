@@ -27,30 +27,8 @@ log "Gladio-Client"
 SRC="$SRC_DIR/gladio"
 git_fetch "$GLADIO_REPO" "$GLADIO_COMMIT" "$SRC"
 cd "$SRC" && git checkout -q --force . && git clean -qfdx
-# "long"-Felder des Protokolls fest 8 Byte breit (passend zum geänderten Server in der App)
-python3 -I - "$SRC" <<'PY'
-import pathlib, sys
-src = pathlib.Path(sys.argv[1])
-def sub(rel, old, new, count=1):
-    p = src / rel; s = p.read_text(); n = s.count(old)
-    if n != count: raise SystemExit(f"{rel}: erwartet {count}x, gefunden {n}x: {old!r}")
-    p.write_text(s.replace(old, new))
-sub("include/arrays.h", "extern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value);",
-    "#include <stdint.h>\nextern void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value);")
-sub("include/arrays.h", "extern long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);",
-    "extern int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer);")
-sub("src/arrays.c", "void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, long value) {\n    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, long, value);",
-    "void ArrayBuffer_putLong(ArrayBuffer* arrayBuffer, int64_t value) {\n    ARRAY_BUFFER_PUT_TYPE(arrayBuffer, int64_t, value);")
-sub("src/arrays.c", "long ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {\n    ARRAY_BUFFER_GET_TYPE(arrayBuffer, long);",
-    "int64_t ArrayBuffer_getLong(ArrayBuffer* arrayBuffer) {\n    ARRAY_BUFFER_GET_TYPE(arrayBuffer, int64_t);")
-sub("src/gl_calls.c", "ArrayBuffer_putLong(&outputBuffer, (long)sync);", "ArrayBuffer_putLong(&outputBuffer, (int64_t)(intptr_t)sync);", 2)
-sub("src/gl_calls.c", "GLsync sync = (GLsync)ArrayBuffer_getLong(&inputBuffer);", "GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);")
-sub("src/gl_calls.c", "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &sync, sizeof(long));",
-    "int64_t syncValue = (int64_t)(intptr_t)sync;\n    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));")
-sub("src/gl_calls.c", "GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &sync, sizeof(long), GL_RETURN);",
-    "int64_t syncValue = (int64_t)(intptr_t)sync;\n    GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &syncValue, sizeof(int64_t), GL_RETURN);")
-print("Gladio gepatcht")
-PY
+# Anpassungen an den Server der App (Protokoll, glXGetProcAddressARB, glLightModelfv, ...):
+python3 -I "$(dirname "$0")/patch-gladio-client.py" "$SRC"
 cmake_cross "$SRC" "$BUILD_DIR/gladio"
 DEST="$STAGE_DIR/gladio"; rm -rf "$DEST" && mkdir -p "$DEST/usr/lib"
 install -m755 "$BUILD_DIR/gladio/libGL.so" "$DEST/usr/lib/libGL.so.1.7.0"

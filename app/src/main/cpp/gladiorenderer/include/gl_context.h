@@ -7,6 +7,7 @@
 
 typedef struct GLXContext {
     EGLContext eglContext;
+    EGLSurface eglSurface; /* 1x1-Pbuffer, wenn EGL keine oberflächenlosen Kontexte kann; sonst EGL_NO_SURFACE */
     GLRenderer renderer;
 } GLXContext;
 

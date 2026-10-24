@@ -289,7 +289,7 @@ void gd_handle_glBufferData(GLContext* context) {
     GLenum usage = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLBuffer* buffer = GLBuffer_getBound(target);
-    if (buffer && buffer->mappedData) {
+    if (buffer && buffer->mappedData && GLES_isBufferTarget(target)) {
         glBufferData(target, size, buffer->mappedData, usage);
     }
     gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_DATA, NULL, 0);
@@ -304,7 +304,7 @@ void gd_handle_glBufferStorage(GLContext* context) {
     int fd = GLBuffer_allocateMemory(buffer, size);
 
     bool success = fd > 0;
-    if (success && target != GL_PIXEL_UNPACK_BUFFER) {
+    if (success && target != GL_PIXEL_UNPACK_BUFFER && GLES_isBufferTarget(target)) {
         GLenum usage = (flags & GL_DYNAMIC_STORAGE_BIT) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
         glBufferData(target, size, NULL, usage);
     }
@@ -319,7 +319,7 @@ void gd_handle_glBufferSubData(GLContext* context) {
     GLsizeiptr size = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLBuffer* buffer = GLBuffer_getBound(target);
-    if (buffer && buffer->mappedData) {
+    if (buffer && buffer->mappedData && GLES_isBufferTarget(target)) {
         glBufferSubData(target, offset, size, buffer->mappedData + offset);
     }
     gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_SUB_DATA, NULL, 0);
@@ -1166,7 +1166,7 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
     if (buffer) {
         if (buffer->mappedData) {
             if (GLES2) {
-                glBufferSubData(target, offset, length, buffer->mappedData + offset);
+                if (GLES_isBufferTarget(target)) glBufferSubData(target, offset, length, buffer->mappedData + offset);
             }
             else {
                 void* dstData = glMapBufferRange(target, offset, length, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -1995,18 +1995,24 @@ void gd_handle_glLightModelf(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLfloat param = ArrayBuffer_getFloat(&context->inputBuffer);
 
-    GLRenderer_setLightModelParams(currentRenderer, pname, &param);
+    GLfloat params[4] = {param, param, param, param};
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModelfv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModelfv");
+    /* der (gepatchte) Client schickt immer 4 Werte, siehe armv7/scripts/patch-gladio-client.py */
+    GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
+    GLfloat* params = ArrayBuffer_getBytes(&context->inputBuffer, 4 * sizeof(GLfloat));
+
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModeli(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLint param = ArrayBuffer_getInt(&context->inputBuffer);
 
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModeli");
+    GLfloat params[4] = {(GLfloat)param, (GLfloat)param, (GLfloat)param, (GLfloat)param};
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModeliv(GLContext* context) {

@@ -148,6 +148,19 @@ Bildausgabe mit **OpenGL ES 2.0** (z. B. Mali-400): Hat das Gerät kein ES 3, ni
 ES-2-Kontext und übersetzt ihre Shader nach GLSL ES 1.00. Neue Container bekommen dann
 „Software“ als OpenGL-Treiber und, ohne Vulkan-Treiber, WineD3D statt DXVK (alles umstellbar).
 
+**Gladio auf OpenGL ES 2.0** (OpenGL-Treiber „Gladio“ auf einem ES-2-Gerät): Der Gladio-Server
+der App (`app/src/main/cpp/gladiorenderer`) ist für ES 3.2 geschrieben; die armv7-Variante hat
+einen ES-2.0-Pfad (`gl_es2.c`, `shader_converter_es2.c`): Dem Windows-Programm wird OpenGL 2.1 /
+GLSL 1.20 gemeldet (wined3d nimmt dann seinen alten Shader-Pfad), die Shader werden nach GLSL
+ES 1.00 übersetzt, Texturformate, Framebuffer, Puffer und Zeichenaufrufe auf das abgebildet, was
+ES 2.0 und die Erweiterungen des Treibers hergeben (Mali-400: kein VAO, kein glMapBuffer, keine
+32-Bit-Indizes, kein highp im Fragment-Shader, 12 Varyings). Ohne `EGL_KHR_surfaceless_context`
+(Mali-400) bekommt jeder GLX-Kontext einen 1×1-Pbuffer. Mit dem PC-Testgeschirr in
+`armv7/tools/gladio-pc` lässt sich der Server samt Client auf dem Rechner mit Mesa prüfen
+(ES 2.0 erzwungen, Erweiterungsliste und Pbuffer-Pfad wählbar). Der Gladio-Client in der Root-FS
+wird dafür mit `armv7/scripts/patch-gladio-client.py` angepasst. Das Startprotokoll zeigt die
+ES-Erweiterungen und Grenzen des Geräts (`gladio: ES 2.0 Erweiterungen …`).
+
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit
 llvmpipe/LLVM) auf dem nativen Hauptstapel des Prozesses aus; Wine sieht nur Box86s eigenen
@@ -268,7 +281,8 @@ Win32-Präfix) funktionieren dann nicht mehr und sollten neu angelegt werden.
 ## Grenzen
 
 - Nur 32-Bit-Windows-Programme (es gibt kein 64-Bit-Wine auf 32-Bit-ARM)
-- Vortek braucht Vulkan auf dem Gerät (und Android 8), VirGL und Gladio brauchen OpenGL ES 3.x
+- Vortek braucht Vulkan auf dem Gerät (und Android 8), VirGL braucht OpenGL ES 3.x; Gladio läuft
+  auf ES 2.0 über den beschriebenen ES-2.0-Pfad (mit dessen Grenzen)
 - Software-Rendering bleibt Software-Rendering: llvmpipe ist um ein Vielfaches schneller als
   softpipe (auf dem Galaxy Note 8.0 schaffte softpipe beim SKIDROW-Intro, 1024×768, etwa
   0,5 Bilder pro Sekunde), ersetzt aber keine GPU

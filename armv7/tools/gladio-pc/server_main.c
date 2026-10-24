@@ -127,6 +127,14 @@ static const char* dumpDir = NULL;
 static const char* dumpFrames = "1,10";
 static EGLDisplay eglDisplay;
 
+static int xErrorHandler(Display* display, XErrorEvent* event) {
+    /* z. B. BadDrawable, wenn das Fenster schon wieder weg ist: nicht abbrechen */
+    char text[128];
+    XGetErrorText(display, event->error_code, text, sizeof(text));
+    fprintf(stderr, "gladio-pc: X-Fehler %s (Anfrage %d, Ressource 0x%lx)\n", text, event->request_code, event->resourceid);
+    return 0;
+}
+
 static void logmsg(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -696,6 +704,7 @@ int main(int argc, char** argv) {
     if (!sockPath) sockPath = "/tmp/gladio-pc.sock";
     int esVersion = getenv("GLADIO_PC_ES") ? atoi(getenv("GLADIO_PC_ES")) : 3;
     dumpDir = getenv("GLADIO_PC_DUMP");
+    if (dumpDir && !dumpDir[0]) dumpDir = NULL;
     if (getenv("GLADIO_PC_DUMP_FRAMES")) dumpFrames = getenv("GLADIO_PC_DUMP_FRAMES");
     if (getenv("GLADIO_PC_SIZE")) sscanf(getenv("GLADIO_PC_SIZE"), "%dx%d", &fallbackWidth, &fallbackHeight);
     if (dumpDir) mkdir(dumpDir, 0755);
@@ -703,6 +712,7 @@ int main(int argc, char** argv) {
     if (!getenv("EGL_PLATFORM")) setenv("EGL_PLATFORM", "surfaceless", 0);
 
     XInitThreads();
+    XSetErrorHandler(xErrorHandler);
     xDisplay = XOpenDisplay(NULL);
     if (xDisplay) logmsg("Fenstergrößen kommen vom X-Server %s", XDisplayString(xDisplay));
     else logmsg("kein $DISPLAY, Fenstergröße fest %dx%d", fallbackWidth, fallbackHeight);

@@ -26,7 +26,7 @@ SERVER_CFLAGS := -O1 -g -fPIC -std=gnu11 -w -MMD -MP -DGL_SERVER=1 -D__ANDROID_A
 SERVER_LIBS := -lEGL -lGLESv2 -lX11 -lpthread -lm
 
 CLIENT_SRCS := main.c gl_calls.c glx_calls.c arrays.c ring_buffer.c gl_buffer.c gl_vao.c
-CLIENT_CFLAGS := -O2 -g -fPIC -std=gnu11 -w -DGL_GLEXT_PROTOTYPES -I$(GLADIO_SRC)/include
+CLIENT_CFLAGS := -O2 -g -fPIC -std=gnu11 -w -DGL_GLEXT_PROTOTYPES
 
 all: $(BUILD)/gladio-pc-server $(BUILD)/client/libGL.so.1
 
@@ -46,21 +46,38 @@ $(GLADIO_SRC)/include/gladio.h:
 	git clone $(GLADIO_REPO) $(GLADIO_SRC)
 	git -C $(GLADIO_SRC) checkout -q $(GLADIO_COMMIT)
 
-# Der Client hat den Socket-Pfad fest einkompiliert; für den PC wird er über GLADIO_SOCKET wählbar.
-$(BUILD)/client/src/main.c: $(GLADIO_SRC)/include/gladio.h
-	@mkdir -p $(BUILD)/client/src
-	sed 's|strncpy(server_addr.sun_path, X11_SERVER_PATH,|const char* gladioSock = getenv("GLADIO_SOCKET"); strncpy(server_addr.sun_path, gladioSock ? gladioSock : X11_SERVER_PATH,|' \
-	    $(GLADIO_SRC)/src/main.c > $@
-	@grep -q GLADIO_SOCKET $@ || { echo "Socket-Pfad im Client nicht ersetzt"; exit 1; }
+# Der Client wird aus einer gepatchten Kopie gebaut – mit denselben Änderungen wie der armhf-Client
+# (armv7/scripts/patch-gladio-client.py: 8-Byte-"long", GLADIO_SOCKET, glXGetProcAddressARB, ...).
+PATCH_CLIENT = ../../scripts/patch-gladio-client.py
+$(BUILD)/client-src/.patched: $(GLADIO_SRC)/include/gladio.h $(PATCH_CLIENT)
+	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client-src
+	touch $@
 
-$(BUILD)/client/libGL.so.1: $(BUILD)/client/src/main.c
-	gcc $(CLIENT_CFLAGS) -shared -Wl,-soname,libGL.so.1 -o $@ $(BUILD)/client/src/main.c \
-	    $(addprefix $(GLADIO_SRC)/src/,$(filter-out main.c,$(CLIENT_SRCS))) -lX11 -lpthread
+$(BUILD)/client/libGL.so.1: $(BUILD)/client-src/.patched
+	@mkdir -p $(BUILD)/client
+	gcc $(CLIENT_CFLAGS) -I$(BUILD)/client-src/include -shared -Wl,-soname,libGL.so.1 -o $@ \
+	    $(addprefix $(BUILD)/client-src/src/,$(CLIENT_SRCS)) -lX11 -lpthread -ldl
 	ln -sf libGL.so.1 $(BUILD)/client/libGL.so
 
+# 32-Bit-Client für Wine i386 (Ringpufferkopf auf den 64-Bit-Server ausgerichtet).
+# Braucht gcc -m32 (libc6-dev-i386, lib32gcc) und libX11.so.6:i386.
+$(BUILD)/client32-src/.patched: $(GLADIO_SRC)/include/gladio.h $(PATCH_CLIENT)
+	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client32-src --align64
+	touch $@
+
+# Ohne linux-libc-dev:i386 fehlen die asm/-Header; die x86-64-Ausgabe deckt i386 mit ab.
+$(BUILD)/client32/libGL.so.1: $(BUILD)/client32-src/.patched
+	@mkdir -p $(BUILD)/client32 $(BUILD)/client32-inc
+	@[ -d /usr/include/i386-linux-gnu/asm ] || ln -sfn /usr/include/x86_64-linux-gnu/asm $(BUILD)/client32-inc/asm
+	gcc -m32 $(CLIENT_CFLAGS) -I$(BUILD)/client32-src/include -idirafter $(BUILD)/client32-inc -shared -Wl,-soname,libGL.so.1 -o $@ \
+	    $(addprefix $(BUILD)/client32-src/src/,$(CLIENT_SRCS)) -L/usr/lib/i386-linux-gnu -l:libX11.so.6 -lpthread -ldl
+	ln -sf libGL.so.1 $(BUILD)/client32/libGL.so
+
+client32: $(BUILD)/client32/libGL.so.1
+
 clean:
-	rm -rf $(BUILD)/server $(BUILD)/client $(BUILD)/gladio-pc-server
+	rm -rf $(BUILD)/server $(BUILD)/client $(BUILD)/client-src $(BUILD)/client32 $(BUILD)/client32-src $(BUILD)/gladio-pc-server
 
 -include $(SERVER_OBJS:.o=.d)
 
-.PHONY: all clean
+.PHONY: all clean client32
