@@ -1,7 +1,7 @@
 #ifndef GLADIO_TEXTURE_UTILS_H
 #define GLADIO_TEXTURE_UTILS_H
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(GL_SERVER)
 #include <GLES2/gl2.h>
 #endif
 
@@ -178,7 +178,7 @@ static inline int computeTexImageDataSize(uint32_t format, uint32_t type, uint32
     return width * height * depth * channels * bytesPerPixel;
 }
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(GL_SERVER) /* Serverseite, auch beim PC-Bau (armv7/tools/gladio-pc) */
 static inline bool isCompressedFormat(GLenum format) {
     switch (format) {
         case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:

@@ -4,7 +4,9 @@
 #define DEBUG_MODE_SHADER_INFO (1<<1)
 #define DEBUG_MODE_TEXTURE_FORMAT (1<<2)
 #define DEBUG_MODE_HANDLE_REQUEST (1<<3)
+#ifndef DEBUG_MODE
 #define DEBUG_MODE (0) // FIXME 0=DISABLE or (FIRST | SECOND)
+#endif
 #define IS_DEBUG_ENABLED(type) ((DEBUG_MODE & type) != 0)
 
 #define GLX_EXT_MAJOR_OPCODE -106
