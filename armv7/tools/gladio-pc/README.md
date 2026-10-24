@@ -61,6 +61,18 @@ Wer eigene Programme testet, muss im Client-Programm nur `LD_LIBRARY_PATH` auf
 `build/client` und `GLADIO_SOCKET` auf den Socket des Servers zeigen lassen; Xlib geht
 weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch Gladio.
 
+## Testprogramme
+
+* `glrender2.c` – festes Funktionsmodell: Textur mit Mipmaps, Alphatest, Licht, Nebel
+  (`./glrender2 MODUS out.ppm FILTER`, Modus 0–3).
+* `glsltest.c` – Shader im wined3d-Stil: GLSL 1.20 mit gl_Vertex/gl_TexCoord/gl_FragData/
+  gl_Fog, GLSL 1.30 mit in/out und texture(), VBO/IBO, D3DCOLOR-Attribute, Framebuffer-
+  Objekt (EXT), Alphatest, Blending, BGRA-Rücklesen (`./glsltest out.ppm`).
+  Bauen: `gcc -O1 -o glsltest glsltest.c -lX11 -lGL -ldl`.
+
+Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
+Kanal und Anteil abweichender Pixel).
+
 ## Stand
 
 * ES 3.2 (Kontrolllauf, llvmpipe): `glrender2` Modus 0 und 1 liefern durch Gladio
@@ -68,5 +80,11 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   Modus 2 (festes Licht) weicht ab: Gladio liefert für beleuchtete Pixel Schwarz – ein
   Verhalten des Gladio-Servers selbst, unabhängig von dieser Portierung (Wine/wined3d
   rechnet Beleuchtung in eigenen GLSL-Shadern, nutzt das feste GL-Licht also nicht).
-* ES 2.0: `createGLXContext` schlägt fehl (`eglChooseConfig` mit `EGL_OPENGL_ES3_BIT`),
-  genau wie auf der Mali-400. Hier setzt der ES-2.0-Pfad an.
+* ES 2.0 (`GLADIO_GLES=2`, Mesa auf ES 2.0 gezwungen): beide Testprogramme liefern dasselbe
+  Bild wie auf ES 3.2 bzw. direkt mit llvmpipe (Abweichung höchstens 1/255). Der Server
+  meldet dem Client OpenGL 2.1 / GLSL 1.20; die Shader werden nach GLSL ES 1.00 übersetzt.
+  Einzelheiten zum Pfad: `app/src/main/cpp/gladiorenderer/include/gl_es2.h`.
+* Nebenbefunde aus den Kontrollläufen (in beiden Pfaden behoben): festes Licht war schwarz,
+  wenn die Anwendung kein glMaterial aufrief (kein Vorgabematerial); das Umgebungslicht der
+  Szene (GL_LIGHT_MODEL_AMBIENT, Vorgabe 0.2) fehlte; glReadPixels mit GL_BGRA vertauschte
+  Rot und Blau falsch (In-place-Tausch).

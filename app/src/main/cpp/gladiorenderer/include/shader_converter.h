@@ -45,6 +45,11 @@ typedef struct ShaderCode {
     int groupCount;
     uint32_t flags;
     short version;
+
+    /* GLSL-ES-1.00-Ausgabe (OpenGL-ES-2.0-Pfad) */
+    uint32_t es2Flags;
+    char* es2FragOutput;
+    bool es2FragOutputIsArray;
 } ShaderCode;
 
 typedef struct ShaderObject {

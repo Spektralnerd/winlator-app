@@ -935,8 +935,10 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
                 /* Grenzen, die ES 2.0 anders oder gar nicht kennt */
                 int value = -1;
                 switch (pname) {
-                    case GL_MAX_VERTEX_UNIFORM_COMPONENTS: value = gles.maxVertexUniformVectors * 4; break;
-                    case GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: value = gles.maxFragmentUniformVectors * 4; break;
+                    /* wined3d legt Konstantenfelder in dieser Größe an (vs_c[n]); etwas Platz für
+                     * posFixup, Matrizen und die eigenen Uniforms des Servers lassen */
+                    case GL_MAX_VERTEX_UNIFORM_COMPONENTS: value = MAX(gles.maxVertexUniformVectors - 32, 64) * 4; break;
+                    case GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: value = MAX(gles.maxFragmentUniformVectors - 32, 32) * 4; break;
                     case GL_MAX_VARYING_COMPONENTS: /* = GL_MAX_VARYING_FLOATS */
                         /* abzüglich der Varyings, die der Server selbst belegt (Farbe, Nebel) */
                         value = MAX(gles.maxVaryingVectors - 2, 4) * 4;
@@ -1550,10 +1552,12 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
                 }
                 break;
             case GL_BGRA:
+                /* dst und src sind hier derselbe Puffer, daher über eine Zwischenvariable tauschen */
                 for (int i = 0; i < srcDataSize; i += 4) {
+                    char red = srcData[i+0];
                     dstData[i+0] = srcData[i+2];
                     dstData[i+1] = srcData[i+1];
-                    dstData[i+2] = srcData[i+0];
+                    dstData[i+2] = red;
                     dstData[i+3] = srcData[i+3];
                 }
                 break;

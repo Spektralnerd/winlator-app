@@ -1716,7 +1716,7 @@ void gd_handle_glGetString(GLContext* context) {
 
     switch (name) {
         case GL_VERSION:
-            string = GL_STRING_VERSION;
+            string = GLES_versionString();
             break;
         case GL_EXTENSIONS:
             string = getGLExtensions(NULL);
@@ -1728,7 +1728,7 @@ void gd_handle_glGetString(GLContext* context) {
             string = GL_STRING_RENDERER;
             break;
         case GL_SHADING_LANGUAGE_VERSION:
-            string = GL_STRING_SHADING_LANGUAGE_VERSION;
+            string = GLES_shadingLanguageVersionString();
             break;
         default:
             string = "";

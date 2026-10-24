@@ -4,6 +4,7 @@
 #include "gl_context.h"
 #include "gl_renderer.h"
 #include "gl_es2.h"
+#include "shader_converter_es2.h"
 
 #if DEBUG_MODE
 #include "debug_utils.h"
@@ -56,6 +57,7 @@ struct ReservedWord {
     char* name;
     char* replace;
     GLenum shaderType;
+    bool es3Only; /* nur für die GLSL-ES-3.20-Ausgabe */
 };
 
 typedef struct Subword {
@@ -90,20 +92,20 @@ static struct ReservedBuiltinWord reservedBuiltinWords[] = {
 };
 
 static struct ReservedWord reservedWords[] = {
-    {"attribute", "in", GL_VERTEX_SHADER},
-    {"varying", "out", GL_VERTEX_SHADER},
-    {"varying", "in", GL_FRAGMENT_SHADER},
-    {"sampler1D", "sampler2D", GL_FRAGMENT_SHADER},
-    {"texture2D", "texture", GL_FRAGMENT_SHADER},
-    {"texture2DLod", "textureLod", GL_FRAGMENT_SHADER},
-    {"texture2DProj", "textureProj", GL_FRAGMENT_SHADER},
-    {"texture2DGradARB", "textureGrad", GL_FRAGMENT_SHADER},
-    {"texture2DLodOffset", "textureLodOffset", GL_FRAGMENT_SHADER},
-    {"texture3D", "texture", GL_FRAGMENT_SHADER},
-    {"textureCube", "texture", GL_FRAGMENT_SHADER},
-    {"filter", "gd_Filter", GL_FRAGMENT_SHADER},
-    {"sample", "gd_Sample", GL_FRAGMENT_SHADER},
-    {"texture", "gd_Texture", GL_FRAGMENT_SHADER}
+    {"attribute", "in", GL_VERTEX_SHADER, true},
+    {"varying", "out", GL_VERTEX_SHADER, true},
+    {"varying", "in", GL_FRAGMENT_SHADER, true},
+    {"sampler1D", "sampler2D", GL_FRAGMENT_SHADER, false},
+    {"texture2D", "texture", GL_FRAGMENT_SHADER, true},
+    {"texture2DLod", "textureLod", GL_FRAGMENT_SHADER, true},
+    {"texture2DProj", "textureProj", GL_FRAGMENT_SHADER, true},
+    {"texture2DGradARB", "textureGrad", GL_FRAGMENT_SHADER, true},
+    {"texture2DLodOffset", "textureLodOffset", GL_FRAGMENT_SHADER, true},
+    {"texture3D", "texture", GL_FRAGMENT_SHADER, true},
+    {"textureCube", "texture", GL_FRAGMENT_SHADER, true},
+    {"filter", "gd_Filter", GL_FRAGMENT_SHADER, false},
+    {"sample", "gd_Sample", GL_FRAGMENT_SHADER, false},
+    {"texture", "gd_Texture", GL_FRAGMENT_SHADER, false}
 };
 
 static char* allowedExtensions[] = {"GL_ARB_shader_texture_lod"};
@@ -1105,10 +1107,23 @@ static char* replaceReservedWords(ShaderObject* shader, char* line) {
             char* replace = NULL;
 
             if (len > 3 && name[0] == 'g' && name[1] == 'l' && name[2] == '_') {
-                for (j = 0; j < ARRAY_SIZE(reservedBuiltinWords); j++) {
+                const char* es2Replace = GLES2 ? ShaderConverterES2_replaceBuiltin(shader, name, len) : NULL;
+                if (es2Replace) replace = strdup(es2Replace);
+                else for (j = 0; j < ARRAY_SIZE(reservedBuiltinWords); j++) {
                     if ((reservedBuiltinWords[j].shaderType == GL_NONE || reservedBuiltinWords[j].shaderType == shader->type) && cstartswith(reservedBuiltinWords[j].name, name)) {
                         if (len < strlen(reservedBuiltinWords[j].name)) i = nameStart + strlen(reservedBuiltinWords[j].name);
                         if (reservedBuiltinWords[j].replace) {
+                            /* ES 2.0: keine Rückseitenfarben (spart Varyings, Mali-400 hat nur 12) */
+                            if (GLES2 && shader->type == GL_FRAGMENT_SHADER && strcmp(reservedBuiltinWords[j].name, "gl_Color") == 0) {
+                                replace = strdup("gd_FrontColor");
+                                BITMASK_SET(shader->code.flags, FLAG_BUILTIN_FRONT_COLOR);
+                                break;
+                            }
+                            if (GLES2 && shader->type == GL_FRAGMENT_SHADER && strcmp(reservedBuiltinWords[j].name, "gl_SecondaryColor") == 0) {
+                                replace = strdup("gd_FrontSecondaryColor");
+                                BITMASK_SET(shader->code.flags, FLAG_BUILTIN_FRONT_SECONDARY_COLOR);
+                                break;
+                            }
                             replace = strdup(reservedBuiltinWords[j].replace);
                         }
                         else name[1] = 'd';
@@ -1121,6 +1136,7 @@ static char* replaceReservedWords(ShaderObject* shader, char* line) {
                 char oldChar = line[i];
                 line[i] = '\0';
                 for (j = 0; j < ARRAY_SIZE(reservedWords); j++) {
+                    if (GLES2 && reservedWords[j].es3Only) continue;
                     if ((reservedWords[j].shaderType == GL_NONE || reservedWords[j].shaderType == shader->type) && strcmp(reservedWords[j].name, name) == 0) {
                         if (strcmp(name, "texture") == 0 && !ArrayMap_get(&shader->code.variables, name)) break;
                         replace = strdup(reservedWords[j].replace);
@@ -1237,12 +1253,14 @@ static void iterateShaderSource(ShaderObject* shader, char* code, int size) {
 
         if (!skipLine) {
             newLine = replaceDefinedMacros(&shader->code, newLine);
+            int scopeBefore = shader->code.scopeCount;
             extractShaderDataTypes(&shader->code, newLine);
             newLine = replaceReservedWords(shader, newLine);
 
             newLine = implicitConvertFunctionParams(&shader->code, newLine);
             if (shader->code.flags & FLAG_HAS_OPERATORS) newLine = implicitConvertIntToFloat(&shader->code, newLine);
             if (shader->code.flags & FLAG_SHADER_EXTENSIONS) newLine = replaceShaderExtensions(newLine);
+            if (GLES2) newLine = ShaderConverterES2_convertLine(shader, newLine, scopeBefore);
 
             removeVariablesOutOfScope(&shader->code);
             ArrayList_add(&shader->code.lines, newLine);
@@ -1318,7 +1336,7 @@ static void injectVariableDecorations(ShaderObject* shader) {
                 variable->typeQualifier = TYPE_QUALIFIER_CONST;
             }
         }
-        else if (shader->type == GL_FRAGMENT_SHADER && variable->typeQualifier == TYPE_QUALIFIER_OUT && variable->location == -1) {
+        else if (!GLES2 && shader->type == GL_FRAGMENT_SHADER && variable->typeQualifier == TYPE_QUALIFIER_OUT && variable->location == -1) {
             char* oldLine = shader->code.lines.elements[variable->lineStart];
             char newLine[256];
             sprintf(newLine, "layout(location = %d) %s", location++, oldLine);
@@ -1345,54 +1363,64 @@ static void injectBuiltinVariables(ShaderProgram* program, ShaderObject* shader)
     }
 
     int head = 0;
-    insertCodeLine(shader, head++, strdup("#version 320 es"));
-    if (shader->type == GL_FRAGMENT_SHADER) {
-        insertCodeLine(shader, head++, strdup("precision highp float;"));
-        insertCodeLine(shader, head++, strdup("precision highp int;"));
-        insertCodeLine(shader, head++, strdup("precision highp sampler2DShadow;"));
-        insertCodeLine(shader, head++, strdup("precision highp sampler3D;"));
+    if (GLES2) {
+        ShaderConverterES2_injectHeader(shader, insertCodeLine, &head);
+    }
+    else {
+        insertCodeLine(shader, head++, strdup("#version 320 es"));
+        if (shader->type == GL_FRAGMENT_SHADER) {
+            insertCodeLine(shader, head++, strdup("precision highp float;"));
+            insertCodeLine(shader, head++, strdup("precision highp int;"));
+            insertCodeLine(shader, head++, strdup("precision highp sampler2DShadow;"));
+            insertCodeLine(shader, head++, strdup("precision highp sampler3D;"));
+        }
     }
 
-    const char* prefix = shader->type == GL_VERTEX_SHADER ? "out" : "in";
+    const char* prefix = GLES2 ? "varying" : (shader->type == GL_VERTEX_SHADER ? "out" : "in");
+    const char* attribute = GLES2 ? "attribute" : "in";
 
     if (shader->type == GL_VERTEX_SHADER) {
-        if ((shader->code.flags & FLAG_BUILTIN_COLOR)) insertCodeLine(shader, head++, strdup("in vec4 gd_Color;"));
-        if ((shader->code.flags & FLAG_BUILTIN_SECONDARY_COLOR)) insertCodeLine(shader, head++, strdup("in vec4 gd_SecondaryColor;"));
-        if ((shader->code.flags & FLAG_BUILTIN_VERTEX)) insertCodeLine(shader, head++, strdup("in vec4 gd_Vertex;"));
-        if ((shader->code.flags & FLAG_BUILTIN_NORMAL)) insertCodeLine(shader, head++, strdup("in vec3 gd_Normal;"));
+        if ((shader->code.flags & FLAG_BUILTIN_COLOR)) insertCodeLine(shader, head++, strjoin(' ', 2, attribute, "vec4 gd_Color;"));
+        if ((shader->code.flags & FLAG_BUILTIN_SECONDARY_COLOR)) insertCodeLine(shader, head++, strjoin(' ', 2, attribute, "vec4 gd_SecondaryColor;"));
+        if ((shader->code.flags & FLAG_BUILTIN_VERTEX)) insertCodeLine(shader, head++, strjoin(' ', 2, attribute, "vec4 gd_Vertex;"));
+        if ((shader->code.flags & FLAG_BUILTIN_NORMAL)) insertCodeLine(shader, head++, strjoin(' ', 2, attribute, "vec3 gd_Normal;"));
 
         if (shader->code.flags & FLAG_BUILTIN_MULTITEXCOORD) {
             char text[64];
             for (int i = 0; i < MAX_TEXTURES; i++) {
-                sprintf(text, "in vec4 gd_MultiTexCoord%d;", i);
+                sprintf(text, "%s vec4 gd_MultiTexCoord%d;", attribute, i);
                 insertCodeLine(shader, head++, strdup(text));
             }
         }
 
-        if (shader->code.flags & FLAG_BUILTIN_FOGCOORD) insertCodeLine(shader, head++, strdup("in float gd_FogCoord;"));
+        if (shader->code.flags & FLAG_BUILTIN_FOGCOORD) insertCodeLine(shader, head++, strjoin(' ', 2, attribute, "float gd_FogCoord;"));
     }
 
     if ((shader->code.flags & FLAG_BUILTIN_FRONT_COLOR) || (shader->code.flags & FLAG_BUILTIN_BACK_COLOR)) {
         insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_FrontColor;"));
-        insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_BackColor;"));
+        if (!GLES2 || (shader->code.flags & FLAG_BUILTIN_BACK_COLOR)) {
+            insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_BackColor;"));
+        }
 
-        if (shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_COLOR)) {
+        if (!GLES2 && shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_COLOR)) {
             for (int i = 0; i < numMainFunctions; i++) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackColor = gd_FrontColor;"));
         }
     }
 
     if ((shader->code.flags & FLAG_BUILTIN_FRONT_SECONDARY_COLOR) || (shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
         insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_FrontSecondaryColor;"));
-        insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_BackSecondaryColor;"));
+        if (!GLES2 || (shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
+            insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "vec4 gd_BackSecondaryColor;"));
+        }
 
-        if (shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
+        if (!GLES2 && shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
             for (int i = 0; i < numMainFunctions; i++) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackSecondaryColor = gd_FrontSecondaryColor;"));
         }
     }
 
     if (shader->code.flags & FLAG_BUILTIN_TEXCOORD) {
         char text[64];
-        sprintf(text, "%s vec4 gd_TexCoord[%d];", prefix, MAX_TEXTURES);
+        sprintf(text, "%s vec4 gd_TexCoord[%d];", prefix, GLES2 ? ShaderConverterES2_texCoordArraySize(program) : MAX_TEXTURES);
         insertCodeLine(shader, head++, strdup(text));
     }
 
@@ -1400,7 +1428,11 @@ static void injectBuiltinVariables(ShaderProgram* program, ShaderObject* shader)
         insertCodeLine(shader, head++, strjoin(' ', 2, prefix, "float gd_FogFragCoord;"));
     }
 
-    if (shader->code.flags & FLAG_BUILTIN_FRAG_COLOR) {
+    if (GLES2 && shader->type == GL_FRAGMENT_SHADER) {
+        if (shader->code.flags & FLAG_BUILTIN_FRAG_COLOR) insertCodeLine(shader, head++, strdup("#define gd_FragColor gl_FragColor"));
+        ShaderConverterES2_finishFragmentOutput(shader, insertCodeLine, mainFunctions, numMainFunctions);
+    }
+    else if (shader->code.flags & FLAG_BUILTIN_FRAG_COLOR) {
         bool hasOutVariable = false;
         for (int i = 0; i < shader->code.variables.size && !hasOutVariable; i++) {
             ShaderVariable* variable = shader->code.variables.entries[i].value;
@@ -1496,6 +1528,7 @@ static void destroyShaderObject(GLClientState* clientState, ShaderObject* shader
         MEMFREE(variable);
     }
 
+    MEMFREE(shader->code.es2FragOutput);
     ArrayList_free(&shader->code.functions, true);
     ArrayMap_free(&shader->code.variables, false, false);
     ArrayMap_free(&shader->code.definedMacros, true, true);
@@ -1920,7 +1953,7 @@ void ShaderConverter_updateBoundProgram() {
 
         if (program->hasBuiltinUniforms) {
             if (program->location.alphaTest != -1) {
-                glUniform2f(program->location.alphaTest, currentRenderer->state.alphaTest.enabled ? currentRenderer->state.alphaTest.func : GL_ALWAYS, currentRenderer->state.alphaTest.ref);
+                glUniform2f(program->location.alphaTest, ShaderMaterial_alphaTestCode(currentRenderer->state.alphaTest.enabled ? currentRenderer->state.alphaTest.func : GL_ALWAYS), currentRenderer->state.alphaTest.ref);
             }
 
             if (program->location.modelViewMatrix != -1) {
