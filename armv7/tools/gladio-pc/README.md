@@ -69,10 +69,12 @@ Windows-Programme über Wine: `make client32`, dann z. B.
 
     GLADIO_SOCKET=/tmp/w3d.sock GLADIO_PC_ES=2 GLADIO_GLES=2 GLADIO_PBUFFER=1 EGL_PLATFORM=x11 \
         MESA_GLES_VERSION_OVERRIDE=2.0 MESA_GLSL_VERSION_OVERRIDE=100 ./build/gladio-pc-server &
-    GLADIO_SOCKET=/tmp/w3d.sock LD_LIBRARY_PATH=$PWD/build/client32 WINEARCH=win32 wine Worms3D.exe
+    GLADIO_SOCKET=/tmp/w3d.sock LD_LIBRARY_PATH=$PWD/build/client32 WINEARCH=win32 wine bin/Worms3D.exe
 
 (Wine lädt seine `libGL.so.1` über `LD_LIBRARY_PATH`; die Xlib-Seite geht an den X-Server
-unter `$DISPLAY`.)
+unter `$DISPLAY`. Worms 3D muss aus seinem Spielverzeichnis gestartet werden, sonst stürzt es
+beim Start ab. Mit `GLADIO_GLES_EXTENSIONS="$(cat mali-exts.txt)"` – der Erweiterungsliste
+aus dem Geräteprotokoll – sieht der Server dieselben Lücken wie auf der Mali-400.)
 
 Wer eigene Programme testet, muss im Client-Programm nur `LD_LIBRARY_PATH` auf
 `build/client` und `GLADIO_SOCKET` auf den Socket des Servers zeigen lassen; Xlib geht
@@ -119,7 +121,13 @@ Kanal und Anteil abweichender Pixel).
 * Auf dem Galaxy Note 8.0 selbst scheiterte der erste Versuch an `eglMakeCurrent` ohne
   Oberfläche (`EGL_BAD_MATCH`: die Mali-400-EGL kennt `EGL_KHR_surfaceless_context` nicht) –
   daher der Pbuffer-Pfad. Mit ihm läuft Worms 3D auf dem Gerät durch (ES-2.0-Kontext, keine
-  Shader-Fehler), ist aber langsamer als llvmpipe – offen, siehe Statistik im Protokoll.
+  Shader-Fehler), war aber langsamer als llvmpipe. Dagegen (Statistik alle 5 s im Protokoll,
+  siehe `armv7/README.md`): spezialisierte Fixed-Function-Shader statt Uniform-Verzweigungen
+  (`shader_material_es2.c`; `glrender2` Modus 0–2 bleiben pixelgenau gegen Mesa) und kein
+  `glFlush()` mehr nach jedem Zeichenstapel (bei Worms 3D ~60 je Bild – auf einem
+  Kachel-Renderer rendert jeder Flush das Bild bis dahin). Worms 3D sendet je Bild ~1950
+  Anfragen mit ~1,3 MB Vertexdaten (62 Zeichenaufrufe mit Client-Arrays, vom Client je Index
+  ausgepackt), ~500 glActiveTexture/glClientActiveTexture und 10 Antworten (glGetFloatv).
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
   hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung

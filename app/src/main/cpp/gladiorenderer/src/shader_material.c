@@ -549,15 +549,24 @@ static char* convertMaterialShaderToES2(GLenum type, char* source) {
 ShaderMaterial* ShaderMaterial_create(MaterialOptions* options) {
     ShaderMaterial* material = calloc(1, sizeof(ShaderMaterial));
 
-    char* vertexShader = strjoin('\n', 2, getVertexShaderHead(), options->vertexProgram ? options->vertexProgram->shaderCode : getVertexShaderBody());
-    char* fragmentShader = strjoin('\n', 2, getFragmentShaderHead(), strdup(options->fragmentProgram ? options->fragmentProgram->shaderCode : getFragmentShaderBody()));
+    char* vertexShader;
+    char* fragmentShader;
+    if (GLES2 && options->spec) {
+        /* Fixed-Function-Zustand einkompiliert (shader_material_es2.c) */
+        vertexShader = ShaderMaterialES2_vertexSource(options);
+        fragmentShader = ShaderMaterialES2_fragmentSource(options);
+    }
+    else {
+        vertexShader = strjoin('\n', 2, getVertexShaderHead(), options->vertexProgram ? options->vertexProgram->shaderCode : getVertexShaderBody());
+        fragmentShader = strjoin('\n', 2, getFragmentShaderHead(), strdup(options->fragmentProgram ? options->fragmentProgram->shaderCode : getFragmentShaderBody()));
 
-    vertexShader = defineShaderOptions(GL_VERTEX_SHADER, vertexShader, options);
-    fragmentShader = defineShaderOptions(GL_FRAGMENT_SHADER, fragmentShader, options);
+        vertexShader = defineShaderOptions(GL_VERTEX_SHADER, vertexShader, options);
+        fragmentShader = defineShaderOptions(GL_FRAGMENT_SHADER, fragmentShader, options);
 
-    if (GLES2) {
-        vertexShader = convertMaterialShaderToES2(GL_VERTEX_SHADER, vertexShader);
-        fragmentShader = convertMaterialShaderToES2(GL_FRAGMENT_SHADER, fragmentShader);
+        if (GLES2) {
+            vertexShader = convertMaterialShaderToES2(GL_VERTEX_SHADER, vertexShader);
+            fragmentShader = convertMaterialShaderToES2(GL_FRAGMENT_SHADER, fragmentShader);
+        }
     }
 
     GLuint vertexShaderId = glCreateShader(GL_VERTEX_SHADER);
@@ -710,6 +719,14 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
             if (material->location.texture[i] != -1) {
                 glUniform1i(material->location.texture[i], i);
 
+                if (options->spec) {
+                    /* Modi sind einkompiliert; nur die Werte, die der Shader noch als Uniform liest */
+                    if (material->location.texEnv[i][1] != -1) glUniform4fv(material->location.texEnv[i][1], 1, renderer->state.texEnv[i].color);
+                    if (material->location.texEnv[i][3] != -1) glUniform2fv(material->location.texEnv[i][3], 1, renderer->state.texEnv[i].rgbaScale);
+                    if (material->location.texEnv[i][6] != -1) glUniform1f(material->location.texEnv[i][6], renderer->state.texEnv[i].lodBias);
+                    continue;
+                }
+
                 GLTexture* texture = renderer->clientState.texture[i][indexOfGLTarget(GL_TEXTURE_2D)];
                 TexEnv* texEnv = &renderer->state.texEnv[i];
                 if (texture && texture->originFormat == GL_ALPHA) {
@@ -732,7 +749,7 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
         }
     }
 
-    if (options->alphaTest) {
+    if (options->alphaTest && material->location.alphaTest != -1) {
         glUniform2f(material->location.alphaTest, ShaderMaterial_alphaTestCode(renderer->state.alphaTest.enabled ? renderer->state.alphaTest.func : GL_ALWAYS), renderer->state.alphaTest.ref);
     }
 
@@ -741,7 +758,7 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
         glUniform1f(material->location.fog[1], renderer->state.fog.density);
         glUniform1f(material->location.fog[2], renderer->state.fog.start);
         glUniform1f(material->location.fog[3], renderer->state.fog.end);
-        glUniform1f(material->location.fog[4], ShaderMaterial_fogModeCode(renderer->state.fog.mode));
+        if (!options->spec) glUniform1f(material->location.fog[4], ShaderMaterial_fogModeCode(renderer->state.fog.mode));
     }
 
     if (options->lighting) {

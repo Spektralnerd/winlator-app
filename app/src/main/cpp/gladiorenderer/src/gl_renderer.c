@@ -215,7 +215,23 @@ static void updatePointSmoothTexture(GLRenderer* renderer) {
     }
 }
 
+/* Stapel enthält Punkte (dann berechnet der Vertex-Shader gl_PointSize) */
+static bool hasPointMeshes(GLRenderer* renderer) {
+    ArrayDeque* meshes = &renderer->meshes;
+    for (int i = meshes->head; i != meshes->tail; i = (i + 1) & (meshes->size - 1)) {
+        Mesh* mesh = meshes->elements[i];
+        if (mesh && parseDrawMode(mesh->mode, renderer->state.polygonMode) == GL_POINTS) return true;
+    }
+    return false;
+}
+
 static ShaderMaterial* setCurrentMaterial(GLRenderer* renderer, MaterialOptions* options) {
+    FFSpec spec;
+    if (GLES2 && !options->vertexProgram && !options->fragmentProgram) {
+        /* ES 2.0: Fixed-Function-Zustand einkompilieren statt per Uniform zu verzweigen */
+        FFSpec_fromState(&spec, renderer, options, hasPointMeshes(renderer));
+        options->spec = &spec;
+    }
     uint32_t hash = generateMaterialHash(options);
     ShaderMaterial* material = SparseArray_get(&renderer->materialMap, hash);
     if (!material) {
@@ -225,6 +241,7 @@ static ShaderMaterial* setCurrentMaterial(GLRenderer* renderer, MaterialOptions*
 
     glUseProgram(material->program);
     ShaderMaterial_updateUniforms(material, renderer, options);
+    options->spec = NULL;
     return material;
 }
 
@@ -291,7 +308,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
                 ShaderMaterial_updatePointUniforms(material, renderer);
                 updatePointSmoothTexture(renderer);
             }
-            else glUniform1f(material->location.point[0], 0.0f);
+            else if (material->location.point[0] != -1) glUniform1f(material->location.point[0], 0.0f);
         }
 
         int count = mesh->end - mesh->start;
@@ -304,7 +321,10 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         }
     }
 
-    glFlush();
+    /* ES 2.0 (Mali-400, Kachel-Renderer): ein glFlush mitten im Bild lässt den Treiber das
+     * Bild bis hierher rendern und Farbe+Tiefe in den Speicher schreiben – bei ~60 Stapeln je
+     * Bild kostet das mehr als das Zeichnen selbst. Für die Richtigkeit ist es nicht nötig. */
+    if (!GLES2) glFlush();
     renderer->geometry.indices.position = 0;
     renderer->geometry.vertices.position = 0;
     GLRenderer_disableUnusedVertexAttributes(renderer);

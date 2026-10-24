@@ -79,6 +79,36 @@ static inline float ShaderMaterial_fogModeCode(int mode) {
     }
 }
 
+/*
+ * Fester Zustand der Fixed-Function-Pipeline, der im ES-2.0-Pfad in den Shader einkompiliert wird
+ * (shader_material_es2.c). Nur uint8_t-Felder, damit der Hash über die Bytes eindeutig ist.
+ */
+#define FF_LIGHT_POSITIONAL 1   /* position.w > 0 */
+#define FF_LIGHT_SPOT 2         /* Spot-Exponent != 0 */
+#define FF_LIGHT_ATTENUATION 4  /* Abschwächung != (1, 0, 0) */
+
+#define FF_TEXUNIT_LOD_BIAS 1    /* GL_TEXTURE_LOD_BIAS != 0 */
+#define FF_TEXUNIT_SCALE 2       /* RGB-/Alpha-Skalierung != 1 */
+#define FF_TEXUNIT_ALPHA_KNOWN 4 /* FF_TEXUNIT_HAS_ALPHA ist aussagekräftig */
+#define FF_TEXUNIT_HAS_ALPHA 8   /* Texturformat hat einen Alphakanal */
+
+typedef struct FFTexUnit {
+    uint8_t mode;       /* 0 = Einheit aus, sonst Code wie ShaderMaterial_texEnvCode() */
+    uint8_t combine[2]; /* GL_COMBINE: Funktion für RGB und Alpha */
+    uint8_t source[4];  /* GL_COMBINE: Quelle 0/1 RGB, Quelle 0/1 Alpha */
+    uint8_t operand[4]; /* GL_COMBINE: Operand 0/1 RGB, Operand 0/1 Alpha */
+    uint8_t flags;      /* FF_TEXUNIT_* */
+} FFTexUnit;
+
+typedef struct FFSpec {
+    uint8_t numLights;              /* eingeschaltete Lichter (dicht gepackt wie in setLightUniforms) */
+    uint8_t lightFlags[MAX_LIGHTS]; /* FF_LIGHT_* je Licht */
+    uint8_t alphaFunc;              /* Code wie ShaderMaterial_alphaTestCode(), 0 = kein Alphatest */
+    uint8_t fogMode;                /* Code wie ShaderMaterial_fogModeCode(), 0 = kein Nebel */
+    uint8_t points;                 /* Stapel enthält Punkte: gl_PointSize wird berechnet */
+    FFTexUnit texUnits[MAX_TEXTURES];
+} FFSpec;
+
 typedef struct MaterialOptions {
     bool lighting;
     bool alphaTest;
@@ -88,6 +118,7 @@ typedef struct MaterialOptions {
     uint8_t numTextures;
     ARBProgram* vertexProgram;
     ARBProgram* fragmentProgram;
+    const FFSpec* spec; /* ES 2.0: einkompilierter Fixed-Function-Zustand, sonst NULL */
 } MaterialOptions;
 
 typedef struct ShaderMaterial {
@@ -118,10 +149,18 @@ extern void ShaderMaterial_destroy(ShaderMaterial* material);
 extern void ShaderMaterial_updatePointUniforms(ShaderMaterial* material, GLRenderer* renderer);
 extern void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* renderer, MaterialOptions* options);
 
+/* shader_material_es2.c: Fixed-Function-Zustand erfassen und spezialisierte GLSL-ES-1.00-Shader erzeugen */
+extern void FFSpec_fromState(FFSpec* spec, GLRenderer* renderer, const MaterialOptions* options, bool points);
+extern char* ShaderMaterialES2_vertexSource(const MaterialOptions* options);
+extern char* ShaderMaterialES2_fragmentSource(const MaterialOptions* options);
+
 static inline uint32_t generateMaterialHash(MaterialOptions* options) {
-    const char key[] = {0, 0, 0, 0, '-', 0, 0, 0, 0, '-', INT2CHR(options->lighting), '-', INT2CHR(options->alphaTest), '-', INT2CHR(options->fog), '-', INT2CHR(options->pointSprite), '-', INT2CHR(options->transformVertex), '-', INT2CHR(options->numTextures)};
+    enum { BASE_KEY_SIZE = 21 };
+    char key[BASE_KEY_SIZE + sizeof(FFSpec)] = {0, 0, 0, 0, '-', 0, 0, 0, 0, '-', INT2CHR(options->lighting), '-', INT2CHR(options->alphaTest), '-', INT2CHR(options->fog), '-', INT2CHR(options->pointSprite), '-', INT2CHR(options->transformVertex), '-', INT2CHR(options->numTextures)};
     *(int*)(key+0) = options->vertexProgram ? options->vertexProgram->id : 0;
     *(int*)(key+5) = options->fragmentProgram ? options->fragmentProgram->id : 0;
+    if (!options->spec) return fnv1aHash32(key, BASE_KEY_SIZE);
+    memcpy(key + BASE_KEY_SIZE, options->spec, sizeof(FFSpec));
     return fnv1aHash32(key, sizeof(key));
 }
 

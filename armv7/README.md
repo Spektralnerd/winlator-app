@@ -161,6 +161,26 @@ ES 2.0 und die Erweiterungen des Treibers hergeben (Mali-400: kein VAO, kein glM
 wird dafür mit `armv7/scripts/patch-gladio-client.py` angepasst. Das Startprotokoll zeigt die
 ES-Erweiterungen und Grenzen des Geräts (`gladio: ES 2.0 Erweiterungen …`).
 
+Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
+- Alle 5 s stehen zwei Statistikzeilen im Protokoll: `gladio: 5.0 s: N Bilder (…/s); je Bild …
+  Anfragen, … Antworten, … Zeichenaufrufe, … KB (Vertexdaten … KB), Texturen … KB` und
+  `gladio: Zeit je Bild: Warten auf den Client … ms, Bildausgabe … ms, Ausführen … ms;
+  Shader-Programme neu …, gesamt …`. „Warten“ ist die Zeit, in der der Server-Thread auf
+  Anfragen wartet (das Programm selbst ist dann die Bremse), „Bildausgabe“ das Kopieren des
+  fertigen Bilds ins Fenster, „Ausführen“ der Rest (GL-Aufrufe samt dem, was der Treiber dabei
+  synchron erledigt).
+- Fixed-Function-Zeichnen (klassisches OpenGL ohne eigene Shader, z. B. Worms 3D): Der allgemeine
+  Material-Shader des Servers entscheidet Texturumgebung, Alphatest, Nebel und Lichtzahl pro
+  Pixel über Uniforms; die Mali-400 rechnet dabei praktisch alle Zweige aus. Im ES-2.0-Pfad
+  erzeugt `shader_material_es2.c` deshalb für jede vorkommende Kombination (Texturmodus je
+  Einheit samt GL_COMBINE-Einstellungen, Alphafunktion, Nebelmodus, Lichter mit ihren Eigenschaften,
+  Punkte) einen eigenen, geradlinigen Shader; die Kombination (`FFSpec`) ist Teil des
+  Material-Schlüssels. Auf dem PC liefern die Shader dasselbe Bild wie Mesa direkt.
+- Der Server rief nach jedem Stapel von Zeichenaufrufen `glFlush()` auf (bei Worms 3D ~60-mal je
+  Bild). Auf einem Kachel-Renderer wie der Mali-400 rendert der Treiber dann das Bild bis dahin
+  und schreibt Farbe und Tiefe in den Speicher; im ES-2.0-Pfad entfällt der Aufruf (für die
+  Richtigkeit ist er nicht nötig, der arm64-Pfad bleibt unverändert).
+
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit
 llvmpipe/LLVM) auf dem nativen Hauptstapel des Prozesses aus; Wine sieht nur Box86s eigenen
