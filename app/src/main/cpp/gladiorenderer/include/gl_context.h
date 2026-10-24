@@ -11,6 +11,8 @@ typedef struct GLXContext {
     GLRenderer renderer;
 } GLXContext;
 
+#define DISPLAY_TEXTURE_COUNT 3
+
 typedef struct GLContext {
     GLXContext* glxContext;
     int clientFd;
@@ -28,6 +30,11 @@ typedef struct GLContext {
     struct {
         GLuint renderbuffer;
         GLuint texture;
+        /* ES 2.0: drei Farbtexturen im Wechsel; die fertige zeigt das Fenster direkt an
+         * (glCopyTexImage2D kostet auf der Mali-400 ~300 ms je Bild), die nächste wird gezeichnet */
+        GLuint textures[DISPLAY_TEXTURE_COUNT];
+        int textureIndex;
+        int presentedDrawableId;
     } displayBufAttachment;
 
     GLuint savedDSATarget;

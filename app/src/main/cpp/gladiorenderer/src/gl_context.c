@@ -72,6 +72,8 @@ static void loadJMethods(JMethods* jmethods) {
     jmethods->clearWindowContent = (*env)->GetMethodID(env, cls, "clearWindowContent", "(I)V");
     jmethods->updateWindowContent = (*env)->GetMethodID(env, cls, "updateWindowContent", "(ISSZ)Z");
     jmethods->getGLXContextPtr = (*env)->GetMethodID(env, cls, "getGLXContextPtr", "(II)J");
+    jmethods->presentWindowTexture = (*env)->GetMethodID(env, cls, "presentWindowTexture", "(ISSI)Z");
+    jmethods->releaseWindowTexture = (*env)->GetMethodID(env, cls, "releaseWindowTexture", "(I)V");
 }
 
 static void getWindowSize(JMethods* jmethods, int windowId, short* outWidth, short* outHeight) {
@@ -100,19 +102,30 @@ static void destroyDisplayBuffer() {
     }
 }
 
+static GLuint createDisplayTexture(short width, short height) {
+    GLuint texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GLES2 ? GL_RGBA : PREFERRED_FRAMEBUFFER_FORMAT, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+
 static void createDisplayBufAttachment(GLContext* context) {
     short width = currentRenderer->displaySize[0];
     short height = currentRenderer->displaySize[1];
 
     if (context->displayBufAttachment.texture == 0) {
-        glGenTextures(1, &context->displayBufAttachment.texture);
-        glBindTexture(GL_TEXTURE_2D, context->displayBufAttachment.texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, GLES2 ? GL_RGBA : PREFERRED_FRAMEBUFFER_FORMAT, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (GLES2) {
+            for (int i = 0; i < DISPLAY_TEXTURE_COUNT; i++) context->displayBufAttachment.textures[i] = createDisplayTexture(width, height);
+            context->displayBufAttachment.textureIndex = 0;
+            context->displayBufAttachment.texture = context->displayBufAttachment.textures[0];
+        }
+        else context->displayBufAttachment.texture = createDisplayTexture(width, height);
     }
 
     if (context->displayBufAttachment.renderbuffer == 0) {
@@ -126,7 +139,17 @@ static void createDisplayBufAttachment(GLContext* context) {
 
 static void destroyDisplayBufAttachment(GLContext* context) {
     if (context->displayBufAttachment.texture > 0) {
-        glDeleteTextures(1, &context->displayBufAttachment.texture);
+        if (GLES2) {
+            /* das Fenster darf die Textur nicht mehr zeigen, sobald sie weg ist */
+            if (context->displayBufAttachment.presentedDrawableId) {
+                JMethods* jmethods = &context->jmethods;
+                (*jmethods->env)->CallVoidMethod(jmethods->env, jmethods->obj, jmethods->releaseWindowTexture, context->displayBufAttachment.presentedDrawableId);
+                context->displayBufAttachment.presentedDrawableId = 0;
+            }
+            glDeleteTextures(DISPLAY_TEXTURE_COUNT, context->displayBufAttachment.textures);
+            memset(context->displayBufAttachment.textures, 0, sizeof(context->displayBufAttachment.textures));
+        }
+        else glDeleteTextures(1, &context->displayBufAttachment.texture);
         context->displayBufAttachment.texture = 0;
     }
 
@@ -165,13 +188,49 @@ static void setCurrentRenderWindow(GLContext* context, int windowId) {
     glScissor(0, 0, width, height);
 }
 
-static void swapDisplayBuffers(GLContext* context, int drawableId) {
-    GLuint framebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_FRAMEBUFFER)];
-    GLuint drawFramebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)];
-    if (framebuffer != drawFramebuffer) GLFramebuffer_bind(GL_FRAMEBUFFER, drawFramebuffer);
+/*
+ * ES 2.0: Das Fenster zeigt die gerade fertig gezeichnete Farbtextur des Anzeigepuffers direkt
+ * (X-Server-Renderer und GLX-Kontexte teilen sich die Texturen); der Server zeichnet weiter in
+ * die nächste von drei Texturen. Spart das Kopieren mit glCopyTexImage2D, das auf der Mali-400
+ * über den Prozessor läuft (~300 ms je Bild bei 1024x768).
+ */
+static bool presentDisplayTexture(GLContext* context, int drawableId) {
+    typeof(context->displayBufAttachment)* att = &context->displayBufAttachment;
+    glFlush(); /* Zeichenauftrag abschicken, bevor der Renderer-Kontext die Textur liest */
 
     JMethods* jmethods = &context->jmethods;
-    bool result = (*jmethods->env)->CallBooleanMethod(jmethods->env, jmethods->obj, jmethods->updateWindowContent, drawableId, currentRenderer->displaySize[0], currentRenderer->displaySize[1], JNI_TRUE);
+    bool result = (*jmethods->env)->CallBooleanMethod(jmethods->env, jmethods->obj, jmethods->presentWindowTexture, drawableId, currentRenderer->displaySize[0], currentRenderer->displaySize[1], att->textures[att->textureIndex]);
+    if (!result) return false;
+    att->presentedDrawableId = drawableId;
+
+    att->textureIndex = (att->textureIndex + 1) % DISPLAY_TEXTURE_COUNT;
+    att->texture = att->textures[att->textureIndex];
+
+    /* nächste Textur an den Anzeigepuffer hängen; Bindung der Anwendung danach wiederherstellen */
+    GLuint* slots = currentRenderer->clientState.framebuffer;
+    GLuint savedDraw = slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)];
+    GLuint savedRead = slots[indexOfGLTarget(GL_READ_FRAMEBUFFER)];
+    GLFramebuffer_bind(GL_FRAMEBUFFER, currentRenderer->displayBuffer);
+    GLFramebuffer_setAttachment(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, att->texture, 0, NULL);
+    if (savedDraw != currentRenderer->displayBuffer) GLFramebuffer_bind(GL_DRAW_FRAMEBUFFER, savedDraw);
+    if (savedRead != savedDraw) GLFramebuffer_bind(GL_READ_FRAMEBUFFER, savedRead);
+    return true;
+}
+
+static void swapDisplayBuffers(GLContext* context, int drawableId) {
+    bool result;
+    if (GLES2) {
+        result = presentDisplayTexture(context, drawableId);
+    }
+    else {
+        GLuint framebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_FRAMEBUFFER)];
+        GLuint drawFramebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)];
+        if (framebuffer != drawFramebuffer) GLFramebuffer_bind(GL_FRAMEBUFFER, drawFramebuffer);
+
+        JMethods* jmethods = &context->jmethods;
+        result = (*jmethods->env)->CallBooleanMethod(jmethods->env, jmethods->obj, jmethods->updateWindowContent, drawableId, currentRenderer->displaySize[0], currentRenderer->displaySize[1], JNI_TRUE);
+    }
+
     if (result) {
         GLTexture* texture = GLTexture_getBound(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);

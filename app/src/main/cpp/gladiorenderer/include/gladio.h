@@ -105,6 +105,9 @@ typedef struct JMethods {
     jmethodID clearWindowContent;
     jmethodID updateWindowContent;
     jmethodID getGLXContextPtr;
+    /* ES 2.0: Bild ohne Kopie übergeben (Fenster zeigt die Textur des Servers direkt) */
+    jmethodID presentWindowTexture;
+    jmethodID releaseWindowTexture;
 } JMethods;
 
 #else // GL_SERVER

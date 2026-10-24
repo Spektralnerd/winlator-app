@@ -168,7 +168,7 @@ static void idTableRemove(IdEntry* table, int id) {
 
 /* ---------------------------------------------------------------- JNI-Attrappe */
 
-enum { M_GET_WINDOW_SIZE = 1, M_CLEAR_WINDOW_CONTENT, M_UPDATE_WINDOW_CONTENT, M_GET_GLX_CONTEXT_PTR };
+enum { M_GET_WINDOW_SIZE = 1, M_CLEAR_WINDOW_CONTENT, M_UPDATE_WINDOW_CONTENT, M_GET_GLX_CONTEXT_PTR, M_PRESENT_WINDOW_TEXTURE, M_RELEASE_WINDOW_TEXTURE };
 
 static struct JNINativeInterface_ jniTable;
 static const struct JNINativeInterface_* jniEnv = &jniTable;
@@ -184,6 +184,8 @@ static jmethodID stub_GetMethodID(JNIEnv* env, jclass cls, const char* name, con
     if (!strcmp(name, "clearWindowContent")) return (jmethodID)(intptr_t)M_CLEAR_WINDOW_CONTENT;
     if (!strcmp(name, "updateWindowContent")) return (jmethodID)(intptr_t)M_UPDATE_WINDOW_CONTENT;
     if (!strcmp(name, "getGLXContextPtr")) return (jmethodID)(intptr_t)M_GET_GLX_CONTEXT_PTR;
+    if (!strcmp(name, "presentWindowTexture")) return (jmethodID)(intptr_t)M_PRESENT_WINDOW_TEXTURE;
+    if (!strcmp(name, "releaseWindowTexture")) return (jmethodID)(intptr_t)M_RELEASE_WINDOW_TEXTURE;
     logmsg("JNI: unbekannte Methode %s%s", name, sig);
     return NULL;
 }
@@ -230,7 +232,7 @@ static void stub_ReleaseShortArrayElements(JNIEnv* env, jshortArray array, jshor
 }
 
 static void stub_CallVoidMethod(JNIEnv* env, jobject obj, jmethodID mid, ...) {
-    /* clearWindowContent: auf dem Gerät wird die Fenstertextur verworfen, hier nichts zu tun */
+    /* clearWindowContent/releaseWindowTexture: auf dem Gerät wird die Fenstertextur verworfen, hier nichts zu tun */
 }
 
 static bool wantDump(int frame) {
@@ -245,11 +247,24 @@ static bool wantDump(int frame) {
     return false;
 }
 
-static void dumpFrame(Client* client, int w, int h, bool flipY) {
+/* texture > 0: Bild aus dieser Textur lesen (ES-2.0-Pfad: übergebene Fenstertextur), sonst aus dem gebundenen FBO */
+static void dumpFrame(Client* client, int w, int h, bool flipY, GLuint texture) {
     unsigned char* px = malloc((size_t)w * h * 4);
+    GLint savedFbo = 0;
+    GLuint fbo = 0;
+    if (texture) {
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &savedFbo);
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    }
     glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
     GLenum err = glGetError();
     if (err != GL_NO_ERROR) logmsg("glReadPixels: Fehler 0x%x", err);
+    if (texture) {
+        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)savedFbo);
+        glDeleteFramebuffers(1, &fbo);
+    }
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/frame-%d.ppm", dumpDir, client->frames);
@@ -272,11 +287,15 @@ static jboolean stub_CallBooleanMethod(JNIEnv* env, jobject obj, jmethodID mid, 
     va_list ap;
     va_start(ap, mid);
     jboolean result = JNI_TRUE;
-    if ((intptr_t)mid == M_UPDATE_WINDOW_CONTENT) {
+    if ((intptr_t)mid == M_UPDATE_WINDOW_CONTENT || (intptr_t)mid == M_PRESENT_WINDOW_TEXTURE) {
+        bool present = (intptr_t)mid == M_PRESENT_WINDOW_TEXTURE;
         int drawableId = va_arg(ap, int);
         short width = (short)va_arg(ap, int);
         short height = (short)va_arg(ap, int);
-        bool flipY = va_arg(ap, int) != 0;
+        bool flipY = true;
+        GLuint texture = 0;
+        if (present) texture = (GLuint)va_arg(ap, int);
+        else flipY = va_arg(ap, int) != 0;
 
         short w, h;
         if (queryWindowSize(drawableId, &w, &h) && (w != width || h != height)) {
@@ -285,7 +304,7 @@ static jboolean stub_CallBooleanMethod(JNIEnv* env, jobject obj, jmethodID mid, 
         }
         else {
             client->frames++;
-            if (wantDump(client->frames)) dumpFrame(client, width, height, flipY);
+            if (wantDump(client->frames)) dumpFrame(client, width, height, flipY, texture);
 
             struct timeval now;
             gettimeofday(&now, NULL);

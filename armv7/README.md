@@ -181,7 +181,16 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
 - Der Server rief nach jedem Stapel von Zeichenaufrufen `glFlush()` auf (bei Worms 3D ~60-mal je
   Bild). Auf einem Kachel-Renderer wie der Mali-400 rendert der Treiber dann das Bild bis dahin
   und schreibt Farbe und Tiefe in den Speicher; im ES-2.0-Pfad entfällt der Aufruf (für die
-  Richtigkeit ist er nicht nötig, der arm64-Pfad bleibt unverändert).
+  Richtigkeit ist er nicht nötig, der arm64-Pfad bleibt unverändert). Messung auf dem Note 8.0
+  (Worms-3D-Titelbild, 1024×768): „Ausführen“ 340 ms → 46 ms je Bild durch Shader und Flush.
+- Bildübergabe: Bisher kopierte der X-Server bei jedem `glXSwapBuffers` das fertige Bild mit
+  `glCopyTexImage2D` in die Fenstertextur – auf der Mali-400 läuft das über den Prozessor und
+  kostet bei 1024×768 rund 300 ms je Bild (auch bei leeren Bildern; „Bildausgabe“ in der
+  Statistik), die Obergrenze lag damit bei gut 3 Bildern/s. Im ES-2.0-Pfad zeichnet der Server
+  jetzt in drei Farbtexturen im Wechsel und übergibt die fertige dem Fenster direkt
+  (`presentWindowTexture` in `GLXExtension.java`, `Texture.setExternalTextureId`); X-Server-Renderer
+  und GLX-Kontexte teilen sich die Texturen, kopiert wird nichts mehr. Verschwindet die Textur
+  (Fenstergröße, Kontextende), gibt der Server sie vorher frei (`releaseWindowTexture`).
 
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit

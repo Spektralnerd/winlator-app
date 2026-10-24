@@ -347,6 +347,37 @@ public class GLXExtension extends Extension {
         return true;
     }
 
+    /* ES-2.0-Pfad: das Fenster zeigt die fertige Farbtextur des Gladio-Servers direkt (keine Kopie) */
+    @Keep
+    private boolean presentWindowTexture(int drawableId, short width, short height, int textureId) {
+        Drawable drawable = xServer.drawableManager.getDrawable(drawableId);
+        if (drawable == null) return true;
+
+        synchronized (drawable.renderLock) {
+            if (drawable.width != width || drawable.height != height) return false;
+
+            drawable.setData(null);
+            Texture texture = drawable.getTexture();
+            texture.setFlipY(true);
+            texture.setExternalTextureId(textureId);
+            Runnable onDrawListener = drawable.getOnDrawListener();
+            if (onDrawListener != null) onDrawListener.run();
+        }
+        return true;
+    }
+
+    /* Die Textur des Servers verschwindet (Kontext/Fenstergröße): das Fenster darf sie nicht mehr zeigen */
+    @Keep
+    private void releaseWindowTexture(int drawableId) {
+        Drawable drawable = xServer.drawableManager.getDrawable(drawableId);
+        if (drawable == null) return;
+
+        synchronized (drawable.renderLock) {
+            Texture texture = drawable.getTexture();
+            if (texture.isExternal()) texture.destroy();
+        }
+    }
+
     @Keep
     private long getGLXContextPtr(int clientFd, int id) {
         synchronized (clientGLXContexts) {

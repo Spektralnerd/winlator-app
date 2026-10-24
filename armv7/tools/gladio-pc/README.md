@@ -128,6 +128,10 @@ Kanal und Anteil abweichender Pixel).
   Kachel-Renderer rendert jeder Flush das Bild bis dahin). Worms 3D sendet je Bild ~1950
   Anfragen mit ~1,3 MB Vertexdaten (62 Zeichenaufrufe mit Client-Arrays, vom Client je Index
   ausgepackt), ~500 glActiveTexture/glClientActiveTexture und 10 Antworten (glGetFloatv).
+  Auf dem Gerät brachte das „Ausführen“ von 340 auf 46 ms je Bild; die Bildrate blieb bei
+  ~3/s, weil die Bildübergabe (`glCopyTexImage2D` im X-Server) ~300 ms je Bild kostete – daher
+  jetzt die Übergabe ohne Kopie (drei Texturen im Wechsel, siehe `armv7/README.md`). Das
+  PC-Testgeschirr liest das Bild dabei über ein Hilfs-FBO aus der übergebenen Textur.
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
   hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung

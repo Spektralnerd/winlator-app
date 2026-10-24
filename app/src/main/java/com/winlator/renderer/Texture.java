@@ -17,6 +17,8 @@ public class Texture {
     protected int format = GLES11Ext.GL_BGRA;
     protected boolean needsUpdate = true;
     private boolean flipY = false;
+    /* Textur gehört einem anderen (dem Gladio-Server, ES-2.0-Pfad): nur anzeigen, nie anlegen oder löschen */
+    private boolean external = false;
     protected Drawable owner;
 
     public Texture(Drawable owner) {
@@ -115,10 +117,25 @@ public class Texture {
         this.needsUpdate = needsUpdate;
     }
 
+    public boolean isExternal() {
+        return external;
+    }
+
+    /* Fremde Textur anzeigen (ES-2.0-Pfad: der Gladio-Server übergibt sein fertiges Bild ohne Kopie) */
+    public void setExternalTextureId(int externalTextureId) {
+        if (!external) destroy();
+        textureId = externalTextureId;
+        external = true;
+    }
+
     public void updateFromDrawable() {
         if (owner == null || owner.getData() == null) return;
 
         ByteBuffer data = owner.getData();
+        if (external) {
+            textureId = 0;
+            external = false;
+        }
         if (!isAllocated()) {
             allocateTexture(owner.width, owner.height, data);
         }
@@ -159,9 +176,12 @@ public class Texture {
 
     public void destroy() {
         if (textureId > 0) {
-            int[] textureIds = new int[]{textureId};
-            GLES20.glDeleteTextures(textureIds.length, textureIds, 0);
+            if (!external) {
+                int[] textureIds = new int[]{textureId};
+                GLES20.glDeleteTextures(textureIds.length, textureIds, 0);
+            }
             textureId = 0;
+            external = false;
         }
     }
 }
