@@ -46,8 +46,8 @@ static void printStats(GLContext* context, int64_t now) {
             seconds, st->frames, st->frames / seconds, st->requests / frames, (uint32_t)((gladio_statsReplies - st->repliesAtStart) / frames),
             st->draws / frames, (uint32_t)(st->bytes / frames / 1024), (uint32_t)(st->drawBytes / frames / 1024),
             (uint32_t)((gladio_statsTexBytes - st->texBytesAtStart) / frames / 1024));
-    println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms; Shader-Programme neu %u, gesamt %u",
-            st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames,
+    println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms (davon Zeichnen %.1f ms); Shader-Programme neu %u, gesamt %u",
+            st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames, st->drawNs / 1e6 / frames,
             (uint32_t)(gladio_statsPrograms - st->programsAtStart), (uint32_t)gladio_statsPrograms);
 }
 
@@ -221,7 +221,17 @@ static void* requestHandlerThread(void* param) {
             context->stats.drawBytes += context->inputBuffer.size;
         }
 
-        if (isCanDrawImmediate(requestCode)) GLRenderer_drawImmediate(currentRenderer);
+        /* Zeichnen = Stapel ausgeben (aufgeschoben bis zur nächsten Nicht-Zeichen-Anfrage) + Zeichenanfragen verarbeiten */
+        bool drawing = isDrawRequest(requestCode);
+        bool flushBatch = isCanDrawImmediate(requestCode) && currentRenderer && !ArrayDeque_isEmpty(&currentRenderer->meshes);
+        int64_t drawStart = (drawing || flushBatch) ? nowNs() : 0;
+        if (flushBatch) {
+            GLRenderer_drawImmediate(currentRenderer);
+            if (!drawing) {
+                context->stats.drawNs += nowNs() - drawStart;
+                drawStart = 0;
+            }
+        }
 
         switch (requestCode) {
             case REQUEST_CODE_SET_CURRENT_RENDER_WINDOW: {
@@ -272,6 +282,8 @@ static void* requestHandlerThread(void* param) {
                 break;
             }
         }
+
+        if (drawStart) context->stats.drawNs += nowNs() - drawStart;
 
 #if IS_DEBUG_ENABLED(DEBUG_MODE_GL_ERROR)
         GLenum error = glGetError();

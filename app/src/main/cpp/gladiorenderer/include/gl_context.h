@@ -38,7 +38,7 @@ typedef struct GLContext {
         int64_t periodStartNs;
         uint32_t frames, requests, draws;
         uint64_t bytes, drawBytes;
-        int64_t waitNs, swapNs;
+        int64_t waitNs, swapNs, drawNs;
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
     } stats;
 } GLContext;

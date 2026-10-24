@@ -164,11 +164,13 @@ ES-Erweiterungen und Grenzen des Geräts (`gladio: ES 2.0 Erweiterungen …`).
 Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
 - Alle 5 s stehen zwei Statistikzeilen im Protokoll: `gladio: 5.0 s: N Bilder (…/s); je Bild …
   Anfragen, … Antworten, … Zeichenaufrufe, … KB (Vertexdaten … KB), Texturen … KB` und
-  `gladio: Zeit je Bild: Warten auf den Client … ms, Bildausgabe … ms, Ausführen … ms;
-  Shader-Programme neu …, gesamt …`. „Warten“ ist die Zeit, in der der Server-Thread auf
-  Anfragen wartet (das Programm selbst ist dann die Bremse), „Bildausgabe“ das Kopieren des
-  fertigen Bilds ins Fenster, „Ausführen“ der Rest (GL-Aufrufe samt dem, was der Treiber dabei
-  synchron erledigt).
+  `gladio: Zeit je Bild: Warten auf den Client … ms, Bildausgabe … ms, Ausführen … ms (davon
+  Zeichnen … ms); Shader-Programme neu …, gesamt …`. „Warten“ ist die Zeit, in der der
+  Server-Thread auf Anfragen wartet (das Programm selbst ist dann die Bremse), „Bildausgabe“
+  das Kopieren des fertigen Bilds ins Fenster (auf einem Kachel-Renderer wartet der Treiber
+  hier auf die GPU – ist dieser Wert groß, ist die GPU die Bremse), „Ausführen“ der Rest
+  (GL-Aufrufe samt dem, was der Treiber dabei synchron erledigt), „Zeichnen“ der Anteil davon
+  für Zeichenaufrufe und das Ausgeben der Stapel (Vertexdaten umsetzen, Puffer füllen).
 - Fixed-Function-Zeichnen (klassisches OpenGL ohne eigene Shader, z. B. Worms 3D): Der allgemeine
   Material-Shader des Servers entscheidet Texturumgebung, Alphatest, Nebel und Lichtzahl pro
   Pixel über Uniforms; die Mali-400 rechnet dabei praktisch alle Zweige aus. Im ES-2.0-Pfad
