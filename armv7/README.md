@@ -47,6 +47,15 @@ In `armv7` gilt:
   VRECPS behandelt 0·∞, also bleiben 1/0 = ∞ und 1/∞ = 0); `GALLIVM_PERF=exact_div` stellt die
   genaue Division wieder her. Mit beiden Patches ist der Fragment-Shader des Testprogramms um
   ein Drittel kürzer, die Bilder bleiben bitgenau gleich.
+  Schalter zum Ausprobieren (Umgebungsvariablen des Containers): llvmpipe bringt `LP_PERF`
+  mit (`no_mip_linear` trilinear → eine Mipmap-Stufe, `no_linear` Point-Sampling, `no_mipmap`,
+  durch Kommas getrennt) und `GALLIVM_PERF` (`brilinear`, `rho_approx`, `nopt`).
+  `patches/mesa/0009-lp-sampler-knobs.patch` ergänzt `WINLATOR_LP_LOD_BIAS=<Zahl>` (Mipmap-Wahl
+  aller Texturen verschieben, positiv = kleinere Stufen, weniger Cache-Fehlzugriffe, unschärfer)
+  und `WINLATOR_LP_MAG_NEAREST=1` (nur bei Vergrößerung Point-Sampling). Beim SKIDROW-Intro und
+  bei Worms 3D auf dem Note 8.0 stecken über 95 % der Zeit der Mal-Threads in den übersetzten
+  Fragment-Shadern selbst (rund 120 NEON-Befehle je Pixel: knapp die Hälfte Textur, ein Viertel
+  Interpolation, der Rest Tiefentest und Farbausgabe); der größte Hebel bleibt die Pixelzahl.
   Das Winlator-Mesa schaltet softpipe ab, sobald VirGL mitgebaut
   wird; `patches/mesa/0001-softpipe-with-virgl.patch` nimmt das zurück (mit `virpipe` bleibt es
   weiterhin bei VirGL, ohne Ausweichen).
