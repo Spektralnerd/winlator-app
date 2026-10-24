@@ -122,6 +122,15 @@ void GLRenderer_initOnEGLContext(GLRenderer* renderer) {
 }
 
 static void bindVertexBuffer(GLRenderer* renderer, GLuint bufferId, GLint location, int itemSize, int size, const void* data) {
+    if (GLES2) {
+        /* Client-Arrays: der Treiber kopiert die Daten beim Zeichnen in seinen Bildspeicher. Das ist
+         * auf der Mali-400 billiger als je Stapel neue Pufferobjekte anzulegen (glBufferData = neue
+         * GPU-Speicherzuteilung über den Kernel); die Geometriepuffer bleiben bis zum nächsten Stapel gültig. */
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        GLRenderer_enableVertexAttribute(renderer, location);
+        glVertexAttribPointer(location, itemSize, GL_FLOAT, GL_FALSE, 0, data);
+        return;
+    }
     glBindBuffer(GL_ARRAY_BUFFER, bufferId);
     glBufferData(GL_ARRAY_BUFFER, size, data, GL_DYNAMIC_DRAW);
     GLRenderer_enableVertexAttribute(renderer, location);
@@ -140,8 +149,11 @@ static void normalizeTexCoords(GLTexture* texture, ArrayBuffer* texCoords) {
 
 static void updateVertexBuffers(GLRenderer* renderer, int* attribLocations) {
     Geometry* geometry = &renderer->geometry;
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->bufferIds[0]);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, geometry->indices.size, geometry->indices.buffer, GL_DYNAMIC_DRAW);
+    if (GLES2) glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); /* Indizes als Client-Array (siehe bindVertexBuffer) */
+    else {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->bufferIds[0]);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, geometry->indices.size, geometry->indices.buffer, GL_DYNAMIC_DRAW);
+    }
 
     if (attribLocations[POSITION_ARRAY_INDEX] != -1) {
         bindVertexBuffer(renderer, renderer->bufferIds[1], attribLocations[POSITION_ARRAY_INDEX], 4, geometry->vertices.size, geometry->vertices.buffer);
@@ -312,7 +324,8 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         }
 
         int count = mesh->end - mesh->start;
-        glDrawElements(drawMode, count, GL_UNSIGNED_SHORT, (void*)(mesh->start * sizeof(short)));
+        const void* indices = GLES2 ? (const void*)(renderer->geometry.indices.buffer + mesh->start * sizeof(short)) : (const void*)(mesh->start * sizeof(short));
+        glDrawElements(drawMode, count, GL_UNSIGNED_SHORT, indices);
         MEMFREE(mesh);
 
         if (drawMode == GL_POINTS && renderer->state.point.smooth && !renderer->state.point.sprite) {
