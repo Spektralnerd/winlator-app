@@ -17,7 +17,9 @@
  *   - GL_REPLACE übernimmt das Alpha der Textur, wenn das Texturformat Alpha hat, sonst das
  *     Fragment-Alpha (allgemein: immer Produkt aus beiden);
  *   - GL_DECAL lässt das Fragment-Alpha unverändert;
- *   - GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA als RGB-Operand von GL_COMBINE (allgemein: 1.0).
+ *   - GL_SRC_ALPHA/GL_ONE_MINUS_SRC_ALPHA als RGB-Operand von GL_COMBINE (allgemein: 1.0);
+ *   - ein Spotlicht ist eines mit Öffnungswinkel < 180°, auch bei Exponent 0 (allgemein: nur
+ *     bei Exponent != 0 wird der Kegel beachtet).
  */
 #include <stdarg.h>
 #include "shader_material.h"
@@ -89,7 +91,8 @@ void FFSpec_fromState(FFSpec* spec, GLRenderer* renderer, const MaterialOptions*
             if (!light->enabled) continue;
             uint8_t flags = 0;
             if (light->position[3] > 0.0f) flags |= FF_LIGHT_POSITIONAL;
-            if (light->spotCutoffExponent[1] != 0.0f) flags |= FF_LIGHT_SPOT;
+            /* Spot: Öffnungswinkel (im Bogenmaß) kleiner als 180° (GL erlaubt 0–90° oder 180°) */
+            if (light->spotCutoffExponent[0] < 3.0f) flags |= FF_LIGHT_SPOT;
             if (light->attenuation[0] != 1.0f || light->attenuation[1] != 0.0f || light->attenuation[2] != 0.0f) flags |= FF_LIGHT_ATTENUATION;
             spec->lightFlags[spec->numLights++] = flags;
         }

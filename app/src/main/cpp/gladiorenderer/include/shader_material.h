@@ -84,7 +84,7 @@ static inline float ShaderMaterial_fogModeCode(int mode) {
  * (shader_material_es2.c). Nur uint8_t-Felder, damit der Hash über die Bytes eindeutig ist.
  */
 #define FF_LIGHT_POSITIONAL 1   /* position.w > 0 */
-#define FF_LIGHT_SPOT 2         /* Spot-Exponent != 0 */
+#define FF_LIGHT_SPOT 2         /* Öffnungswinkel < 180° */
 #define FF_LIGHT_ATTENUATION 4  /* Abschwächung != (1, 0, 0) */
 
 #define FF_TEXUNIT_LOD_BIAS 1    /* GL_TEXTURE_LOD_BIAS != 0 */
