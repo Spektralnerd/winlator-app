@@ -1832,6 +1832,7 @@ static void linkShaderProgram(ShaderProgram* program) {
 }
 
 void ShaderConverter_linkProgram(GLuint programId) {
+    gladio_statsPrograms++;
     GLX_CONTEXT_LOCK();
     ShaderProgram* program = SparseArray_get(currentRenderer->clientState.programs, programId);
     if (!program) {

@@ -1,5 +1,6 @@
 #include "shader_material.h"
 #include "shader_converter.h"
+#include "gl_context.h"
 #include "gl_renderer.h"
 #include "gl_es2.h"
 
@@ -597,6 +598,7 @@ ShaderMaterial* ShaderMaterial_create(MaterialOptions* options) {
     GLuint program = glCreateProgram();
     glAttachShader(program, vertexShaderId);
     glAttachShader(program, fragmentShaderId);
+    gladio_statsPrograms++;
     glLinkProgram(program);
 
     glGetProgramiv(program, GL_LINK_STATUS, &success);

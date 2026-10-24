@@ -596,6 +596,7 @@ static void* prepareUpload(int width, int height, GLenum format, GLenum type, vo
 
 void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, void* data, int dataSize, bool tight) {
     bool ownsPacked, ownsConverted = false;
+    if (data) gladio_statsTexBytes += dataSize;
     void* packed = prepareUpload(width, height, format, type, data, &dataSize, tight, &ownsPacked);
     void* pixels = packed;
     GLint ifmt = internalformat;
@@ -618,6 +619,7 @@ void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei w
 
 void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, void* data, int dataSize, bool tight) {
     bool ownsPacked, ownsConverted = false;
+    if (data) gladio_statsTexBytes += dataSize;
     void* packed = prepareUpload(width, height, format, type, data, &dataSize, tight, &ownsPacked);
     void* pixels = packed;
     GLint ifmt = GL_NONE;

@@ -32,7 +32,21 @@ typedef struct GLContext {
 
     GLuint savedDSATarget;
     GLuint savedDSAId;
+
+    /* Laufstatistik (alle 5 s ins Protokoll): wo die Zeit des Server-Threads bleibt */
+    struct {
+        int64_t periodStartNs;
+        uint32_t frames, requests, draws;
+        uint64_t bytes, drawBytes;
+        int64_t waitNs, swapNs;
+        uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
+    } stats;
 } GLContext;
+
+/* Zähler über alle Kontexte (Antworten an den Client, Texturdaten, gelinkte Programme) */
+extern uint64_t gladio_statsReplies;
+extern uint64_t gladio_statsTexBytes;
+extern uint64_t gladio_statsPrograms;
 
 extern GLContext* createGLContext(JNIEnv* env, jobject obj, int clientFd);
 extern void destroyGLContext(JNIEnv* env, GLContext* context);

@@ -2787,6 +2787,7 @@ void gd_handle_glTexImage2D(GLContext* context) {
             GLES_texImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, width, height, 1), false);
         }
         else {
+            gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);
             convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
             glTexImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer);
         }
@@ -2799,6 +2800,7 @@ void gd_handle_glTexImage2D(GLContext* context) {
             GLES_texImage2D(target, level, internalformat, width, height, border, format, type, imageData, imageSize, false);
         }
         else {
+            gladio_statsTexBytes += imageSize;
             convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
             glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
         }
@@ -2908,6 +2910,7 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
             GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, gles.unpackRowLength > 0 ? gles.unpackRowLength : width, height, 1), false);
         }
         else {
+            gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);
             convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
             glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer);
         }
@@ -2920,6 +2923,7 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
             GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData, imageSize, false);
         }
         else {
+            gladio_statsTexBytes += imageSize;
             convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
             glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData);
         }

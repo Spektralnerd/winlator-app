@@ -114,10 +114,17 @@ typedef struct JMethods {
 #include "gl_dsa.h"
 #endif
 
+#ifdef GL_SERVER
+extern uint64_t gladio_statsReplies;
+#endif
+
 static inline bool gl_send(RingBuffer* ring, short requestCode, void* data, int size) {
     char header[HEADER_SIZE];
     *(short*)(header + 0) = requestCode;
     *(int*)(header + 2) = size;
+#ifdef GL_SERVER
+    gladio_statsReplies++;
+#endif
 
     bool result = RingBuffer_write(ring, header, HEADER_SIZE);
     if (!result) return false;

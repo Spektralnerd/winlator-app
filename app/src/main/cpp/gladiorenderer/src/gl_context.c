@@ -8,6 +8,58 @@
 extern EGLContext globalEGLContext;
 static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context);
 
+uint64_t gladio_statsReplies = 0;
+uint64_t gladio_statsTexBytes = 0;
+uint64_t gladio_statsPrograms = 0;
+
+static int64_t nowNs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static bool isDrawRequest(short requestCode) {
+    switch (requestCode) {
+        case REQUEST_CODE_GL_DRAW_ARRAYS:
+        case REQUEST_CODE_GL_DRAW_ARRAYS_INSTANCED:
+        case REQUEST_CODE_GL_DRAW_ELEMENTS:
+        case REQUEST_CODE_GL_DRAW_ELEMENTS_BASE_VERTEX:
+        case REQUEST_CODE_GL_DRAW_ELEMENTS_INSTANCED:
+        case REQUEST_CODE_GL_DRAW_RANGE_ELEMENTS:
+        case REQUEST_CODE_GL_MULTI_DRAW_ELEMENTS_BASE_VERTEX:
+        case REQUEST_CODE_GL_END:
+            return true;
+        default:
+            return false;
+    }
+}
+
+#define STATS_PERIOD_NS 5000000000LL
+
+static void printStats(GLContext* context, int64_t now) {
+    typeof(context->stats)* st = &context->stats;
+    double seconds = (now - st->periodStartNs) / 1e9;
+    uint32_t frames = st->frames ? st->frames : 1;
+    int64_t execNs = (now - st->periodStartNs) - st->waitNs - st->swapNs;
+    if (execNs < 0) execNs = 0;
+    println("gladio: %.1f s: %u Bilder (%.1f/s); je Bild %u Anfragen, %u Antworten, %u Zeichenaufrufe, %u KB (Vertexdaten %u KB), Texturen %u KB",
+            seconds, st->frames, st->frames / seconds, st->requests / frames, (uint32_t)((gladio_statsReplies - st->repliesAtStart) / frames),
+            st->draws / frames, (uint32_t)(st->bytes / frames / 1024), (uint32_t)(st->drawBytes / frames / 1024),
+            (uint32_t)((gladio_statsTexBytes - st->texBytesAtStart) / frames / 1024));
+    println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms; Shader-Programme neu %u, gesamt %u",
+            st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames,
+            (uint32_t)(gladio_statsPrograms - st->programsAtStart), (uint32_t)gladio_statsPrograms);
+}
+
+static void resetStats(GLContext* context, int64_t now) {
+    typeof(context->stats)* st = &context->stats;
+    memset(st, 0, sizeof(*st));
+    st->periodStartNs = now;
+    st->repliesAtStart = gladio_statsReplies;
+    st->texBytesAtStart = gladio_statsTexBytes;
+    st->programsAtStart = gladio_statsPrograms;
+}
+
 pthread_mutex_t glx_context_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void loadJMethods(JMethods* jmethods) {
@@ -155,8 +207,19 @@ static void* requestHandlerThread(void* param) {
     loadJMethods(&context->jmethods);
     short requestCode;
 
+    resetStats(context, nowNs());
     while (context->running) {
+        /* Zeit messen, wenn wirklich auf den Client gewartet wird (sonst keine Uhr lesen) */
+        bool blocked = RingBuffer_size(context->serverRing) < HEADER_SIZE;
+        int64_t waitStart = blocked ? nowNs() : 0;
         if (!gl_recv(context->serverRing, &requestCode, &context->inputBuffer)) break;
+        if (blocked) context->stats.waitNs += nowNs() - waitStart;
+        context->stats.requests++;
+        context->stats.bytes += HEADER_SIZE + context->inputBuffer.size;
+        if (isDrawRequest(requestCode)) {
+            context->stats.draws++;
+            context->stats.drawBytes += context->inputBuffer.size;
+        }
 
         if (isCanDrawImmediate(requestCode)) GLRenderer_drawImmediate(currentRenderer);
 
@@ -182,8 +245,16 @@ static void* requestHandlerThread(void* param) {
             case REQUEST_CODE_SWAP_DISPLAY_BUFFERS: {
                 int drawableId = ArrayBuffer_getInt(&context->inputBuffer);
                 currentRenderer->frameCount++;
+                int64_t swapStart = nowNs();
                 swapDisplayBuffers(context, drawableId);
                 gl_send(context->clientRing, REQUEST_CODE_SWAP_DISPLAY_BUFFERS, NULL, 0);
+                int64_t now = nowNs();
+                context->stats.swapNs += now - swapStart;
+                context->stats.frames++;
+                if (now - context->stats.periodStartNs >= STATS_PERIOD_NS) {
+                    printStats(context, now);
+                    resetStats(context, now);
+                }
                 break;
             }
             default: {
