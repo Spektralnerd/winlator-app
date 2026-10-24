@@ -464,8 +464,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
      */
     private void warnIfOpenGLDriverNeedsES3(String openGLDriver) {
         if (!Arch.X86_ONLY) return;
-        boolean needsES3 = GraphicsDrivers.GLADIO.equals(openGLDriver) || GraphicsDrivers.VIRGL.equals(openGLDriver);
         int glesVersion = GPUHelper.getGLESMajorVersion(this);
+        /* Gladio hat in dieser Variante einen eigenen ES-2.0-Pfad (gladiorenderer/gl_es2.c) */
+        if (GraphicsDrivers.GLADIO.equals(openGLDriver) && glesVersion < 3) {
+            StartLog.add("OpenGL-Treiber Gladio auf OpenGL ES " + glesVersion + ".x: ES-2.0-Pfad (dem Programm wird OpenGL 2.1 gemeldet)");
+            return;
+        }
+        boolean needsES3 = GraphicsDrivers.VIRGL.equals(openGLDriver);
         if (!needsES3 || glesVersion >= 3) return;
         String name = GraphicsDrivers.getName(openGLDriver);
         StartLog.add("Hinweis: OpenGL-Treiber " + name + " braucht OpenGL ES 3, das Gerät hat ES " + glesVersion +

@@ -88,6 +88,10 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
         GPUHelper.setGlobalEGLContext();
         StartLog.add("OpenGL-ES-Kontext "+glesVersion+": "+GLES20.glGetString(GLES20.GL_VERSION)+" / "+
             GLES20.glGetString(GLES20.GL_RENDERER)+" / GLSL "+GLES20.glGetString(GLES20.GL_SHADING_LANGUAGE_VERSION));
+        if (glesVersion < 3) {
+            /* für den Gladio-ES-2.0-Pfad wichtig: welche Erweiterungen der Treiber hat */
+            StartLog.add("OpenGL-ES-Erweiterungen: "+GLES20.glGetString(GLES20.GL_EXTENSIONS));
+        }
 
         GLES20.glFrontFace(GLES20.GL_CCW);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
