@@ -3,6 +3,7 @@
 #include "shader_material.h"
 #include "gl_context.h"
 #include "gl_renderer.h"
+#include "gl_es2.h"
 
 #if DEBUG_MODE
 #include "debug_utils.h"
@@ -1839,20 +1840,21 @@ void ShaderConverter_getShaderiv(GLuint shaderId, GLenum pname, GLint* params) {
 void ShaderConverter_getProgramiv(GLuint target, GLenum pname, GLint* params) {
     *params = 0;
     switch (pname) {
-        case GL_ACTIVE_ATTRIBUTES:
-        case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
         case GL_ACTIVE_UNIFORM_BLOCKS:
         case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH:
+        case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
+        case GL_TRANSFORM_FEEDBACK_BUFFER_MODE:
+        case GL_TRANSFORM_FEEDBACK_VARYINGS:
+        case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH:
+            if (GLES2) break;
+        case GL_ACTIVE_ATTRIBUTES:
+        case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
         case GL_ACTIVE_UNIFORMS:
         case GL_ACTIVE_UNIFORM_MAX_LENGTH:
         case GL_ATTACHED_SHADERS:
         case GL_DELETE_STATUS:
         case GL_INFO_LOG_LENGTH:
         case GL_LINK_STATUS:
-        case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
-        case GL_TRANSFORM_FEEDBACK_BUFFER_MODE:
-        case GL_TRANSFORM_FEEDBACK_VARYINGS:
-        case GL_TRANSFORM_FEEDBACK_VARYING_MAX_LENGTH:
         case GL_VALIDATE_STATUS:
             glGetProgramiv(target, pname, params);
             break;

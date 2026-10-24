@@ -1,4 +1,5 @@
 #include "request_handler.h"
+#include "gl_es2.h"
 #include "shader_converter.h"
 #include "gl_formats.h"
 #include "attrib_stack.h"
@@ -69,6 +70,7 @@ void gd_handle_glBeginQuery(GLContext* context) {
 void gd_handle_glBeginTransformFeedback(GLContext* context) {
     GLenum primitiveMode = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glBeginTransformFeedback(primitiveMode);
 }
 
@@ -92,6 +94,7 @@ void gd_handle_glBindBufferBase(GLContext* context) {
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint buffer = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glBindBufferBase(target, index, buffer);
 }
 
@@ -102,6 +105,7 @@ void gd_handle_glBindBufferRange(GLContext* context) {
     GLintptr offset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr size = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glBindBufferRange(target, index, buffer, offset, size);
 }
 
@@ -144,6 +148,7 @@ void gd_handle_glBindSampler(GLContext* context) {
     GLuint unit = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint sampler = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glBindSampler(unit, sampler);
 }
 
@@ -158,7 +163,10 @@ void gd_handle_glBindVertexArray(GLContext* context) {
     GLuint array = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLVertexArrayObject_setBound(&currentRenderer->clientState, array);
-    glBindVertexArray(array);
+    if (GLES2) {
+        if (gles.vertexArrayObject) gles.glBindVertexArrayOES(array);
+    }
+    else glBindVertexArray(array);
 }
 
 void gd_handle_glBitmap(GLContext* context) {
@@ -192,6 +200,10 @@ void gd_handle_glBlendEquationSeparatei(GLContext* context) {
     GLenum modeRGB = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum modeAlpha = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        if (buf == 0) glBlendEquationSeparate(modeRGB, modeAlpha);
+        return;
+    }
     glBlendEquationSeparatei(buf, modeRGB, modeAlpha);
 }
 
@@ -199,6 +211,10 @@ void gd_handle_glBlendEquationi(GLContext* context) {
     GLuint buf = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum mode = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        if (buf == 0) glBlendEquation(mode);
+        return;
+    }
     glBlendEquationi(buf, mode);
 }
 
@@ -225,6 +241,10 @@ void gd_handle_glBlendFuncSeparatei(GLContext* context) {
     GLenum srcAlpha = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum dstAlpha = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        if (buf == 0) glBlendFuncSeparate(srcRGB, dstRGB, srcAlpha, dstAlpha);
+        return;
+    }
     glBlendFuncSeparatei(buf, srcRGB, dstRGB, srcAlpha, dstAlpha);
 }
 
@@ -233,6 +253,10 @@ void gd_handle_glBlendFunci(GLContext* context) {
     GLenum src = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum dst = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        if (buf == 0) glBlendFunc(src, dst);
+        return;
+    }
     glBlendFunci(buf, src, dst);
 }
 
@@ -248,6 +272,14 @@ void gd_handle_glBlitFramebuffer(GLContext* context) {
     GLbitfield mask = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum filter = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        static bool warned = false;
+        if (!warned) {
+            println("gladio:es2: glBlitFramebuffer wird nicht unterstützt (wird übersprungen)");
+            warned = true;
+        }
+        return;
+    }
     glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 
@@ -340,6 +372,12 @@ void gd_handle_glClearBufferfi(GLContext* context) {
     GLfloat depth = ArrayBuffer_getFloat(&context->inputBuffer);
     GLint stencil = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        glClearDepthf(depth);
+        glClearStencil(stencil);
+        glClear(GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+        return;
+    }
     glClearBufferfi(buffer, drawbuffer, depth, stencil);
 }
 
@@ -393,7 +431,12 @@ void gd_handle_glClientWaitSync(GLContext* context) {
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint64 timeout = ArrayBuffer_getLong(&context->inputBuffer);
 
-    GLenum result = glClientWaitSync(sync, flags, timeout);
+    GLenum result;
+    if (GLES2) {
+        glFinish();
+        result = GL_ALREADY_SIGNALED;
+    }
+    else result = glClientWaitSync(sync, flags, timeout);
     gl_send(context->clientRing, REQUEST_CODE_GL_CLIENT_WAIT_SYNC, &result, sizeof(GLenum));
 }
 
@@ -435,6 +478,10 @@ void gd_handle_glColorMaski(GLContext* context) {
     GLboolean b = ArrayBuffer_get(&context->inputBuffer);
     GLboolean a = ArrayBuffer_get(&context->inputBuffer);
 
+    if (GLES2) {
+        if (index == 0) glColorMask(r, g, b, a);
+        return;
+    }
     glColorMaski(index, r, g, b, a);
 }
 
@@ -483,7 +530,10 @@ void gd_handle_glCompressedTexImage2D(GLContext* context) {
     }
 
     target = parseTexTarget(target);
-    glTexImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
+    if (GLES2) {
+        GLES_texImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData, width * height * 4, true);
+    }
+    else glTexImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
     MEMFREE(decompressedData);
 
     GLTexture* texture = GLTexture_getBound(target);
@@ -521,7 +571,10 @@ void gd_handle_glCompressedTexSubImage2D(GLContext* context) {
         }
     }
 
-    glTexSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
+    if (GLES2) {
+        GLES_texSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData, width * height * 4, true);
+    }
+    else glTexSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
     MEMFREE(decompressedData);
 }
 
@@ -532,6 +585,14 @@ void gd_handle_glCopyBufferSubData(GLContext* context) {
     GLintptr writeOffset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr size = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        GLBuffer* readBuffer = GLBuffer_getBound(readTarget);
+        if (readBuffer && readBuffer->mappedData) {
+            glBufferSubData(writeTarget, writeOffset, size, readBuffer->mappedData + readOffset);
+        }
+        else println("gladio:es2: glCopyBufferSubData ohne gemappte Quelle");
+        return;
+    }
     glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
 }
 
@@ -555,6 +616,14 @@ void gd_handle_glCopyTexImage2D(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
     GLint border = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        switch (getTexImageFormatChannels(internalformat)) {
+            case 1: internalformat = GL_LUMINANCE; break;
+            case 2: internalformat = GL_LUMINANCE_ALPHA; break;
+            case 3: internalformat = GL_RGB; break;
+            default: internalformat = GL_RGBA; break;
+        }
+    }
     glCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
 }
 
@@ -582,6 +651,7 @@ void gd_handle_glCopyTexSubImage3D(GLContext* context) {
     GLsizei width = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glCopyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height);
 }
 
@@ -674,6 +744,7 @@ void gd_handle_glDeleteSamplers(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint* samplers = ArrayBuffer_getBytes(&context->inputBuffer, count * sizeof(GLuint));
 
+    if (GLES2) return;
     glDeleteSamplers(count, samplers);
 }
 
@@ -686,6 +757,7 @@ void gd_handle_glDeleteShader(GLContext* context) {
 void gd_handle_glDeleteSync(GLContext* context) {
     int64_t sync = ArrayBuffer_getLong(&context->inputBuffer);
 
+    if (GLES2) return;
     glDeleteSync((GLsync)(intptr_t)sync);
 }
 
@@ -701,7 +773,10 @@ void gd_handle_glDeleteVertexArrays(GLContext* context) {
     GLuint* arrays = ArrayBuffer_getBytes(&context->inputBuffer, n * sizeof(GLuint));
 
     for (int i = 0; i < n; i++) GLVertexArrayObject_delete(&currentRenderer->clientState, arrays[i]);
-    glDeleteVertexArrays(n, arrays);
+    if (GLES2) {
+        if (gles.vertexArrayObject) gles.glDeleteVertexArraysOES(n, arrays);
+    }
+    else glDeleteVertexArrays(n, arrays);
 }
 
 void gd_handle_glDepthFunc(GLContext* context) {
@@ -803,6 +878,10 @@ void gd_handle_glDrawArraysInstanced(GLContext* context) {
 
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
+    if (GLES2) {
+        glDrawArrays(mode, first, count);
+        return;
+    }
     glDrawArraysInstanced(mode, first, count, instancecount);
 }
 
@@ -827,6 +906,10 @@ void gd_handle_glDrawElements(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, 0);
+        return;
+    }
     glDrawElements(mode, count, type, indices);
 }
 
@@ -839,6 +922,10 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, basevertex);
+        return;
+    }
     glDrawElementsBaseVertex(mode, count, type, indices, basevertex);
 }
 
@@ -851,6 +938,10 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, 0);
+        return;
+    }
     glDrawElementsInstanced(mode, count, type, indices, instancecount);
 }
 
@@ -864,6 +955,10 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, basevertex);
+        return;
+    }
     glDrawElementsInstancedBaseVertex(mode, count, type, indices, instancecount, basevertex);
 }
 
@@ -890,6 +985,10 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, 0);
+        return;
+    }
     glDrawRangeElements(mode, start, end, count, type, indices);
 }
 
@@ -904,6 +1003,10 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    if (GLES2) {
+        GLES_drawElements(mode, count, type, indices, basevertex);
+        return;
+    }
     glDrawRangeElementsBaseVertex(mode, start, end, count, type, indices, basevertex);
 }
 
@@ -981,6 +1084,7 @@ void gd_handle_glEndQuery(GLContext* context) {
 }
 
 void gd_handle_glEndTransformFeedback(GLContext* context) {
+    if (GLES2) return;
     glEndTransformFeedback();
 }
 
@@ -1030,7 +1134,13 @@ void gd_handle_glFenceSync(GLContext* context) {
     GLenum condition = ArrayBuffer_getInt(&context->inputBuffer);
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLsync sync = glFenceSync(condition, flags);
+    GLsync sync;
+    if (GLES2) {
+        /* keine Fences in ES 2.0: ein beliebiger Wert ungleich 0, glClientWaitSync endet mit glFinish */
+        static intptr_t fakeSync = 0x4000;
+        sync = (GLsync)(fakeSync += 16);
+    }
+    else sync = glFenceSync(condition, flags);
     int64_t syncValue = (int64_t)(intptr_t)sync;
     gl_send(context->clientRing, REQUEST_CODE_GL_FENCE_SYNC, &syncValue, sizeof(int64_t));
 }
@@ -1055,10 +1165,15 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
     GLBuffer* buffer = GLBuffer_getBound(target);
     if (buffer) {
         if (buffer->mappedData) {
-            void* dstData = glMapBufferRange(target, offset, length, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
-            if (dstData) {
-                memcpy(dstData, buffer->mappedData + offset, length);
-                glUnmapBuffer(target);
+            if (GLES2) {
+                glBufferSubData(target, offset, length, buffer->mappedData + offset);
+            }
+            else {
+                void* dstData = glMapBufferRange(target, offset, length, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+                if (dstData) {
+                    memcpy(dstData, buffer->mappedData + offset, length);
+                    glUnmapBuffer(target);
+                }
             }
         }
     }
@@ -1214,7 +1329,11 @@ void gd_handle_glGenSamplers(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLuint samplers[count];
-    glGenSamplers(count, samplers);
+    if (GLES2) {
+        static GLuint fakeSampler = 1;
+        for (int i = 0; i < count; i++) samplers[i] = fakeSampler++;
+    }
+    else glGenSamplers(count, samplers);
     gl_send(context->clientRing, REQUEST_CODE_GL_GEN_SAMPLERS, samplers, sizeof(samplers));
 }
 
@@ -1230,7 +1349,14 @@ void gd_handle_glGenVertexArrays(GLContext* context) {
     GLsizei n = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLuint arrays[n];
-    glGenVertexArrays(n, arrays);
+    if (GLES2) {
+        if (gles.vertexArrayObject) gles.glGenVertexArraysOES(n, arrays);
+        else {
+            static GLuint fakeArray = 1;
+            for (int i = 0; i < n; i++) arrays[i] = fakeArray++;
+        }
+    }
+    else glGenVertexArrays(n, arrays);
     gl_send(context->clientRing, REQUEST_CODE_GL_GEN_VERTEX_ARRAYS, arrays, sizeof(arrays));
 }
 
@@ -1682,7 +1808,7 @@ void gd_handle_glGetUniformBlockIndex(GLContext* context) {
     GLuint program = ArrayBuffer_getInt(&context->inputBuffer);
     GLchar* uniformBlockName = context->inputBuffer.buffer + context->inputBuffer.position;
 
-    GLuint result = glGetUniformBlockIndex(program, uniformBlockName);
+    GLuint result = GLES2 ? GL_INVALID_INDEX : glGetUniformBlockIndex(program, uniformBlockName);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_UNIFORM_BLOCK_INDEX, &result, sizeof(GLuint));
 }
 
@@ -1738,7 +1864,7 @@ void gd_handle_glHint(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum mode = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (target ==  GL_FRAGMENT_SHADER_DERIVATIVE_HINT || target ==  GL_GENERATE_MIPMAP_HINT) {
+    if (target == GL_GENERATE_MIPMAP_HINT || (target == GL_FRAGMENT_SHADER_DERIVATIVE_HINT && !GLES2)) {
         glHint(target, mode);
     }
 }
@@ -1786,7 +1912,9 @@ void gd_handle_glIsEnabledi(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLboolean result = glIsEnabledi(target, index);
+    GLboolean result;
+    if (GLES2) result = index == 0 && GLES_isCapabilitySupported(target) ? glIsEnabled(target) : GL_FALSE;
+    else result = glIsEnabledi(target, index);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_ENABLEDI, &result, sizeof(GLboolean));
 }
 
@@ -1814,7 +1942,7 @@ void gd_handle_glIsProgram(GLContext* context) {
 void gd_handle_glIsQuery(GLContext* context) {
     GLuint id = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLboolean result = glIsQuery(id);
+    GLboolean result = GLES2 ? GLQuery_exists(id) : glIsQuery(id);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_QUERY, &result, sizeof(GLboolean));
 }
 
@@ -1828,7 +1956,7 @@ void gd_handle_glIsRenderbuffer(GLContext* context) {
 void gd_handle_glIsSampler(GLContext* context) {
     GLuint sampler = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLboolean result = glIsSampler(sampler);
+    GLboolean result = GLES2 ? (sampler != 0) : glIsSampler(sampler);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_SAMPLER, &result, sizeof(GLboolean));
 }
 
@@ -1842,7 +1970,7 @@ void gd_handle_glIsShader(GLContext* context) {
 void gd_handle_glIsSync(GLContext* context) {
     GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&context->inputBuffer);
 
-    GLboolean result = glIsSync(sync);
+    GLboolean result = GLES2 ? (sync != NULL) : glIsSync(sync);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_SYNC, &result, sizeof(GLboolean));
 }
 
@@ -1857,7 +1985,9 @@ void gd_handle_glIsTexture(GLContext* context) {
 void gd_handle_glIsVertexArray(GLContext* context) {
     GLuint array = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLboolean result = glIsVertexArray(array);
+    GLboolean result;
+    if (GLES2) result = gles.vertexArrayObject ? gles.glIsVertexArrayOES(array) : (array != 0);
+    else result = glIsVertexArray(array);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_VERTEX_ARRAY, &result, sizeof(GLboolean));
 }
 
@@ -1865,7 +1995,7 @@ void gd_handle_glLightModelf(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLfloat param = ArrayBuffer_getFloat(&context->inputBuffer);
 
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModelf");
+    GLRenderer_setLightModelParams(currentRenderer, pname, &param);
 }
 
 void gd_handle_glLightModelfv(GLContext* context) {
@@ -2035,6 +2165,7 @@ void gd_handle_glMatrixMode(GLContext* context) {
 void gd_handle_glMinSampleShading(GLContext* context) {
     GLfloat value = ArrayBuffer_getFloat(&context->inputBuffer);
 
+    if (GLES2) return;
     glMinSampleShading(value);
 }
 
@@ -2130,6 +2261,7 @@ void gd_handle_glPatchParameteri(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLint value = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glPatchParameteri(pname, value);
 }
 
@@ -2149,6 +2281,15 @@ void gd_handle_glPixelStorei(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLint param = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        /* ES 2.0 kennt nur die Ausrichtung; Zeilenlänge und Versatz werden beim Hochladen selbst umgepackt */
+        switch (pname) {
+            case GL_UNPACK_ROW_LENGTH: gles.unpackRowLength = param; break;
+            case GL_UNPACK_SKIP_PIXELS: gles.unpackSkipPixels = param; break;
+            case GL_UNPACK_SKIP_ROWS: gles.unpackSkipRows = param; break;
+        }
+        return;
+    }
     if (pname == GL_PACK_ROW_LENGTH ||
         pname == GL_PACK_SKIP_PIXELS ||
         pname == GL_PACK_SKIP_ROWS ||
@@ -2377,6 +2518,7 @@ void gd_handle_glRenderbufferStorage(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
     if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
+    if (GLES2) internalformat = GLES_renderbufferFormat(internalformat);
     glRenderbufferStorage(target, internalformat, width, height);
 }
 
@@ -2388,6 +2530,10 @@ void gd_handle_glRenderbufferStorageMultisample(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
     if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
+    if (GLES2) {
+        glRenderbufferStorage(target, GLES_renderbufferFormat(internalformat), width, height);
+        return;
+    }
     glRenderbufferStorageMultisample(target, samples, internalformat, width, height);
 }
 
@@ -2412,6 +2558,7 @@ void gd_handle_glSampleMaski(GLContext* context) {
     GLuint maskNumber = ArrayBuffer_getInt(&context->inputBuffer);
     GLbitfield mask = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glSampleMaski(maskNumber, mask);
 }
 
@@ -2535,6 +2682,7 @@ void gd_handle_glTexBuffer(GLContext* context) {
     GLenum internalformat = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint buffer = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glTexBuffer(target, internalformat, buffer);
 }
 
@@ -2625,15 +2773,25 @@ void gd_handle_glTexImage2D(GLContext* context) {
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
-        glTexImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+        if (GLES2) {
+            GLES_texImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, width, height, 1), false);
+        }
+        else {
+            convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
+            glTexImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+        }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_IMAGE2D, NULL, 0);
     }
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
-        glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
+        if (GLES2) {
+            GLES_texImage2D(target, level, internalformat, width, height, border, format, type, imageData, imageSize, false);
+        }
+        else {
+            convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
+            glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
+        }
         RING_READ_END(context->serverRing);
     }
 
@@ -2654,6 +2812,7 @@ void gd_handle_glTexImage2DMultisample(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
     GLboolean fixedsamplelocations = ArrayBuffer_get(&context->inputBuffer);
 
+    if (GLES2) return;
     glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations);
 }
 
@@ -2673,15 +2832,19 @@ void gd_handle_glTexImage3D(GLContext* context) {
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
-        glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+        if (!GLES2) {
+            convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
+            glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+        }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_IMAGE3D, NULL, 0);
     }
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
-        glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, imageData);
+        if (!GLES2) {
+            convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
+            glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, imageData);
+        }
         RING_READ_END(context->serverRing);
     }
 }
@@ -2695,6 +2858,7 @@ void gd_handle_glTexImage3DMultisample(GLContext* context) {
     GLsizei depth = ArrayBuffer_getInt(&context->inputBuffer);
     GLboolean fixedsamplelocations = ArrayBuffer_get(&context->inputBuffer);
 
+    if (GLES2) return;
     glTexStorage3DMultisample(target, samples, internalformat, width, height, depth, fixedsamplelocations);
 }
 
@@ -2730,15 +2894,25 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
-        glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer);
+        if (GLES2) {
+            GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, gles.unpackRowLength > 0 ? gles.unpackRowLength : width, height, 1), false);
+        }
+        else {
+            convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
+            glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer);
+        }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_SUB_IMAGE2D, NULL, 0);
     }
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
-        glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData);
+        if (GLES2) {
+            GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData, imageSize, false);
+        }
+        else {
+            convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
+            glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData);
+        }
         RING_READ_END(context->serverRing);
     }
 }
@@ -2760,15 +2934,19 @@ void gd_handle_glTexSubImage3D(GLContext* context) {
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
-        glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixelUnpackBuffer->mappedData + pointer);
+        if (!GLES2) {
+            convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
+            glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixelUnpackBuffer->mappedData + pointer);
+        }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_SUB_IMAGE3D, NULL, 0);
     }
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
-        glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, imageData);
+        if (!GLES2) {
+            convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
+            glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, imageData);
+        }
         RING_READ_END(context->serverRing);
     }
 }
@@ -2820,7 +2998,8 @@ void gd_handle_glUniform1ui(GLContext* context) {
     GLint location = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint v0 = ArrayBuffer_getInt(&context->inputBuffer);
 
-    glUniform1ui(location, v0);
+    if (GLES2) glUniform1i(location, (GLint)v0);
+    else glUniform1ui(location, v0);
 }
 
 void gd_handle_glUniform1uiv(GLContext* context) {
@@ -2828,7 +3007,8 @@ void gd_handle_glUniform1uiv(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint* value = ArrayBuffer_getBytes(&context->inputBuffer, count * sizeof(GLuint));
 
-    glUniform1uiv(location, count, value);
+    if (GLES2) glUniform1iv(location, count, (const GLint*)value);
+    else glUniform1uiv(location, count, value);
 }
 
 void gd_handle_glUniform2f(GLContext* context) {
@@ -2868,7 +3048,8 @@ void gd_handle_glUniform2ui(GLContext* context) {
     GLuint v0 = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint v1 = ArrayBuffer_getInt(&context->inputBuffer);
 
-    glUniform2ui(location, v0, v1);
+    if (GLES2) glUniform2i(location, (GLint)v0, (GLint)v1);
+    else glUniform2ui(location, v0, v1);
 }
 
 void gd_handle_glUniform2uiv(GLContext* context) {
@@ -2876,7 +3057,8 @@ void gd_handle_glUniform2uiv(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 2 * sizeof(GLuint));
 
-    glUniform2uiv(location, count, value);
+    if (GLES2) glUniform2iv(location, count, (const GLint*)value);
+    else glUniform2uiv(location, count, value);
 }
 
 void gd_handle_glUniform3f(GLContext* context) {
@@ -2919,7 +3101,8 @@ void gd_handle_glUniform3ui(GLContext* context) {
     GLuint v1 = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint v2 = ArrayBuffer_getInt(&context->inputBuffer);
 
-    glUniform3ui(location, v0, v1, v2);
+    if (GLES2) glUniform3i(location, (GLint)v0, (GLint)v1, (GLint)v2);
+    else glUniform3ui(location, v0, v1, v2);
 }
 
 void gd_handle_glUniform3uiv(GLContext* context) {
@@ -2927,7 +3110,8 @@ void gd_handle_glUniform3uiv(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 3 * sizeof(GLuint));
 
-    glUniform3uiv(location, count, value);
+    if (GLES2) glUniform3iv(location, count, (const GLint*)value);
+    else glUniform3uiv(location, count, value);
 }
 
 void gd_handle_glUniform4f(GLContext* context) {
@@ -2973,7 +3157,8 @@ void gd_handle_glUniform4ui(GLContext* context) {
     GLuint v2 = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint v3 = ArrayBuffer_getInt(&context->inputBuffer);
 
-    glUniform4ui(location, v0, v1, v2, v3);
+    if (GLES2) glUniform4i(location, (GLint)v0, (GLint)v1, (GLint)v2, (GLint)v3);
+    else glUniform4ui(location, v0, v1, v2, v3);
 }
 
 void gd_handle_glUniform4uiv(GLContext* context) {
@@ -2981,7 +3166,8 @@ void gd_handle_glUniform4uiv(GLContext* context) {
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 4 * sizeof(GLuint));
 
-    glUniform4uiv(location, count, value);
+    if (GLES2) glUniform4iv(location, count, (const GLint*)value);
+    else glUniform4uiv(location, count, value);
 }
 
 void gd_handle_glUniformBlockBinding(GLContext* context) {
@@ -2989,6 +3175,7 @@ void gd_handle_glUniformBlockBinding(GLContext* context) {
     GLuint uniformBlockIndex = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint uniformBlockBinding = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glUniformBlockBinding(program, uniformBlockIndex, uniformBlockBinding);
 }
 
@@ -3007,6 +3194,7 @@ void gd_handle_glUniformMatrix2x3fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 6 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix2x3fv(location, count, transpose, value);
 }
 
@@ -3016,6 +3204,7 @@ void gd_handle_glUniformMatrix2x4fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 8 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix2x4fv(location, count, transpose, value);
 }
 
@@ -3034,6 +3223,7 @@ void gd_handle_glUniformMatrix3x2fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 6 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix3x2fv(location, count, transpose, value);
 }
 
@@ -3043,6 +3233,7 @@ void gd_handle_glUniformMatrix3x4fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 12 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix3x4fv(location, count, transpose, value);
 }
 
@@ -3061,6 +3252,7 @@ void gd_handle_glUniformMatrix4x2fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 8 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix4x2fv(location, count, transpose, value);
 }
 
@@ -3070,6 +3262,7 @@ void gd_handle_glUniformMatrix4x3fv(GLContext* context) {
     GLboolean transpose = ArrayBuffer_get(&context->inputBuffer);
     GLfloat* value = ArrayBuffer_getBytes(&context->inputBuffer, count * 12 * sizeof(GLfloat));
 
+    if (GLES2) return;
     glUniformMatrix4x3fv(location, count, transpose, value);
 }
 
@@ -3167,6 +3360,7 @@ void gd_handle_glVertexAttribDivisor(GLContext* context) {
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint divisor = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) return;
     glVertexAttribDivisor(index, divisor);
 }
 
@@ -3335,7 +3529,7 @@ void gd_handle_glVertexAttribPointer(GLContext* context) {
         vertexAttrib->boundArrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER)->id;
     }
 
-    glVertexAttribPointer(index, size, type, normalized, stride, (const void*)pointer);
+    glVertexAttribPointer(index, size, GLES_vertexAttribType(type), normalized, stride, (const void*)pointer);
 }
 
 void gd_handle_glVertexPointer(GLContext* context) {
@@ -3356,6 +3550,7 @@ void gd_handle_glWaitSync(GLContext* context) {
     GLbitfield flags = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint64 timeout = ArrayBuffer_getLong(&context->inputBuffer);
 
+    if (GLES2) return;
     glWaitSync(sync, flags, timeout);
 }
 

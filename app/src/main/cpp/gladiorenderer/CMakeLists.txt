@@ -23,7 +23,8 @@ add_library(gladiorenderer SHARED
             src/arb_program.c
             src/gl_buffer.c
             src/gl_vao.c
-            src/gl_framebuffer.c)
+            src/gl_framebuffer.c
+            src/gl_es2.c)
 
 target_link_libraries(gladiorenderer
                       winlator

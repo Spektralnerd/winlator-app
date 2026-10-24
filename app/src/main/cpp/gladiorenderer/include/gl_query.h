@@ -18,5 +18,6 @@ extern void GLQuery_getParamsv(GLenum target, GLenum pname, GLint* params);
 extern void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params);
 extern void GLQuery_queryCounter(GLuint id, GLenum target);
 extern void GLQuery_delete(GLuint id);
+extern bool GLQuery_exists(GLuint id);
 
 #endif

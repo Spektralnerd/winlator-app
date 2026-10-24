@@ -3,6 +3,7 @@
 #include "shader_material.h"
 #include "gl_context.h"
 #include "arb_program.h"
+#include "gl_es2.h"
 
 thread_local GLRenderer* currentRenderer = NULL;
 
@@ -66,8 +67,10 @@ void GLRenderer_initOnEGLContext(GLRenderer* renderer) {
     const float normal[] = {0.0f, 0.0f, 1.0f};
     const float texCoord[] = {0.0f, 0.0f, 0.0f, 1.0f};
 
+    const float lightModelAmbient[] = {0.2f, 0.2f, 0.2f, 1.0f};
     memcpy(renderer->state.color, color, sizeof(color));
     memcpy(renderer->state.normal, normal, sizeof(normal));
+    memcpy(renderer->state.lightModelAmbient, lightModelAmbient, sizeof(lightModelAmbient));
 
     for (int i = 0; i < MAX_TEXTURES; i++) {
         memcpy(renderer->state.texCoords[i], texCoord, sizeof(texCoord));
@@ -102,14 +105,18 @@ void GLRenderer_initOnEGLContext(GLRenderer* renderer) {
     renderer->state.clampReadColor = false;
 
     for (int i = 0; i < MAX_LIGHTS; i++) initLight(&renderer->lights[i]);
+    /* Vorgabematerial (ambient 0.2, diffuse 0.8) auch ohne glMaterial-Aufruf der Anwendung */
+    initMaterials(renderer);
 
     glGenBuffers(ARRAY_SIZE(renderer->bufferIds), renderer->bufferIds);
 
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
-    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    if (!GLES2) {
+        glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    }
 
     renderer->queriesStartTime = nanoTime();
 }
@@ -199,7 +206,7 @@ static void updatePointSmoothTexture(GLRenderer* renderer) {
 
             const uint8_t white[] = {255, 255, 255, 255};
             uint8_t* pixels = drawSmoothCircle(64, 64, white);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            glTexImage2D(GL_TEXTURE_2D, 0, GLES2 ? GL_RGBA : GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
             free(pixels);
             glBindTexture(GL_TEXTURE_2D, 0);
         }
@@ -510,7 +517,8 @@ void GLRenderer_setCapabilityState(GLRenderer* renderer, GLenum cap, bool state,
                 return;
             }
 
-            if (index != -1) {
+            if (!GLES_isCapabilitySupported(cap)) break;
+            if (index != -1 && !GLES2) {
                 if (state) glEnablei(cap, index);
                 else glDisablei(cap, index);
             }
@@ -605,6 +613,21 @@ void GLRenderer_setLightParams(GLRenderer* renderer, GLenum id, GLenum pname, vo
             vec3_transform_direction(light->spotDirection, inverseMatrix);
             break;
         }
+    }
+}
+
+void GLRenderer_setLightModelParams(GLRenderer* renderer, GLenum pname, GLfloat* params) {
+    switch (pname) {
+        case GL_LIGHT_MODEL_AMBIENT:
+            memcpy(renderer->state.lightModelAmbient, params, sizeof(renderer->state.lightModelAmbient));
+            break;
+        case GL_LIGHT_MODEL_LOCAL_VIEWER:
+        case GL_LIGHT_MODEL_TWO_SIDE:
+        case GL_LIGHT_MODEL_COLOR_CONTROL:
+            break;
+        default:
+            println("gladio:setLightModelParams: unimplemented pname %x", pname);
+            break;
     }
 }
 
@@ -783,7 +806,7 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
             if (params) *(GLint*)params = MAX_LIGHTS;
             break;
         case GL_MAX_CLIP_PLANES:
-            if (params) *(GLint*)params = 6;
+            if (params) *(GLint*)params = GLES2 ? 0 : 6;
             break;
         case GL_NUM_EXTENSIONS:
             if (params) getGLExtensions(params);
@@ -841,11 +864,7 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
             break;
         case GL_MAJOR_VERSION:
         case GL_MINOR_VERSION:
-            if (params) {
-                int version[2];
-                sscanf(GL_STRING_VERSION, "%d.%d", &version[0], &version[1]);
-                *(GLint*)params = version[pname - GL_MAJOR_VERSION];
-            }
+            if (params) *(GLint*)params = pname == GL_MAJOR_VERSION ? GLES_majorVersion() : GLES_minorVersion();
             break;
         case GL_LINE_SMOOTH:
         case GL_LINE_STIPPLE:
@@ -912,6 +931,66 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
             break;
         default:
             if (pname == GL_POINT_SIZE_RANGE) pname = GL_ALIASED_POINT_SIZE_RANGE;
+            if (GLES2) {
+                /* Grenzen, die ES 2.0 anders oder gar nicht kennt */
+                int value = -1;
+                switch (pname) {
+                    case GL_MAX_VERTEX_UNIFORM_COMPONENTS: value = gles.maxVertexUniformVectors * 4; break;
+                    case GL_MAX_FRAGMENT_UNIFORM_COMPONENTS: value = gles.maxFragmentUniformVectors * 4; break;
+                    case GL_MAX_VARYING_COMPONENTS: /* = GL_MAX_VARYING_FLOATS */
+                        /* abzüglich der Varyings, die der Server selbst belegt (Farbe, Nebel) */
+                        value = MAX(gles.maxVaryingVectors - 2, 4) * 4;
+                        break;
+                    case GL_MAX_FRAGMENT_INPUT_COMPONENTS: value = MAX(gles.maxVaryingVectors - 2, 4) * 4 + 4; break;
+                    case GL_MAX_VERTEX_OUTPUT_COMPONENTS: value = MAX(gles.maxVaryingVectors - 2, 4) * 4 + 4; break;
+                    case GL_MAX_DRAW_BUFFERS:
+                    case GL_MAX_COLOR_ATTACHMENTS:
+                        value = 1;
+                        break;
+                    case GL_MAX_SAMPLES:
+                    case GL_MAX_3D_TEXTURE_SIZE:
+                    case GL_MAX_ARRAY_TEXTURE_LAYERS:
+                    case GL_MAX_UNIFORM_BUFFER_BINDINGS:
+                    case GL_MAX_VERTEX_UNIFORM_BLOCKS:
+                    case GL_MAX_FRAGMENT_UNIFORM_BLOCKS:
+                    case GL_MAX_COMBINED_UNIFORM_BLOCKS:
+                    case GL_MAX_UNIFORM_BLOCK_SIZE:
+                    case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS:
+                    case GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS:
+                    case GL_MAX_ELEMENTS_VERTICES:
+                    case GL_MAX_ELEMENTS_INDICES:
+                    case GL_MAX_TEXTURE_LOD_BIAS:
+                    case GL_MAX_TEXTURE_BUFFER_SIZE:
+                    case GL_MAX_DUAL_SOURCE_DRAW_BUFFERS:
+                    case GL_NUM_PROGRAM_BINARY_FORMATS:
+                    case GL_NUM_SHADER_BINARY_FORMATS:
+                        value = 0;
+                        break;
+                    case GL_MAX_TEXTURE_MAX_ANISOTROPY:
+                        value = gles.anisotropic ? -1 : 1;
+                        break;
+                    case GL_MAX_CUBE_MAP_TEXTURE_SIZE: value = gles.maxCubeMapSize; break;
+                    case GL_MAX_RENDERBUFFER_SIZE: value = gles.maxRenderbufferSize; break;
+                    case GL_MAX_VERTEX_ATTRIBS: value = gles.maxVertexAttribs; break;
+                    case GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS: value = gles.maxVertexTextureUnits; break;
+                    case GL_READ_FRAMEBUFFER_BINDING:
+                    case GL_DRAW_FRAMEBUFFER_BINDING:
+                        pname = GL_FRAMEBUFFER_BINDING;
+                        break;
+                    case GL_SAMPLE_BUFFERS:
+                    case GL_SAMPLES:
+                        value = 0;
+                        break;
+                }
+                if (value != -1) {
+                    if (params) {
+                        if (type == GL_FLOAT) *(GLfloat*)params = (GLfloat)value;
+                        else if (type == GL_BOOL) *(GLboolean*)params = value != 0;
+                        else *(GLint*)params = value;
+                    }
+                    break;
+                }
+            }
             if (pname >= GL_LIGHT0 && pname <= GL_LIGHT7) {
                 int index = pname - GL_LIGHT0;
                 if (params) *(GLboolean*)params = index < MAX_LIGHTS ? renderer->lights[index].enabled : 0;
@@ -1005,7 +1084,12 @@ void GLRenderer_setRasterPos(GLRenderer* renderer, bool transform, GLfloat x, GL
 
 void GLRenderer_drawPixels(GLRenderer* renderer, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     GLint internalformat = GL_NONE;
-    convertTexImageFormat(GL_TEXTURE_2D, &internalformat, &format, &type, NULL, 0);
+    bool ownsPixels = false;
+    if (GLES2) {
+        int imageSize = computeTexImageDataSize(format, type, width, height, 1);
+        if (!GLES_convertTexImageFormat(GL_TEXTURE_2D, &internalformat, &format, &type, &pixels, &imageSize, &ownsPixels)) return;
+    }
+    else convertTexImageFormat(GL_TEXTURE_2D, &internalformat, &format, &type, NULL, 0);
 
     initRaster(renderer);
 
@@ -1020,6 +1104,7 @@ void GLRenderer_drawPixels(GLRenderer* renderer, GLsizei width, GLsizei height, 
     GLRaster* raster = renderer->raster;
     glBindTexture(GL_TEXTURE_2D, raster->textureId);
     glTexImage2D(GL_TEXTURE_2D, 0, internalformat, width, height, 0, format, type, pixels);
+    if (ownsPixels) free(pixels);
 
     ArrayBuffer_rewind(&raster->quad.vertices);
     ArrayBuffer_rewind(&raster->quad.texCoords);
@@ -1059,6 +1144,7 @@ void GLRenderer_drawPixels(GLRenderer* renderer, GLsizei width, GLsizei height, 
 }
 
 void GLRenderer_setSamplerParameter(GLRenderer* renderer, GLuint sampler, GLenum pname, GLfloat* params) {
+    if (GLES2) return;
     switch (pname) {
         case GL_TEXTURE_WRAP_S:
         case GL_TEXTURE_WRAP_T:
@@ -1083,6 +1169,8 @@ void GLRenderer_setSamplerParameter(GLRenderer* renderer, GLuint sampler, GLenum
 }
 
 void GLRenderer_getSamplerParameter(GLRenderer* renderer, GLuint sampler, GLenum pname, GLfloat* params) {
+    *params = 0;
+    if (GLES2) return;
     switch (pname) {
         case GL_TEXTURE_WRAP_S:
         case GL_TEXTURE_WRAP_T:
@@ -1122,33 +1210,44 @@ void GLRenderer_setTexParameter(GLRenderer* renderer, GLenum target, GLenum pnam
         case GL_TEXTURE_WRAP_R: {
             GLint param = (GLint)*params;
             if (param == GL_CLAMP) param = GL_CLAMP_TO_EDGE;
+            if (GLES2) {
+                if (pname == GL_TEXTURE_WRAP_R) break;
+                if (param == GL_CLAMP_TO_BORDER) param = GL_CLAMP_TO_EDGE;
+            }
             glTexParameteri(target, pname, param);
             break;
         }
+        case GL_TEXTURE_MIN_FILTER:
+        case GL_TEXTURE_MAG_FILTER:
+            glTexParameteri(target, pname, (GLint)*params);
+            break;
         case GL_DEPTH_STENCIL_TEXTURE_MODE:
         case GL_TEXTURE_BASE_LEVEL:
         case GL_TEXTURE_COMPARE_FUNC:
         case GL_TEXTURE_COMPARE_MODE:
-        case GL_TEXTURE_MIN_FILTER:
-        case GL_TEXTURE_MAG_FILTER:
         case GL_TEXTURE_MAX_LEVEL:
         case GL_TEXTURE_SWIZZLE_R:
         case GL_TEXTURE_SWIZZLE_G:
         case GL_TEXTURE_SWIZZLE_B:
         case GL_TEXTURE_SWIZZLE_A:
+            if (GLES2) break;
             glTexParameteri(target, pname, (GLint)*params);
             break;
         case GL_TEXTURE_MAX_ANISOTROPY:
+            if (GLES2 && !gles.anisotropic) break;
             glTexParameterf(target, pname, MAX(*params, 1.0f));
             break;
         case GL_TEXTURE_MIN_LOD:
         case GL_TEXTURE_MAX_LOD:
+            if (GLES2) break;
             glTexParameterf(target, pname, *params);
             break;
         case GL_TEXTURE_BORDER_COLOR:
+            if (GLES2) break;
             glTexParameterfv(target, pname, params);
             break;
         case GL_DEPTH_TEXTURE_MODE: {
+            if (GLES2) break;
             GLint mode = (GLint)*params;
             switch (mode) {
                 case GL_LUMINANCE:
@@ -1221,6 +1320,17 @@ void GLRenderer_getTexParameter(GLRenderer* renderer, GLenum target, GLint level
         case GL_TEXTURE_RESIDENT:
             *params = GL_TRUE;
             break;
+        case GL_TEXTURE_MAG_FILTER:
+        case GL_TEXTURE_MIN_FILTER: {
+            GLint paramsi;
+            glGetTexParameteriv(target, pname, &paramsi);
+            *params = paramsi;
+            break;
+        }
+        case GL_TEXTURE_WRAP_S:
+        case GL_TEXTURE_WRAP_T:
+            glGetTexParameterfv(target, pname, params);
+            break;
         case GL_DEPTH_STENCIL_TEXTURE_MODE:
         case GL_IMAGE_FORMAT_COMPATIBILITY_TYPE:
         case GL_TEXTURE_BASE_LEVEL:
@@ -1228,13 +1338,23 @@ void GLRenderer_getTexParameter(GLRenderer* renderer, GLenum target, GLint level
         case GL_TEXTURE_COMPARE_MODE:
         case GL_TEXTURE_IMMUTABLE_FORMAT:
         case GL_TEXTURE_IMMUTABLE_LEVELS:
-        case GL_TEXTURE_MAG_FILTER:
         case GL_TEXTURE_MAX_LEVEL:
-        case GL_TEXTURE_MIN_FILTER:
         case GL_TEXTURE_SWIZZLE_R:
         case GL_TEXTURE_SWIZZLE_G:
         case GL_TEXTURE_SWIZZLE_B:
         case GL_TEXTURE_SWIZZLE_A: {
+            if (GLES2) {
+                switch (pname) {
+                    case GL_TEXTURE_MAX_LEVEL: *params = 1000; break;
+                    case GL_TEXTURE_COMPARE_FUNC: *params = GL_LEQUAL; break;
+                    case GL_TEXTURE_SWIZZLE_R: *params = GL_RED; break;
+                    case GL_TEXTURE_SWIZZLE_G: *params = GL_GREEN; break;
+                    case GL_TEXTURE_SWIZZLE_B: *params = GL_BLUE; break;
+                    case GL_TEXTURE_SWIZZLE_A: *params = GL_ALPHA; break;
+                    default: *params = 0; break;
+                }
+                break;
+            }
             GLint paramsi;
             glGetTexParameteriv(target, pname, &paramsi);
             *params = paramsi;
@@ -1243,10 +1363,18 @@ void GLRenderer_getTexParameter(GLRenderer* renderer, GLenum target, GLint level
         case GL_TEXTURE_MAX_ANISOTROPY:
         case GL_TEXTURE_MIN_LOD:
         case GL_TEXTURE_MAX_LOD:
-        case GL_TEXTURE_WRAP_S:
-        case GL_TEXTURE_WRAP_T:
         case GL_TEXTURE_WRAP_R:
         case GL_TEXTURE_BORDER_COLOR:
+            if (GLES2) {
+                switch (pname) {
+                    case GL_TEXTURE_MAX_ANISOTROPY: *params = 1.0f; break;
+                    case GL_TEXTURE_MIN_LOD: *params = -1000.0f; break;
+                    case GL_TEXTURE_MAX_LOD: *params = 1000.0f; break;
+                    case GL_TEXTURE_WRAP_R: *params = GL_REPEAT; break;
+                    default: params[0] = params[1] = params[2] = params[3] = 0.0f; break;
+                }
+                break;
+            }
             glGetTexParameterfv(target, pname, params);
             break;
         default:
@@ -1348,6 +1476,12 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
 
     GLBuffer* pixelPackBuffer = GLBuffer_getBound(GL_PIXEL_PACK_BUFFER);
     bool convert = format != GL_RGBA && format != GL_BGRA;
+    if (GLES2 && pixelPackBuffer) {
+        /* kein Pufferobjekt in ES 2.0: direkt in den geteilten Speicher des Clients lesen */
+        if (!pixelPackBuffer->mappedData) return;
+        pixels = pixelPackBuffer->mappedData + (uintptr_t)pixels;
+        pixelPackBuffer = NULL;
+    }
     if (pixelPackBuffer && convert) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     char* srcData = convert ? malloc(srcDataSize) : pixels;

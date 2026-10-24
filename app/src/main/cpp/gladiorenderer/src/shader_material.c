@@ -1,6 +1,7 @@
 #include "shader_material.h"
 #include "shader_converter.h"
 #include "gl_renderer.h"
+#include "gl_es2.h"
 
 #if DEBUG_MODE
 #include "debug_utils.h"
@@ -73,6 +74,7 @@ static void setupMaterial(ShaderMaterial* material, MaterialOptions* options) {
             }
         }
         material->location.numLights = glGetUniformLocation(material->program, "numLights");
+        material->location.lightModelAmbient = glGetUniformLocation(material->program, "gd_LightModelAmbient");
 
         const char* materialStructNames[] = {"ambient", "diffuse", "specular", "emission"};
         for (int i = 0; i < 2; i++) {
@@ -118,6 +120,7 @@ static const char* getVertexShaderHead() {
 
         "uniform Light lights[GD_MAX_LIGHTS];\n"
         "uniform int numLights;\n"
+        "uniform vec3 gd_LightModelAmbient;\n"
         "uniform Material materials[2];\n"
 
         "out vec3 gd_TotalDiffuseLight;\n"
@@ -185,11 +188,12 @@ static const char* getVertexShaderBody() {
             "int face = int(dot(mvNormal, position.xyz) >= 0.0);\n"
             "gd_TotalDiffuseLight = vec3(step(float(numLights), 0.0));\n"
             "gd_TotalSpecularLight = numLights > 0 ? materials[face].emission : vec3(0.0);\n"
-            "vec3 totalAmbientLight = vec3(0.0);\n"
+            "vec3 totalAmbientLight = gd_LightModelAmbient * materials[face].ambient;\n"
             "vec3 viewDirection = normalize(-position.xyz);\n"
             "float shininess = materials[face].specular.w;\n"
 
-            "for (int i = 0; i < numLights; i++) {\n"
+            "for (int i = 0; i < GD_MAX_LIGHTS; i++) {\n"
+                "if (i >= numLights) break;\n"
                 "totalAmbientLight += lights[i].ambient * materials[face].ambient;\n"
                 "vec3 lightDirection = getLightDirection(lights[i], position.xyz);\n"
                 "float spotIntensity = computeSpotIntensity(lights[i], lightDirection);\n"
@@ -494,6 +498,53 @@ static char* defineShaderOptions(GLenum type, char* source, MaterialOptions* opt
     return source;
 }
 
+/*
+ * Übersetzt die fertigen GLSL-ES-3.20-Quellen der Materialien nach GLSL ES 1.00
+ * (Mali-400-Pfad): attribute/varying statt in/out, texture2D statt texture,
+ * gl_FragColor statt eigener Ausgabe, mediump wenn kein highp im Fragment-Shader.
+ */
+static void putLine(ArrayBuffer* result, const char* prefix, const char* text) {
+    if (prefix) ArrayBuffer_putBytes(result, prefix, strlen(prefix));
+    ArrayBuffer_putBytes(result, text, strlen(text));
+    ArrayBuffer_put(result, '\n');
+}
+
+static char* convertMaterialShaderToES2(GLenum type, char* source) {
+    ArrayBuffer result = {0};
+    char* copy = strdup(source);
+    FOREACH_LINE(copy, strlen(copy)+1,
+        char* text = line;
+        if (cstartswith("#version", text)) {
+            putLine(&result, NULL, "#version 100");
+            if (type == GL_FRAGMENT_SHADER && gles.shaderTextureLod) putLine(&result, NULL, "#extension GL_EXT_shader_texture_lod : enable");
+        }
+        else if (cstartswith("precision highp float;", text)) {
+            putLine(&result, NULL, "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif");
+        }
+        else if (cstartswith("precision highp int;", text)) {
+            putLine(&result, NULL, "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp int;\n#else\nprecision mediump int;\n#endif");
+        }
+        else if (cstartswith("out vec4 gd_FragColor;", text)) {
+            putLine(&result, NULL, "#define gd_FragColor gl_FragColor");
+        }
+        else if (cstartswith("in ", text)) {
+            putLine(&result, type == GL_VERTEX_SHADER ? "attribute " : "varying ", text + 3);
+        }
+        else if (cstartswith("out ", text)) {
+            putLine(&result, "varying ", text + 4);
+        }
+        else {
+            char* converted = str_replace("texture(", "texture2D(", text);
+            putLine(&result, NULL, converted);
+            free(converted);
+        }
+    );
+    free(copy);
+    free(source);
+    ArrayBuffer_put(&result, '\0');
+    return (char*)result.buffer;
+}
+
 ShaderMaterial* ShaderMaterial_create(MaterialOptions* options) {
     ShaderMaterial* material = calloc(1, sizeof(ShaderMaterial));
 
@@ -502,6 +553,11 @@ ShaderMaterial* ShaderMaterial_create(MaterialOptions* options) {
 
     vertexShader = defineShaderOptions(GL_VERTEX_SHADER, vertexShader, options);
     fragmentShader = defineShaderOptions(GL_FRAGMENT_SHADER, fragmentShader, options);
+
+    if (GLES2) {
+        vertexShader = convertMaterialShaderToES2(GL_VERTEX_SHADER, vertexShader);
+        fragmentShader = convertMaterialShaderToES2(GL_FRAGMENT_SHADER, fragmentShader);
+    }
 
     GLuint vertexShaderId = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShaderId, 1, (const GLchar* const*) &vertexShader, NULL);
@@ -585,6 +641,7 @@ static void setLightUniforms(GLRenderer* renderer, ShaderMaterial* material) {
         }
     }
     glUniform1i(material->location.numLights, numLights);
+    glUniform3fv(material->location.lightModelAmbient, 1, renderer->state.lightModelAmbient);
 }
 
 static void setMaterialUniforms(GLRenderer* renderer, ShaderMaterial* material) {
@@ -652,17 +709,18 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
                 glUniform1i(material->location.texture[i], i);
 
                 GLTexture* texture = renderer->clientState.texture[i][indexOfGLTarget(GL_TEXTURE_2D)];
+                TexEnv* texEnv = &renderer->state.texEnv[i];
                 if (texture && texture->originFormat == GL_ALPHA) {
-                    glUniform1i(material->location.texEnv[i][0], renderer->state.enabledTextures[i] ? GL_COMBINE : 0);
-                    glUniform2i(material->location.texEnv[i][2], GL_REPLACE, renderer->state.texEnv[i].mode);
-                    glUniform4i(material->location.texEnv[i][4], GL_PREVIOUS, GL_PREVIOUS, GL_TEXTURE, GL_PREVIOUS);
-                    glUniform4i(material->location.texEnv[i][5], GL_SRC_COLOR, GL_SRC_COLOR, GL_SRC_ALPHA, GL_SRC_ALPHA);
+                    glUniform1i(material->location.texEnv[i][0], renderer->state.enabledTextures[i] ? ShaderMaterial_texEnvCode(GL_COMBINE) : 0);
+                    glUniform2i(material->location.texEnv[i][2], ShaderMaterial_texEnvCode(GL_REPLACE), ShaderMaterial_texEnvCode(texEnv->mode));
+                    glUniform4i(material->location.texEnv[i][4], ShaderMaterial_texEnvCode(GL_PREVIOUS), ShaderMaterial_texEnvCode(GL_PREVIOUS), ShaderMaterial_texEnvCode(GL_TEXTURE), ShaderMaterial_texEnvCode(GL_PREVIOUS));
+                    glUniform4i(material->location.texEnv[i][5], ShaderMaterial_texEnvCode(GL_SRC_COLOR), ShaderMaterial_texEnvCode(GL_SRC_COLOR), ShaderMaterial_texEnvCode(GL_SRC_ALPHA), ShaderMaterial_texEnvCode(GL_SRC_ALPHA));
                 }
                 else {
-                    glUniform1i(material->location.texEnv[i][0], renderer->state.enabledTextures[i] ? renderer->state.texEnv[i].mode : 0);
-                    glUniform2iv(material->location.texEnv[i][2], 1, renderer->state.texEnv[i].combineRGBA);
-                    glUniform4iv(material->location.texEnv[i][4], 1, renderer->state.texEnv[i].sourceRGBA);
-                    glUniform4iv(material->location.texEnv[i][5], 1, renderer->state.texEnv[i].operandRGBA);
+                    glUniform1i(material->location.texEnv[i][0], renderer->state.enabledTextures[i] ? ShaderMaterial_texEnvCode(texEnv->mode) : 0);
+                    glUniform2i(material->location.texEnv[i][2], ShaderMaterial_texEnvCode(texEnv->combineRGBA[0]), ShaderMaterial_texEnvCode(texEnv->combineRGBA[1]));
+                    glUniform4i(material->location.texEnv[i][4], ShaderMaterial_texEnvCode(texEnv->sourceRGBA[0]), ShaderMaterial_texEnvCode(texEnv->sourceRGBA[1]), ShaderMaterial_texEnvCode(texEnv->sourceRGBA[2]), ShaderMaterial_texEnvCode(texEnv->sourceRGBA[3]));
+                    glUniform4i(material->location.texEnv[i][5], ShaderMaterial_texEnvCode(texEnv->operandRGBA[0]), ShaderMaterial_texEnvCode(texEnv->operandRGBA[1]), ShaderMaterial_texEnvCode(texEnv->operandRGBA[2]), ShaderMaterial_texEnvCode(texEnv->operandRGBA[3]));
                 }
 
                 glUniform4fv(material->location.texEnv[i][1], 1, renderer->state.texEnv[i].color);
@@ -673,7 +731,7 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
     }
 
     if (options->alphaTest) {
-        glUniform2f(material->location.alphaTest, renderer->state.alphaTest.enabled ? renderer->state.alphaTest.func : GL_ALWAYS, renderer->state.alphaTest.ref);
+        glUniform2f(material->location.alphaTest, ShaderMaterial_alphaTestCode(renderer->state.alphaTest.enabled ? renderer->state.alphaTest.func : GL_ALWAYS), renderer->state.alphaTest.ref);
     }
 
     if (options->fog) {
@@ -681,7 +739,7 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
         glUniform1f(material->location.fog[1], renderer->state.fog.density);
         glUniform1f(material->location.fog[2], renderer->state.fog.start);
         glUniform1f(material->location.fog[3], renderer->state.fog.end);
-        glUniform1f(material->location.fog[4], renderer->state.fog.mode);
+        glUniform1f(material->location.fog[4], ShaderMaterial_fogModeCode(renderer->state.fog.mode));
     }
 
     if (options->lighting) {

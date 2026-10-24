@@ -1,4 +1,5 @@
 #include "gl_context.h"
+#include "gl_es2.h"
 
 static GLuint maxQueryId = 1;
 static GLQuery nullQuery = {0};
@@ -30,7 +31,8 @@ static GLQuery* findQueryWithId(GLuint id) {
     GLQuery* query = SparseArray_get(currentRenderer->clientState.queries, id);
     if (query == &nullQuery) {
         query = calloc(1, sizeof(GLQuery));
-        glGenQueries(1, &query->id);
+        if (GLES2) query->id = 0; /* keine Abfrageobjekte in ES 2.0 */
+        else glGenQueries(1, &query->id);
         query->ownerId = currentRenderer->contextId;
         SparseArray_put(currentRenderer->clientState.queries, id, query);
     }
@@ -53,7 +55,7 @@ void GLQuery_begin(GLenum target, GLuint id) {
         case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
         case GL_PRIMITIVES_GENERATED:
         case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
-            glBeginQuery(target, query->id);
+            if (!GLES2) glBeginQuery(target, query->id);
             break;
         case GL_TIME_ELAPSED:
             query->counter = nanoTime() - currentRenderer->queriesStartTime;
@@ -73,7 +75,7 @@ void GLQuery_end(GLenum target) {
     else {
         query->counter = 0;
         if (target == GL_SAMPLES_PASSED) target = GL_ANY_SAMPLES_PASSED;
-        glEndQuery(target);
+        if (!GLES2) glEndQuery(target);
     }
 }
 
@@ -99,6 +101,11 @@ void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params) {
     }
     else if (pname == GL_QUERY_RESULT) {
         if (query->target == GL_TIME_ELAPSED) {
+            *params = query->counter;
+        }
+        else if (GLES2) {
+            /* ohne Verdeckungsabfragen gilt alles als sichtbar */
+            query->counter = query->target == GL_SAMPLES_PASSED ? UINT8_MAX : GL_TRUE;
             *params = query->counter;
         }
         else {
@@ -133,4 +140,10 @@ void GLQuery_delete(GLuint id) {
         }
     }
     GLX_CONTEXT_UNLOCK();
+}
+bool GLQuery_exists(GLuint id) {
+    GLX_CONTEXT_LOCK();
+    bool result = SparseArray_get(currentRenderer->clientState.queries, id) != NULL;
+    GLX_CONTEXT_UNLOCK();
+    return result;
 }

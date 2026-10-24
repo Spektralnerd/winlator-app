@@ -3,6 +3,7 @@
 #include "gl_dsa.h"
 #include "sysvshared_memory.h"
 #include "request_handler.h"
+#include "gl_es2.h"
 
 extern EGLContext globalEGLContext;
 
@@ -33,6 +34,10 @@ static void createDisplayBuffer(GLContext* context) {
     GLFramebuffer_bind(GL_FRAMEBUFFER, currentRenderer->displayBuffer);
     GLFramebuffer_setAttachment(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, context->displayBufAttachment.texture, 0);
     GLFramebuffer_setAttachment(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, context->displayBufAttachment.renderbuffer, 0);
+    if (GLES2) {
+        GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE) println("gladio:es2: Anzeigepuffer unvollständig (0x%x)", status);
+    }
 }
 
 static void destroyDisplayBuffer() {
@@ -53,14 +58,14 @@ static void createDisplayBufAttachment(GLContext* context) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glTexImage2D(GL_TEXTURE_2D, 0, PREFERRED_FRAMEBUFFER_FORMAT, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexImage2D(GL_TEXTURE_2D, 0, GLES2 ? GL_RGBA : PREFERRED_FRAMEBUFFER_FORMAT, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         glBindTexture(GL_TEXTURE_2D, 0);
     }
 
     if (context->displayBufAttachment.renderbuffer == 0) {
         glGenRenderbuffers(1, &context->displayBufAttachment.renderbuffer);
         glBindRenderbuffer(GL_RENDERBUFFER, context->displayBufAttachment.renderbuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, PREFERRED_RENDERBUFFER_FORMAT, width, height);
+        glRenderbufferStorage(GL_RENDERBUFFER, GLES2 ? GLES_renderbufferFormat(PREFERRED_RENDERBUFFER_FORMAT) : PREFERRED_RENDERBUFFER_FORMAT, width, height);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
     }
 }
@@ -274,7 +279,7 @@ void destroyGLContext(JNIEnv* env, GLContext* context) {
 }
 
 GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
-    static const EGLint confAttribList[] = {
+    static const EGLint confAttribListES3[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
@@ -282,8 +287,21 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
         EGL_ALPHA_SIZE, 8,
         EGL_NONE,
     };
-    static const EGLint ctxAttribList[] = {
+    static const EGLint ctxAttribListES3[] = {
         EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_NONE
+    };
+    /* ES-2.0-Pfad (z. B. Mali-400): Config ohne ES3-Bit, Kontext der Version 2 */
+    static const EGLint confAttribListES2[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE,
+    };
+    static const EGLint ctxAttribListES2[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
         EGL_NONE
     };
     EGLBoolean success;
@@ -295,12 +313,23 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
     success = eglInitialize(eglDisplay, &major, &minor);
     if (!success) return NULL;
 
+    GLES_detect(eglDisplay);
+    const EGLint* confAttribList = GLES2 ? confAttribListES2 : confAttribListES3;
+    const EGLint* ctxAttribList = GLES2 ? ctxAttribListES2 : ctxAttribListES3;
+
     int numConfigs;
     EGLConfig eglConfig;
     success = eglChooseConfig(eglDisplay, confAttribList, &eglConfig, 1, &numConfigs);
-    if (!success || numConfigs != 1) return NULL;
+    if (!success || numConfigs != 1) {
+        println("gladio: eglChooseConfig (ES %d) fehlgeschlagen: 0x%x", GLES2 ? 2 : 3, eglGetError());
+        return NULL;
+    }
 
     EGLContext eglContext = eglCreateContext(eglDisplay, eglConfig, sharedContext ? sharedContext->eglContext : globalEGLContext, ctxAttribList);
+    if (eglContext == EGL_NO_CONTEXT) {
+        println("gladio: eglCreateContext (ES %d) fehlgeschlagen: 0x%x", GLES2 ? 2 : 3, eglGetError());
+        return NULL;
+    }
 
     GLXContext* context = calloc(1, sizeof(GLXContext));
     context->eglContext = eglContext;
@@ -310,6 +339,7 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
 
     GLX_CONTEXT_LOCK();
     eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, context->eglContext);
+    GLES_initOnContext();
     GLRenderer_initOnEGLContext(&context->renderer);
     eglMakeCurrent(eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     GLX_CONTEXT_UNLOCK();
@@ -510,7 +540,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
                 GLRenderer_enableVertexAttribute(currentRenderer, location);
             }
 
-            glVertexAttribPointer(location, size, vertexAttrib->type, vertexAttrib->normalized, vertexAttrib->stride, pointer);
+            glVertexAttribPointer(location, size, GLES_vertexAttribType(vertexAttrib->type), vertexAttrib->normalized, vertexAttrib->stride, pointer);
             if (oldArrayBuffer) glBindBuffer(GL_ARRAY_BUFFER, oldArrayBuffer->id);
         }
         else if (clientState->vao->attribs[i].state == VERTEX_ATTRIB_LEGACY_ENABLED) {
@@ -532,6 +562,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
 }
 
 const char* getGLExtensions(int* outNumExtensions) {
+    if (GLES2) return GLES_clientExtensions(outNumExtensions);
     static int numExtensions = 0;
     static const char* extensionNames = "GL_EXT_abgr GL_ARB_shadow GL_ARB_window_pos GL_EXT_packed_pixels GL_ARB_vertex_buffer_object GL_ARB_vertex_array_object GL_ARB_texture_border_clamp GL_ARB_texture_env_add GL_EXT_texture_env_add GL_EXT_draw_range_elements GL_EXT_bgra GL_ARB_texture_compression GL_EXT_texture_compression_s3tc GL_EXT_texture_compression_dxt1 GL_EXT_texture_compression_dxt3 GL_EXT_texture_compression_dxt5 GL_ARB_point_parameters GL_EXT_point_parameters GL_EXT_texture_edge_clamp GL_EXT_multi_draw_arrays GL_ARB_multisample GL_EXT_polygon_offset GL_ARB_draw_elements_base_vertex GL_ARB_texture_rectangle GL_EXT_vertex_array GL_ARB_vertex_array_bgra GL_ARB_texture_non_power_of_two GL_EXT_blend_color GL_EXT_blend_minmax GL_EXT_blend_equation_separate GL_EXT_blend_func_separate GL_EXT_blend_subtract GL_EXT_texture_filter_anisotropic GL_ARB_texture_mirrored_repeat GL_ARB_point_sprite GL_ARB_texture_cube_map GL_EXT_texture_cube_map GL_EXT_texture_rg GL_ARB_texture_rg GL_EXT_texture_float GL_ARB_texture_float GL_EXT_texture_half_float GL_EXT_color_buffer_float GL_EXT_color_buffer_half_float GL_EXT_depth_texture GL_ARB_depth_texture GL_ARB_depth_clamp GL_ARB_ES2_compatibility GL_ARB_fragment_shader GL_ARB_vertex_shader GL_ARB_shading_language_100 GL_ARB_draw_instanced GL_EXT_draw_instanced GL_ARB_instanced_arrays GL_EXT_instanced_arrays GL_ARB_framebuffer_object GL_EXT_framebuffer_object GL_EXT_packed_depth_stencil GL_EXT_framebuffer_blit GL_ARB_draw_buffers GL_ARB_internalformat_query GL_ARB_internalformat_query2 GL_ARB_map_buffer_range GL_ARB_draw_buffers_blend GL_ARB_multitexture GL_ARB_texture_env_combine GL_EXT_texture_env_combine GL_ARB_texture_env_dot3 GL_EXT_texture_env_dot3 GL_ARB_shader_objects GL_ARB_vertex_program GL_ARB_fragment_program GL_ARB_buffer_storage GL_EXT_buffer_storage GL_ARB_sync GL_ARB_sampler_objects GL_ARB_texture_multisample GL_ARB_color_buffer_float GL_ARB_occlusion_query GL_ARB_occlusion_query2 GL_EXT_direct_state_access GL_ARB_uniform_buffer_object GL_ARB_timer_query GL_EXT_timer_query GL_ARB_texture_swizzle GL_ARB_copy_buffer GL_ARB_depth_buffer_float GL_ARB_sample_shading GL_ARB_tessellation_shader GL_ARB_derivative_control GL_ARB_compute_shader GL_EXT_gpu_program_parameters";
 

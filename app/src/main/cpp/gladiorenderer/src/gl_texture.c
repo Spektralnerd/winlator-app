@@ -1,5 +1,6 @@
 #include "gl_texture.h"
 #include "gl_context.h"
+#include "gl_es2.h"
 
 static GLuint maxTextureId = 1;
 static GLTexture nullTexture = {0};
@@ -31,7 +32,7 @@ void GLTexture_bind(GLenum target, GLuint id) {
     uint8_t activeTexture = currentRenderer->clientState.activeTexture;
     if (id == 0) {
         currentRenderer->clientState.texture[activeTexture][indexOfGLTarget(target)] = NULL;
-        glBindTexture(target, 0);
+        if (!GLES2 || target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP) glBindTexture(target, 0);
         return;
     }
     GLX_CONTEXT_LOCK();
@@ -41,6 +42,7 @@ void GLTexture_bind(GLenum target, GLuint id) {
     texture->normalizeCoords = isTextureRect;
     GLX_CONTEXT_UNLOCK();
     currentRenderer->clientState.texture[activeTexture][indexOfGLTarget(target)] = texture;
+    if (GLES2 && target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) return;
     glBindTexture(target, texture->id);
 }
 

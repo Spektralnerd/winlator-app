@@ -4,37 +4,80 @@
 #include "gladio.h"
 #include "arb_program.h"
 
-#define TEXENV_MODE_MODULATE "8448"
-#define TEXENV_MODE_DECAL "8449"
-#define TEXENV_MODE_INTERPOLATE "34165"
-#define TEXENV_MODE_ADD "260"
-#define TEXENV_MODE_ADD_SIGNED "34164"
-#define TEXENV_MODE_SUBTRACT "34023"
-#define TEXENV_MODE_COMBINE "34160"
-#define TEXENV_MODE_DOT3_RGB "34478"
-#define TEXENV_MODE_DOT3_RGBA "34479"
-#define TEXENV_MODE_REPLACE "7681"
-#define TEXENV_COMBINE_TEXTURE "5890"
-#define TEXENV_COMBINE_CONSTANT "34166"
-#define TEXENV_COMBINE_PRIMARY_COLOR "34167"
-#define TEXENV_COMBINE_PREVIOUS "34168"
-#define TEXENV_COMBINE_SRC_COLOR "768"
-#define TEXENV_COMBINE_ONE_MINUS_SRC_COLOR "769"
-#define TEXENV_COMBINE_SRC_ALPHA "770"
-#define TEXENV_COMBINE_ONE_MINUS_SRC_ALPHA "771"
+/*
+ * Die Shader bekommen Modi als kleine Zahlen statt der GL-Enums: In GLSL ES 1.00 hat ein
+ * mediump int (mehr bietet z. B. die Mali-400 im Fragment-Shader nicht) nur etwa 10 Bit,
+ * und mediump float stellt Werte wie 34160 (GL_COMBINE) nicht exakt dar.
+ * ShaderMaterial_texEnvCode() usw. übersetzen die Enums beim Setzen der Uniforms.
+ */
+#define TEXENV_MODE_MODULATE "1"
+#define TEXENV_MODE_DECAL "2"
+#define TEXENV_MODE_INTERPOLATE "3"
+#define TEXENV_MODE_ADD "4"
+#define TEXENV_MODE_ADD_SIGNED "5"
+#define TEXENV_MODE_SUBTRACT "6"
+#define TEXENV_MODE_COMBINE "7"
+#define TEXENV_MODE_DOT3_RGB "8"
+#define TEXENV_MODE_DOT3_RGBA "9"
+#define TEXENV_MODE_REPLACE "10"
+#define TEXENV_COMBINE_TEXTURE "11"
+#define TEXENV_COMBINE_CONSTANT "12"
+#define TEXENV_COMBINE_PRIMARY_COLOR "13"
+#define TEXENV_COMBINE_PREVIOUS "14"
+#define TEXENV_COMBINE_SRC_COLOR "15"
+#define TEXENV_COMBINE_ONE_MINUS_SRC_COLOR "16"
+#define TEXENV_COMBINE_SRC_ALPHA "17"
+#define TEXENV_COMBINE_ONE_MINUS_SRC_ALPHA "18"
 
-#define ALPHA_TEST_FUNC_NEVER "512"
-#define ALPHA_TEST_FUNC_LESS "513"
-#define ALPHA_TEST_FUNC_EQUAL "514"
-#define ALPHA_TEST_FUNC_LEQUAL "515"
-#define ALPHA_TEST_FUNC_GREATER "516"
-#define ALPHA_TEST_FUNC_NOTEQUAL "517"
-#define ALPHA_TEST_FUNC_GEQUAL "518"
-#define ALPHA_TEST_FUNC_ALWAYS "519"
+#define ALPHA_TEST_FUNC_NEVER "20"
+#define ALPHA_TEST_FUNC_LESS "21"
+#define ALPHA_TEST_FUNC_EQUAL "22"
+#define ALPHA_TEST_FUNC_LEQUAL "23"
+#define ALPHA_TEST_FUNC_GREATER "24"
+#define ALPHA_TEST_FUNC_NOTEQUAL "25"
+#define ALPHA_TEST_FUNC_GEQUAL "26"
+#define ALPHA_TEST_FUNC_ALWAYS "27"
 
-#define FOG_MODE_LINEAR "9729"
-#define FOG_MODE_EXP "2048"
-#define FOG_MODE_EXP2 "2049"
+#define FOG_MODE_LINEAR "30"
+#define FOG_MODE_EXP "31"
+#define FOG_MODE_EXP2 "32"
+
+static inline int ShaderMaterial_texEnvCode(int mode) {
+    switch (mode) {
+        case GL_MODULATE: return 1;
+        case GL_DECAL: return 2;
+        case GL_INTERPOLATE: return 3;
+        case GL_ADD: return 4;
+        case GL_ADD_SIGNED: return 5;
+        case GL_SUBTRACT: return 6;
+        case GL_COMBINE: return 7;
+        case GL_DOT3_RGB: return 8;
+        case GL_DOT3_RGBA: return 9;
+        case GL_REPLACE: return 10;
+        case GL_TEXTURE: return 11;
+        case GL_CONSTANT: return 12;
+        case GL_PRIMARY_COLOR: return 13;
+        case GL_PREVIOUS: return 14;
+        case GL_SRC_COLOR: return 15;
+        case GL_ONE_MINUS_SRC_COLOR: return 16;
+        case GL_SRC_ALPHA: return 17;
+        case GL_ONE_MINUS_SRC_ALPHA: return 18;
+        default: return 0;
+    }
+}
+
+static inline float ShaderMaterial_alphaTestCode(int func) {
+    return func >= GL_NEVER && func <= GL_ALWAYS ? (float)(20 + (func - GL_NEVER)) : 27.0f;
+}
+
+static inline float ShaderMaterial_fogModeCode(int mode) {
+    switch (mode) {
+        case GL_LINEAR: return 30.0f;
+        case GL_EXP: return 31.0f;
+        case GL_EXP2: return 32.0f;
+        default: return 0.0f;
+    }
+}
 
 typedef struct MaterialOptions {
     bool lighting;
@@ -64,6 +107,7 @@ typedef struct ShaderMaterial {
 
         int lights[MAX_LIGHTS][7];
         int numLights;
+        int lightModelAmbient;
 
         int materials[2][4];
     } location;

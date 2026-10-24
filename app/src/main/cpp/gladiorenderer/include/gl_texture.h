@@ -11,6 +11,7 @@ typedef struct GLTexture {
     short height;
     bool generateMipmap;
     bool normalizeCoords;
+    GLenum es2Format; /* Datenformat der Stufe 0 im ES-2.0-Pfad (Teilbilder müssen dazu passen) */
 } GLTexture;
 
 extern GLuint GLTexture_create();

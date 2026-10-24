@@ -1,6 +1,12 @@
 #include "gl_framebuffer.h"
 #include "gl_context.h"
 #include "gl_formats.h"
+#include "gl_es2.h"
+
+/* ES 2.0 kennt nur GL_FRAMEBUFFER; Lese- und Zeichenziel sind dasselbe. */
+static GLenum fbTarget(GLenum target) {
+    return GLES2 ? GL_FRAMEBUFFER : target;
+}
 
 static GLuint maxFramebufferId = 1;
 
@@ -22,6 +28,16 @@ GLuint GLFramebuffer_create() {
 
 static void assignFBAttachment(GLenum target, GLuint attachment, FBAttachmentInfo* attachmentInfo) {
     if (attachmentInfo->type == 0) return;
+    if (GLES2) {
+        target = GL_FRAMEBUFFER;
+        if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) {
+            /* ES 2.0: ein gepackter Tiefen-/Stencil-Puffer wird an beide Punkte gehängt */
+            assignFBAttachment(target, GL_DEPTH_ATTACHMENT, attachmentInfo);
+            if (gles.packedDepthStencil) assignFBAttachment(target, GL_STENCIL_ATTACHMENT, attachmentInfo);
+            return;
+        }
+        if (attachment > GL_COLOR_ATTACHMENT0 && attachment <= GL_COLOR_ATTACHMENT31) return;
+    }
     if (attachmentInfo->type == GL_RENDERBUFFER) {
         glFramebufferRenderbuffer(target, attachment, attachmentInfo->type, attachmentInfo->id);
     }
@@ -29,15 +45,18 @@ static void assignFBAttachment(GLenum target, GLuint attachment, FBAttachmentInf
 }
 
 static void recreateFramebuffer(GLenum target, GLFramebuffer* framebuffer) {
-    glBindFramebuffer(target, framebuffer->id);
+    glBindFramebuffer(fbTarget(target), framebuffer->id);
 
     for (int i = 0; i < MAX_FB_COLOR_ATTACHMENTS; i++) {
         assignFBAttachment(target, GL_COLOR_ATTACHMENT0 + i, &framebuffer->colorAttachment[i]);
     }
 
     assignFBAttachment(target, GL_DEPTH_ATTACHMENT, &framebuffer->depthAttachment);
-    assignFBAttachment(target, GL_STENCIL_ATTACHMENT, &framebuffer->stencilAttachment);
+    if (!GLES2 || gles.packedDepthStencil || framebuffer->stencilAttachment.id != framebuffer->depthAttachment.id) {
+        assignFBAttachment(target, GL_STENCIL_ATTACHMENT, &framebuffer->stencilAttachment);
+    }
 
+    if (GLES2) return;
     if (framebuffer->flags & FLAG_READ_BUFFER_NONE) glReadBuffer(GL_NONE);
     for (int i = 0, j = GETEXP(FLAG_READ_BUFFER_COLOR_ATTACHMENT); i < MAX_FB_COLOR_ATTACHMENTS; i++, j++) {
         if (framebuffer->flags & (1<<j)) glReadBuffer(GL_COLOR_ATTACHMENT0 + i);
@@ -62,7 +81,7 @@ void GLFramebuffer_bind(GLenum target, GLuint id) {
     GLFramebuffer* framebuffer = SparseArray_get(currentRenderer->clientState.framebuffers, id);
     if (!framebuffer) framebuffer = createNamedFramebuffer(id);
 
-    if (target == GL_FRAMEBUFFER) {
+    if (target == GL_FRAMEBUFFER || GLES2) {
         ARRAYS_FILL(currentRenderer->clientState.framebuffer, MAX_FRAMEBUFFER_TARGETS, id);
     }
     else currentRenderer->clientState.framebuffer[indexOfGLTarget(target)] = id;
@@ -71,7 +90,7 @@ void GLFramebuffer_bind(GLenum target, GLuint id) {
         recreateFramebuffer(target, framebuffer);
         framebuffer->ownerId = currentRenderer->contextId;
     }
-    else glBindFramebuffer(target, framebuffer->id);
+    else glBindFramebuffer(fbTarget(target), framebuffer->id);
     GLX_CONTEXT_UNLOCK();
 }
 
@@ -106,7 +125,8 @@ void GLFramebuffer_setAttachment(GLenum target, GLenum attachment, GLenum object
             framebuffer->stencilAttachment.type = objectType;
             framebuffer->stencilAttachment.id = objectId;
             framebuffer->stencilAttachment.level = level;
-            assignFBAttachment(target, attachment, &framebuffer->stencilAttachment);
+            /* bei DEPTH_STENCIL hat der Aufruf oben in ES 2.0 schon beide Punkte gesetzt */
+            if (!(GLES2 && attachment == GL_DEPTH_STENCIL_ATTACHMENT)) assignFBAttachment(target, attachment, &framebuffer->stencilAttachment);
         }
     }
 }
@@ -147,7 +167,7 @@ void GLFramebuffer_setReadBuffer(GLenum src) {
         success = true;
     }
 
-    if (success) glReadBuffer(src);
+    if (success && !GLES2) glReadBuffer(src);
 }
 
 void GLFramebuffer_setDrawBuffers(GLuint count, GLenum* dst) {
@@ -170,7 +190,7 @@ void GLFramebuffer_setDrawBuffers(GLuint count, GLenum* dst) {
             success = true;
         }
     }
-    if (success) glDrawBuffers(count, dst);
+    if (success && !GLES2) glDrawBuffers(count, dst);
 }
 
 void GLFramebuffer_getParamsv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
@@ -203,6 +223,33 @@ void GLFramebuffer_getParamsv(GLenum target, GLenum attachment, GLenum pname, GL
                 break;
             case  GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE:
                 *params = renderbufferFormat->depthSize;
+                break;
+        }
+    }
+    else if (GLES2) {
+        switch (pname) {
+            case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE:
+            case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME:
+            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL:
+            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
+                if (attachment == GL_DEPTH_STENCIL_ATTACHMENT) attachment = GL_DEPTH_ATTACHMENT;
+                glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment, pname, params);
+                break;
+            case GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE:
+            case GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE:
+            case GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE:
+            case GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE:
+            case GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE:
+                *params = 8;
+                break;
+            case GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE:
+                *params = gles.depth24 || gles.packedDepthStencil ? 24 : 16;
+                break;
+            case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
+                *params = GL_UNSIGNED_NORMALIZED;
+                break;
+            case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
+                *params = GL_LINEAR;
                 break;
         }
     }

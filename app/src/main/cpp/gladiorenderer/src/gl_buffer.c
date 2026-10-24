@@ -1,6 +1,13 @@
 #include "gl_buffer.h"
 #include "gl_context.h"
 #include "sysvshared_memory.h"
+#include "gl_es2.h"
+
+static bool isGLBufferTarget(GLenum target) {
+    if (target == GL_PIXEL_UNPACK_BUFFER) return false;
+    if (GLES2) return target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER;
+    return true;
+}
 
 GLBuffer* GLBuffer_getBound(GLenum target) {
     GLClientState* clientState = &currentRenderer->clientState;
@@ -11,7 +18,7 @@ void GLBuffer_bind(GLenum target, GLuint id) {
     GLClientState* clientState = &currentRenderer->clientState;
     if (id == 0) {
         clientState->vao->buffer[indexOfGLTarget(target)] = NULL;
-        if (target != GL_PIXEL_UNPACK_BUFFER) glBindBuffer(target, id);
+        if (isGLBufferTarget(target)) glBindBuffer(target, id);
         return;
     }
     GLX_CONTEXT_LOCK();
@@ -23,7 +30,7 @@ void GLBuffer_bind(GLenum target, GLuint id) {
     }
     GLX_CONTEXT_UNLOCK();
     clientState->vao->buffer[indexOfGLTarget(target)] = buffer;
-    if (target != GL_PIXEL_UNPACK_BUFFER) glBindBuffer(target, id);
+    if (isGLBufferTarget(target)) glBindBuffer(target, id);
 }
 
 static void unmapBuffer(GLBuffer* buffer) {
