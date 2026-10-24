@@ -7,6 +7,10 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
     patch-gladio-client.py QUELLE ZIEL       # Kopie anlegen und die Kopie patchen
     ... [--align64]                          # Ringpufferkopf wie auf einem 64-Bit-Server
                                              # (32-Bit-Client am PC-Server)
+    ... [--fbconfig-defaults]                # unbekannte GLXFBConfig-Attribute mit Vorgabewerten
+                                             # beantworten statt mit Fehler (nur PC: Wine 9 bricht
+                                             # sonst ab; Wine 10.10 in der App kommt mit dem Fehler
+                                             # zurecht, dort bleibt das Original)
 
 Änderungen:
 - "long"-Felder des Protokolls fest 8 Byte breit (der Server in der App erwartet das)
@@ -24,11 +28,12 @@ import sys
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 flags = [a for a in sys.argv[1:] if a.startswith("--")]
-if not args or len(args) > 2 or any(f != "--align64" for f in flags):
+if not args or len(args) > 2 or any(f not in ("--align64", "--fbconfig-defaults") for f in flags):
     raise SystemExit(__doc__)
 src = pathlib.Path(args[0])
 dst = pathlib.Path(args[1]) if len(args) == 2 else src
 align64 = "--align64" in flags
+fbconfigDefaults = "--fbconfig-defaults" in flags
 
 if dst != src:
     if dst.exists():
@@ -104,8 +109,22 @@ sub("src/gl_calls.c",
     "    else values[0] = (GLfloat)params[0];\n"
     "    glLightModelfv(pname, values);\n}")
 
+if fbconfigDefaults:
+    sub("src/glx_calls.c",
+        "    *value = 0;\n    return 1;\n}",
+        "    /* Vorgabewerte für Attribute, die der Server nicht mitschickt (GLX-Attributnummern) */\n"
+        "    switch (attribute) {\n"
+        "        case 1: case 4: *value = 1; break;                       /* GLX_USE_GL, GLX_RGBA */\n"
+        "        case 0x8012: *value = 1; break;                           /* GLX_X_RENDERABLE */\n"
+        "        case 0x22: *value = 0x8002; break;                        /* GLX_X_VISUAL_TYPE = GLX_TRUE_COLOR */\n"
+        "        case 0x20: case 0x23: *value = 0x8000; break;             /* GLX_CONFIG_CAVEAT, GLX_TRANSPARENT_TYPE = GLX_NONE */\n"
+        "        case 0x8060: *value = 0x8063; break;                      /* GLX_SWAP_METHOD_OML = GLX_SWAP_UNDEFINED_OML */\n"
+        "        default: *value = 0; break;\n"
+        "    }\n"
+        "    return 0;\n}")
+
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",
         "        uint32_t status; \\\n        void* buffer __attribute__((aligned(8))); \\")
 
-print(f"Gladio-Client in {dst} gepatcht{' (Ringpuffer 64-Bit-Ausrichtung)' if align64 else ''}")
+print(f"Gladio-Client in {dst} gepatcht{' (Ringpuffer 64-Bit-Ausrichtung)' if align64 else ''}{' (FBConfig-Vorgabewerte)' if fbconfigDefaults else ''}")

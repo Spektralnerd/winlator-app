@@ -28,7 +28,7 @@ SRC="$SRC_DIR/gladio"
 git_fetch "$GLADIO_REPO" "$GLADIO_COMMIT" "$SRC"
 cd "$SRC" && git checkout -q --force . && git clean -qfdx
 # Anpassungen an den Server der App (Protokoll, glXGetProcAddressARB, glLightModelfv, ...):
-python3 -I "$(dirname "$0")/patch-gladio-client.py" "$SRC"
+python3 -I "$ARMV7_DIR/scripts/patch-gladio-client.py" "$SRC"
 cmake_cross "$SRC" "$BUILD_DIR/gladio"
 DEST="$STAGE_DIR/gladio"; rm -rf "$DEST" && mkdir -p "$DEST/usr/lib"
 install -m755 "$BUILD_DIR/gladio/libGL.so" "$DEST/usr/lib/libGL.so.1.7.0"

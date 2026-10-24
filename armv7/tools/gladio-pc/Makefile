@@ -50,7 +50,7 @@ $(GLADIO_SRC)/include/gladio.h:
 # (armv7/scripts/patch-gladio-client.py: 8-Byte-"long", GLADIO_SOCKET, glXGetProcAddressARB, ...).
 PATCH_CLIENT = ../../scripts/patch-gladio-client.py
 $(BUILD)/client-src/.patched: $(GLADIO_SRC)/include/gladio.h $(PATCH_CLIENT)
-	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client-src
+	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client-src --fbconfig-defaults
 	touch $@
 
 $(BUILD)/client/libGL.so.1: $(BUILD)/client-src/.patched
@@ -62,7 +62,7 @@ $(BUILD)/client/libGL.so.1: $(BUILD)/client-src/.patched
 # 32-Bit-Client für Wine i386 (Ringpufferkopf auf den 64-Bit-Server ausgerichtet).
 # Braucht gcc -m32 (libc6-dev-i386, lib32gcc) und libX11.so.6:i386.
 $(BUILD)/client32-src/.patched: $(GLADIO_SRC)/include/gladio.h $(PATCH_CLIENT)
-	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client32-src --align64
+	python3 -I $(PATCH_CLIENT) $(GLADIO_SRC) $(BUILD)/client32-src --align64 --fbconfig-defaults
 	touch $@
 
 # Ohne linux-libc-dev:i386 fehlen die asm/-Header; die x86-64-Ausgabe deckt i386 mit ab.
