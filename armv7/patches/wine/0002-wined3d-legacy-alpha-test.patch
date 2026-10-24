@@ -1,0 +1,18 @@
+diff --git a/dlls/wined3d/glsl_shader.c b/dlls/wined3d/glsl_shader.c
+index 93abadc..d24e7ff 100755
+--- a/dlls/wined3d/glsl_shader.c
++++ b/dlls/wined3d/glsl_shader.c
+@@ -12078,6 +12078,13 @@ static void glsl_fragment_pipe_alpha_test_func(struct wined3d_context_gl *contex
+             ref = (constants = wined3d_buffer_load_sysmem(buffer, &context_gl->c))->alpha_test_ref;
+         else
+             ref = 0.0f;
++        /* Winlator armv7: on legacy contexts the alpha test is done by GL, so it has to be
++         * switched on (and off again) along with the comparison function. */
++        if (state->extra_ps_args.alpha_func == WINED3D_CMP_ALWAYS)
++            gl_info->gl_ops.gl.p_glDisable(GL_ALPHA_TEST);
++        else
++            gl_info->gl_ops.gl.p_glEnable(GL_ALPHA_TEST);
++        checkGLcall("glEnable(GL_ALPHA_TEST)");
+         gl_info->gl_ops.gl.p_glAlphaFunc(func, ref);
+         checkGLcall("glAlphaFunc");
+     }

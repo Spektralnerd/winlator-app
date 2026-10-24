@@ -21,6 +21,8 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   deren Visual die Tiefe des Standard-Visuals hat; Winlators X-Server: 32, Xvfb: 24)
 - glLightModelfv/glLightModeliv werden übertragen statt nur "unimplemented" zu melden
   (Worms 3D ruft sie in jedem Bild auf)
+- glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA) überträgt alle vier Werte (wined3d: L8-Texturen
+  als GL_R8 mit Swizzle)
 """
 import pathlib
 import shutil
@@ -65,6 +67,10 @@ sub("src/gl_calls.c", "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DEL
     "int64_t syncValue = (int64_t)(intptr_t)sync;\n    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));")
 sub("src/gl_calls.c", "GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &sync, sizeof(long), GL_RETURN);",
     "int64_t syncValue = (int64_t)(intptr_t)sync;\n    GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &syncValue, sizeof(int64_t), GL_RETURN);")
+
+# ---- glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA): vier Werte statt einem übertragen ----
+sub("include/gladio.h", "        case GL_POSITION:\n        case GL_PATCH_DEFAULT_OUTER_LEVEL:\n            return 4;",
+    "        case GL_POSITION:\n        case GL_PATCH_DEFAULT_OUTER_LEVEL:\n        case GL_TEXTURE_SWIZZLE_RGBA:\n            return 4;")
 
 # ---- Socket-Pfad ----
 sub("src/main.c", "strncpy(server_addr.sun_path, X11_SERVER_PATH,",
@@ -126,5 +132,25 @@ if fbconfigDefaults:
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",
         "        uint32_t status; \\\n        void* buffer __attribute__((aligned(8))); \\")
+    # Sync-Objekte des 64-Bit-Servers passen nicht in einen 32-Bit-GLsync: Tabelle im Client
+    sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
+        "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
+        "\n"
+        "/* 32-Bit-Client am 64-Bit-Server: Sync-Objekte sind dort 64-Bit-Zeiger */\n"
+        "#define SYNC_TABLE_SIZE 1024\n"
+        "static int64_t syncTable[SYNC_TABLE_SIZE];\n"
+        "static int64_t syncToServer(GLsync s) { uintptr_t i = (uintptr_t)s; return (i >= 1 && i <= SYNC_TABLE_SIZE) ? syncTable[i - 1] : 0; }\n"
+        "static GLsync syncFromServer(int64_t v) {\n"
+        "    if (!v) return NULL;\n"
+        "    for (int i = 0; i < SYNC_TABLE_SIZE; i++) if (!syncTable[i]) { syncTable[i] = v; return (GLsync)(uintptr_t)(i + 1); }\n"
+        "    return NULL;\n"
+        "}\n"
+        "static void syncRelease(GLsync s) { uintptr_t i = (uintptr_t)s; if (i >= 1 && i <= SYNC_TABLE_SIZE) syncTable[i - 1] = 0; }\n")
+    sub("src/gl_calls.c", "GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);",
+        "GLsync sync = syncFromServer(ArrayBuffer_getLong(&inputBuffer));")
+    sub("src/gl_calls.c", "ArrayBuffer_putLong(&outputBuffer, (int64_t)(intptr_t)sync);", "ArrayBuffer_putLong(&outputBuffer, syncToServer(sync));", 2)
+    sub("src/gl_calls.c", "int64_t syncValue = (int64_t)(intptr_t)sync;", "int64_t syncValue = syncToServer(sync);", 2)
+    sub("src/gl_calls.c", "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));",
+        "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));\n    syncRelease(sync);")
 
 print(f"Gladio-Client in {dst} gepatcht{' (Ringpuffer 64-Bit-Ausrichtung)' if align64 else ''}{' (FBConfig-Vorgabewerte)' if fbconfigDefaults else ''}")

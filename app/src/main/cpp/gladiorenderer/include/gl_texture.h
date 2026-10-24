@@ -12,6 +12,8 @@ typedef struct GLTexture {
     bool generateMipmap;
     bool normalizeCoords;
     GLenum es2Format; /* Datenformat der Stufe 0 im ES-2.0-Pfad (Teilbilder müssen dazu passen) */
+    GLint maxLevel;   /* GL_TEXTURE_MAX_LEVEL der Anwendung (ES 2.0 kennt es nicht: bei 0 ohne Mipmap filtern) */
+    GLenum minFilter; /* GL_TEXTURE_MIN_FILTER der Anwendung */
 } GLTexture;
 
 extern GLuint GLTexture_create();

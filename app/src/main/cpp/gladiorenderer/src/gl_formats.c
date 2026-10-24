@@ -1,4 +1,5 @@
 #include "gl_formats.h"
+#include "texture_utils.h"
 
 static GLFormatInfo textureFormats[] = {
     {GL_R8, GL_RED, GL_UNSIGNED_NORMALIZED, 8, 0, 0, 0, 0, true, true},
@@ -101,6 +102,24 @@ static GLFormatInfo renderbufferFormats[] = {
     {GL_STENCIL_INDEX8, GL_STENCIL, GL_UNSIGNED_NORMALIZED, 0, 8, 0, 0, 0, false, false},
 };
 
+/* Formate, die nicht in der Tabelle stehen, aber als Textur mit Filterung funktionieren:
+ * komprimierte (werden entpackt) und die alten Größenvarianten von LUMINANCE/INTENSITY/ALPHA/RGB(A). */
+static bool isFilterableLegacyFormat(GLenum internalformat) {
+    if (isCompressedFormat(internalformat)) return true;
+    switch (internalformat) {
+        case GL_LUMINANCE4: case GL_LUMINANCE8: case GL_LUMINANCE12: case GL_LUMINANCE16:
+        case GL_LUMINANCE4_ALPHA4: case GL_LUMINANCE6_ALPHA2: case GL_LUMINANCE12_ALPHA4: case GL_LUMINANCE12_ALPHA12: case GL_LUMINANCE16_ALPHA16:
+        case GL_INTENSITY: case GL_INTENSITY4: case GL_INTENSITY8: case GL_INTENSITY12: case GL_INTENSITY16:
+        case GL_ALPHA4: case GL_ALPHA12: case GL_ALPHA16:
+        case GL_R3_G3_B2: case GL_RGB4: case GL_RGB5: case GL_RGB10: case GL_RGB12: case GL_RGB16:
+        case GL_RGBA2: case GL_RGBA12: case GL_RGBA16:
+        case GL_SLUMINANCE8: case GL_SLUMINANCE8_ALPHA8:
+            return true;
+        default:
+            return false;
+    }
+}
+
 GLFormatInfo* GLFormats_queryInternalformat(GLenum target, GLenum internalformat, GLenum pname, int count, int* params) {
     target = parseTexTarget(target);
     int result = GL_NONE;
@@ -121,6 +140,23 @@ GLFormatInfo* GLFormats_queryInternalformat(GLenum target, GLenum internalformat
                 break;
             }
         }
+    }
+
+    if (!targetFormat && (target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP) && isFilterableLegacyFormat(internalformat)) {
+        /* wined3d fragt FILTER über ARB_internalformat_query2 ab und tastet sonst nur noch
+         * punktweise (DXT-Texturen, L8): diese Formate landen beim Server als 8-Bit-Texturen */
+        switch (pname) {
+            case GL_VERTEX_TEXTURE:
+            case GL_FRAGMENT_TEXTURE:
+            case GL_FILTER:
+                result = GL_FULL_SUPPORT;
+                break;
+            default:
+                result = GL_NONE;
+                break;
+        }
+        if (params) *params = result;
+        return NULL;
     }
 
     if (targetFormat) {

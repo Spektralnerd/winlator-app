@@ -272,15 +272,7 @@ void gd_handle_glBlitFramebuffer(GLContext* context) {
     GLbitfield mask = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum filter = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (GLES2) {
-        static bool warned = false;
-        if (!warned) {
-            println("gladio:es2: glBlitFramebuffer wird nicht unterstützt (wird übersprungen)");
-            warned = true;
-        }
-        return;
-    }
-    glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+    GLFramebuffer_blit(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 
 void gd_handle_glBufferData(GLContext* context) {
@@ -338,7 +330,7 @@ void gd_handle_glCallLists(GLContext* context) {
 void gd_handle_glCheckFramebufferStatus(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLenum result = glCheckFramebufferStatus(target);
+    GLenum result = GLFramebuffer_checkStatus(target);
     gl_send(context->clientRing, REQUEST_CODE_GL_CHECK_FRAMEBUFFER_STATUS, &result, sizeof(GLenum));
 }
 
@@ -354,7 +346,7 @@ void gd_handle_glClampColor(GLContext* context) {
 void gd_handle_glClear(GLContext* context) {
     GLbitfield mask = ArrayBuffer_getInt(&context->inputBuffer);
 
-    glClear(mask);
+    GLFramebuffer_clear(mask);
 }
 
 void gd_handle_glClearAccum(GLContext* context) {
@@ -468,7 +460,7 @@ void gd_handle_glColorMask(GLContext* context) {
     GLboolean blue = ArrayBuffer_get(&context->inputBuffer);
     GLboolean alpha = ArrayBuffer_get(&context->inputBuffer);
 
-    glColorMask(red, green, blue, alpha);
+    GLFramebuffer_setColorMask(red, green, blue, alpha);
 }
 
 void gd_handle_glColorMaski(GLContext* context) {
@@ -479,7 +471,7 @@ void gd_handle_glColorMaski(GLContext* context) {
     GLboolean a = ArrayBuffer_get(&context->inputBuffer);
 
     if (GLES2) {
-        if (index == 0) glColorMask(r, g, b, a);
+        if (index == 0) GLFramebuffer_setColorMask(r, g, b, a);
         return;
     }
     glColorMaski(index, r, g, b, a);
@@ -624,7 +616,9 @@ void gd_handle_glCopyTexImage2D(GLContext* context) {
             default: internalformat = GL_RGBA; break;
         }
     }
+    bool rebound = GLFramebuffer_beginReadAccess();
     glCopyTexImage2D(target, level, internalformat, x, y, width, height, border);
+    GLFramebuffer_endReadAccess(rebound);
 }
 
 void gd_handle_glCopyTexSubImage2D(GLContext* context) {
@@ -637,7 +631,9 @@ void gd_handle_glCopyTexSubImage2D(GLContext* context) {
     GLsizei width = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
+    bool rebound = GLFramebuffer_beginReadAccess();
     glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height);
+    GLFramebuffer_endReadAccess(rebound);
 }
 
 void gd_handle_glCopyTexSubImage3D(GLContext* context) {
@@ -1212,7 +1208,7 @@ void gd_handle_glFramebufferRenderbuffer(GLContext* context) {
     GLenum renderbuffertarget = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint renderbuffer = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLFramebuffer_setAttachment(target, attachment, renderbuffertarget, renderbuffer, 0);
+    GLFramebuffer_setAttachment(target, attachment, renderbuffertarget, renderbuffer, 0, NULL);
 }
 
 void gd_handle_glFramebufferTexture(GLContext* context) {
@@ -1222,7 +1218,7 @@ void gd_handle_glFramebufferTexture(GLContext* context) {
     GLint level = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLTexture* texture = GLTexture_get(textureId);
-    GLFramebuffer_setAttachment(target, attachment, texture->type, texture->id, level);
+    GLFramebuffer_setAttachment(target, attachment, texture->type, texture->id, level, texture);
 }
 
 void gd_handle_glFramebufferTexture2D(GLContext* context) {
@@ -1233,7 +1229,7 @@ void gd_handle_glFramebufferTexture2D(GLContext* context) {
     GLint level = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLTexture* texture = GLTexture_get(textureId);
-    GLFramebuffer_setAttachment(target, attachment, parseTexTarget(textarget), texture->id, level);
+    GLFramebuffer_setAttachment(target, attachment, parseTexTarget(textarget), texture->id, level, texture);
 }
 
 void gd_handle_glFramebufferTexture3D(GLContext* context) {
@@ -1245,7 +1241,7 @@ void gd_handle_glFramebufferTexture3D(GLContext* context) {
     GLint zoffset = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLTexture* texture = GLTexture_get(textureId);
-    GLFramebuffer_setAttachment(target, attachment, parseTexTarget(textarget), texture->id, level);
+    GLFramebuffer_setAttachment(target, attachment, parseTexTarget(textarget), texture->id, level, texture);
 }
 
 void gd_handle_glFramebufferTextureLayer(GLContext* context) {
@@ -1256,7 +1252,7 @@ void gd_handle_glFramebufferTextureLayer(GLContext* context) {
     GLint layer = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLTexture* texture = GLTexture_get(textureId);
-    GLFramebuffer_setAttachment(target, attachment, texture->type, texture->id, level);
+    GLFramebuffer_setAttachment(target, attachment, texture->type, texture->id, level, texture);
 }
 
 void gd_handle_glFrontFace(GLContext* context) {
@@ -2524,7 +2520,12 @@ void gd_handle_glRenderbufferStorage(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
     if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
-    if (GLES2) internalformat = GLES_renderbufferFormat(internalformat);
+    if (GLES2) {
+        internalformat = GLES_renderbufferFormat(internalformat);
+        GLint renderbuffer = 0;
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);
+        GLFramebuffer_noteRenderbufferSize(renderbuffer, width, height);
+    }
     glRenderbufferStorage(target, internalformat, width, height);
 }
 
@@ -2537,6 +2538,9 @@ void gd_handle_glRenderbufferStorageMultisample(GLContext* context) {
 
     if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
     if (GLES2) {
+        GLint renderbuffer = 0;
+        glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);
+        GLFramebuffer_noteRenderbufferSize(renderbuffer, width, height);
         glRenderbufferStorage(target, GLES_renderbufferFormat(internalformat), width, height);
         return;
     }

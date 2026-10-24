@@ -8,6 +8,8 @@ static GLTexture nullTexture = {0};
 static GLTexture* createNamedTexture(GLuint id) {
     GLTexture* texture = calloc(1, sizeof(GLTexture));
     texture->type = GL_TEXTURE_2D;
+    texture->maxLevel = 1000;
+    texture->minFilter = GL_NEAREST_MIPMAP_LINEAR;
     glGenTextures(1, &texture->id);
     SparseArray_put(currentRenderer->clientState.textures, id, texture);
     return texture;

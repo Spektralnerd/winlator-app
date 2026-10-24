@@ -97,7 +97,7 @@ void AttribStack_pop() {
         glBlendFunc(stack->blendSrc, stack->blendDst);
 
         glClearColor(stack->clearColor[0], stack->clearColor[1], stack->clearColor[2], stack->clearColor[3]);
-        glColorMask(stack->colorMask[0], stack->colorMask[1], stack->colorMask[2], stack->colorMask[3]);
+        GLFramebuffer_setColorMask(stack->colorMask[0], stack->colorMask[1], stack->colorMask[2], stack->colorMask[3]);
     }
 
     if (stack->mask & GL_CURRENT_BIT) {

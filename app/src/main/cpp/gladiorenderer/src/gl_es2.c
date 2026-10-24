@@ -238,8 +238,17 @@ const char* GLES_clientExtensions(int* outNumExtensions) {
 
     if (!extensionNames) {
         /* Grundstock, den der ES-2.0-Server (ggf. mit Software-Umwegen) erfüllt. Nicht dabei sind
-         * z. B. GL_ARB_framebuffer_object (Blit, Multisample), GL_ARB_texture_rg, Float-Texturen,
-         * Sync-Objekte, Sampler-Objekte, Instancing, UBOs und die ARB-Assembler-Programme. */
+         * z. B. GL_ARB_framebuffer_object (Multisample), GL_ARB_texture_rg, Float-Texturen,
+         * Sync-Objekte, Sampler-Objekte, Instancing, UBOs und die ARB-Assembler-Programme.
+         * Auch nicht GL_ARB_buffer_storage: wined3d legt damit alle Puffer als GL_PIXEL_UNPACK_BUFFER
+         * an (64-MB-Stücke, dauerhaft gemappt), und für dieses Ziel führt der Server nur
+         * Schattenspeicher ohne GL-Puffer – Zeichenaufrufe daraus blieben leer. Ohne die
+         * Erweiterung nimmt wined3d glBufferData/glMapBufferRange am echten Ziel.
+         * GL_ARB_framebuffer_object/GL_EXT_framebuffer_blit sind dabei, weil wined3d 10.x
+         * glBlitFramebuffer und getrennte Lese-/Zeichen-Framebuffer ohnehin voraussetzt
+         * (Bildausgabe) und ohne ARB_framebuffer_object für kleine Render-Targets eigene
+         * Tiefen-Renderbuffer anlegt, die es nie löscht; gl_framebuffer.c bildet Blit, getrennte
+         * Ziele und ungleich große Anhänge in ES 2.0 nach (Farb-Blit als texturiertes Viereck). */
         const char* base =
             "GL_ARB_window_pos GL_EXT_packed_pixels GL_ARB_vertex_buffer_object GL_ARB_pixel_buffer_object "
             "GL_ARB_texture_border_clamp GL_ARB_texture_env_add GL_EXT_texture_env_add GL_EXT_draw_range_elements GL_EXT_bgra "
@@ -248,9 +257,9 @@ const char* GLES_clientExtensions(int* outNumExtensions) {
             "GL_EXT_vertex_array GL_ARB_texture_non_power_of_two GL_EXT_blend_color GL_EXT_blend_equation_separate GL_EXT_blend_func_separate GL_EXT_blend_subtract "
             "GL_ARB_texture_mirrored_repeat GL_ARB_point_sprite GL_ARB_texture_cube_map GL_EXT_texture_cube_map "
             "GL_ARB_ES2_compatibility GL_ARB_fragment_shader GL_ARB_vertex_shader GL_ARB_shading_language_100 "
-            "GL_EXT_framebuffer_object GL_ARB_draw_buffers GL_ARB_internalformat_query GL_ARB_internalformat_query2 GL_ARB_map_buffer_range "
+            "GL_ARB_framebuffer_object GL_EXT_framebuffer_object GL_EXT_framebuffer_blit GL_ARB_draw_buffers GL_ARB_internalformat_query GL_ARB_internalformat_query2 GL_ARB_map_buffer_range "
             "GL_ARB_multitexture GL_ARB_texture_env_combine GL_EXT_texture_env_combine GL_ARB_texture_env_dot3 GL_EXT_texture_env_dot3 "
-            "GL_ARB_shader_objects GL_ARB_buffer_storage GL_EXT_buffer_storage GL_ARB_occlusion_query GL_ARB_occlusion_query2 "
+            "GL_ARB_shader_objects GL_ARB_occlusion_query GL_ARB_occlusion_query2 "
             "GL_EXT_direct_state_access GL_ARB_timer_query GL_EXT_timer_query";
 
         ArrayBuffer buffer = {0};
@@ -593,6 +602,10 @@ void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei w
     GLenum fmt = format, typ = type;
 
     if (GLES_convertTexImageFormat(target, &ifmt, &fmt, &typ, &pixels, &dataSize, &ownsConverted)) {
+#if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
+        println("gladio:es2:texImage2D %s Stufe %d %dx%d %s/%s/%s -> %s/%s/%s %s", glEnumToString(target), level, width, height,
+                glEnumToString(internalformat), glEnumToString(format), glEnumToString(type), glEnumToString(ifmt), glEnumToString(fmt), glEnumToString(typ), pixels ? "mit Daten" : "ohne Daten");
+#endif
         glTexImage2D(target, level, ifmt, width, height, border, fmt, typ, pixels);
         GLTexture* texture = GLTexture_getBound(target);
         if (texture && level == 0) texture->es2Format = fmt;
@@ -624,12 +637,27 @@ void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
             if (pixels) swapRedBlue(pixels, dataSize / 4, 4);
             fmt = texture->es2Format;
         }
+#if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
+        println("gladio:es2:texSubImage2D %s Stufe %d %d,%d %dx%d %s/%s -> %s/%s (Textur %s)", glEnumToString(target), level, xoffset, yoffset, width, height,
+                glEnumToString(format), glEnumToString(type), glEnumToString(fmt), glEnumToString(typ), texture ? glEnumToString(texture->es2Format) : "?");
+#endif
         glTexSubImage2D(target, level, xoffset, yoffset, width, height, fmt, typ, pixels);
     }
     else println("gladio:es2: glTexSubImage2D %s/%s nicht abbildbar", glEnumToString(format), glEnumToString(type));
 
     if (ownsConverted) free(pixels);
     if (ownsPacked) free(packed);
+}
+
+/* ------------------------------------------------------------------ Texturparameter */
+
+void GLES_applyMinFilter(GLenum target, GLTexture* texture) {
+    GLenum filter = texture->minFilter;
+    if (texture->maxLevel == 0) {
+        if (filter == GL_NEAREST_MIPMAP_NEAREST || filter == GL_NEAREST_MIPMAP_LINEAR) filter = GL_NEAREST;
+        else if (filter == GL_LINEAR_MIPMAP_NEAREST || filter == GL_LINEAR_MIPMAP_LINEAR) filter = GL_LINEAR;
+    }
+    glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
 }
 
 /* ------------------------------------------------------------------ Zeichnen */

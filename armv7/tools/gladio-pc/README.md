@@ -87,6 +87,13 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   Objekt (EXT), Alphatest, Blending, BGRA-Rücklesen (`./glsltest out.ppm`).
   Bauen: `gcc -O1 -o glsltest glsltest.c -lX11 -lGL -ldl`.
 
+* `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
+  DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
+  Rücklesen als PPM). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9test.exe d3d9test.c -ld3d9
+  -lgdi32 -luser32`; laufen lassen mit dem Wine 10.10 (i386) aus der Root-FS des Releases
+  `armv7-rootfs` (`armv7-assets.tar` → `rootfs.tzst` → `opt/wine/bin/wine`), das auf dem PC
+  direkt startet – so prüft man genau das wined3d, das auch auf dem Gerät läuft.
+
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
 
@@ -111,4 +118,18 @@ Kanal und Anteil abweichender Pixel).
   ~20 Bilder/s, wie über ES 3.2).
 * Auf dem Galaxy Note 8.0 selbst scheiterte der erste Versuch an `eglMakeCurrent` ohne
   Oberfläche (`EGL_BAD_MATCH`: die Mali-400-EGL kennt `EGL_KHR_surfaceless_context` nicht) –
-  daher der Pbuffer-Pfad.
+  daher der Pbuffer-Pfad. Mit ihm läuft Worms 3D auf dem Gerät durch (ES-2.0-Kontext, keine
+  Shader-Fehler), ist aber langsamer als llvmpipe – offen, siehe Statistik im Protokoll.
+* wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
+  wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
+  hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung
+  rendert der ES-3-Pfad pixelgenau wie Mesa; dazu kamen zwei Formatfehler (L8-Texturen rot:
+  `glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA)` übertrug nur einen Wert; DXT-Texturen ohne
+  Filterung: `glGetInternalformativ` meldete für komprimierte und alte Formate FILTER=NONE).
+  Der ES-2.0-Pfad braucht außerdem getrennte Lese-/Zeichen-Framebuffer, `glBlitFramebuffer`
+  (Bildausgabe), gleich große FBO-Anhänge (eigener Tiefenpuffer für kleine Render-Targets,
+  Löschungen werden weitergereicht), `GL_TEXTURE_MAX_LEVEL` (sonst unvollständige Texturen,
+  schwarz), begrenzte Vertexfarben (altes GL klemmt gl_FrontColor auf [0,1]) – alles in
+  `gl_framebuffer.c`/`gl_renderer.c`/`shader_converter.c` nachgebildet; Ergebnis pixelgenau
+  bis auf den Alphatest, den wined3d 10.10 auf alten Kontexten nie einschaltet
+  (`armv7/patches/wine/0002-wined3d-legacy-alpha-test.patch`).

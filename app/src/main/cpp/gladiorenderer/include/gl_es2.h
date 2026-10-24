@@ -98,6 +98,9 @@ extern void* GLES_repackRows(const void* pixels, int width, int height, int byte
 /* glTexImage2D/glTexSubImage2D mit Formatumsetzung und Umpacken; tight = Daten ohne UNPACK_ROW_LENGTH. */
 extern void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, void* data, int dataSize, bool tight);
 extern void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, void* data, int dataSize, bool tight);
+/* Wendet den Minifikationsfilter der Anwendung an; mit GL_TEXTURE_MAX_LEVEL 0 ohne Mipmaps. */
+struct GLTexture;
+extern void GLES_applyMinFilter(GLenum target, struct GLTexture* texture);
 /* glDrawElements mit Basisvertex und 32-Bit-Indizes ohne OES_element_index_uint. */
 extern void GLES_drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex);
 

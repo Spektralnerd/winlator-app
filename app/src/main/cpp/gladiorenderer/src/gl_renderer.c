@@ -1220,14 +1220,41 @@ void GLRenderer_setTexParameter(GLRenderer* renderer, GLenum target, GLenum pnam
             break;
         }
         case GL_TEXTURE_MIN_FILTER:
+            if (GLES2) {
+                GLTexture* texture = GLTexture_getBound(target);
+                if (texture) {
+                    texture->minFilter = (GLenum)*params;
+                    GLES_applyMinFilter(target, texture);
+                    break;
+                }
+            }
+            glTexParameteri(target, pname, (GLint)*params);
+            break;
         case GL_TEXTURE_MAG_FILTER:
             glTexParameteri(target, pname, (GLint)*params);
+            break;
+        case GL_TEXTURE_MAX_LEVEL:
+            if (GLES2) {
+                /* ES 2.0 kennt keine Stufenbegrenzung; eine Textur mit nur Stufe 0 wäre mit
+                 * Mipmap-Filter unvollständig (schwarz) – dann ohne Mipmaps filtern */
+                GLTexture* texture = GLTexture_getBound(target);
+                if (texture) {
+                    texture->maxLevel = (GLint)*params;
+                    GLES_applyMinFilter(target, texture);
+                }
+                break;
+            }
+            glTexParameteri(target, pname, (GLint)*params);
+            break;
+        case GL_TEXTURE_SWIZZLE_RGBA:
+            /* wined3d setzt die Swizzle als Vektor (glTexParameteriv), z. B. für L8 als GL_R8 */
+            if (GLES2) break;
+            for (int i = 0; i < 4; i++) glTexParameteri(target, GL_TEXTURE_SWIZZLE_R + i, (GLint)params[i]);
             break;
         case GL_DEPTH_STENCIL_TEXTURE_MODE:
         case GL_TEXTURE_BASE_LEVEL:
         case GL_TEXTURE_COMPARE_FUNC:
         case GL_TEXTURE_COMPARE_MODE:
-        case GL_TEXTURE_MAX_LEVEL:
         case GL_TEXTURE_SWIZZLE_R:
         case GL_TEXTURE_SWIZZLE_G:
         case GL_TEXTURE_SWIZZLE_B:
@@ -1487,7 +1514,9 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
     if (pixelPackBuffer && convert) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 
     char* srcData = convert ? malloc(srcDataSize) : pixels;
+    bool rebound = GLFramebuffer_beginReadAccess();
     glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, srcData);
+    GLFramebuffer_endReadAccess(rebound);
 
     if (x == 0 && y == 0 && width <= 256 && height <= 256 && !convert) {
         if (!pixelReadCache) renderer->pixelReadCache = pixelReadCache = calloc(1, sizeof(PixelReadCache));

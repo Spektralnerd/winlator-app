@@ -1405,6 +1405,14 @@ static void injectBuiltinVariables(ShaderProgram* program, ShaderObject* shader)
         if (!GLES2 && shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_COLOR)) {
             for (int i = 0; i < numMainFunctions; i++) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackColor = gd_FrontColor;"));
         }
+        if (GLES2 && shader->type == GL_VERTEX_SHADER && shader->code.version < 130) {
+            /* altes GL begrenzt gl_FrontColor/gl_BackColor auf [0,1] (GL_CLAMP_VERTEX_COLOR); wined3d
+             * verlässt sich darauf (Beleuchtung über 1.0), ES-Varyings werden nicht begrenzt */
+            for (int i = 0; i < numMainFunctions; i++) {
+                insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_FrontColor = clamp(gd_FrontColor, 0.0, 1.0);"));
+                if (shader->code.flags & FLAG_BUILTIN_BACK_COLOR) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackColor = clamp(gd_BackColor, 0.0, 1.0);"));
+            }
+        }
     }
 
     if ((shader->code.flags & FLAG_BUILTIN_FRONT_SECONDARY_COLOR) || (shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
@@ -1415,6 +1423,12 @@ static void injectBuiltinVariables(ShaderProgram* program, ShaderObject* shader)
 
         if (!GLES2 && shader->type == GL_VERTEX_SHADER && !(shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR)) {
             for (int i = 0; i < numMainFunctions; i++) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackSecondaryColor = gd_FrontSecondaryColor;"));
+        }
+        if (GLES2 && shader->type == GL_VERTEX_SHADER && shader->code.version < 130) {
+            for (int i = 0; i < numMainFunctions; i++) {
+                insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_FrontSecondaryColor = clamp(gd_FrontSecondaryColor, 0.0, 1.0);"));
+                if (shader->code.flags & FLAG_BUILTIN_BACK_SECONDARY_COLOR) insertCodeLine(shader, mainFunctions[i]->lineEnd, strdup("gd_BackSecondaryColor = clamp(gd_BackSecondaryColor, 0.0, 1.0);"));
+            }
         }
     }
 
