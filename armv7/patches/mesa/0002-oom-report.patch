@@ -13,10 +13,10 @@ index 77e4a6a..ca68f4a 100755
      include_directories('../../frontends/glx/xlib'),
 diff --git a/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
 new file mode 100644
-index 0000000..0151162
+index 0000000..ec82f37
 --- /dev/null
 +++ b/virgl-23.1.9/src/gallium/targets/libgl-xlib/winlator_oom_report.cpp
-@@ -0,0 +1,2436 @@
+@@ -0,0 +1,2496 @@
 +/*
 + * Winlator armv7 (32 Bit): Diagnose für gescheiterte C++-Speicheranforderungen in der libGL.
 + *
@@ -1035,6 +1035,10 @@ index 0000000..0151162
 +   uint32_t total;
 +};
 +prof_hist prof_raster, prof_other;
++/* feiner: Stelle innerhalb der übersetzten Funktionen (32-Byte-Abschnitte), zum Abgleich mit
++ * dem Maschinencode aus WINLATOR_JIT_DUMP */
++prof_hist prof_jit_fine;
++const unsigned JIT_FINE_SHIFT = 5;
 +
 +void hist_add(prof_hist &h, uint64_t key)
 +{
@@ -1053,6 +1057,18 @@ index 0000000..0151162
 +      }
 +   }
 +   /* voll: zählt nur in total */
++}
++
++void hist_add(prof_hist &h, uint64_t key);
++
++/* (prof_mutex gehalten) Stichprobe eintragen; JIT-Treffer auch nach Stelle in der Funktion */
++void prof_count(prof_hist &h, uint64_t key, uintptr_t pc)
++{
++   hist_add(h, key);
++   if ((unsigned)(key >> 32) == K_JIT) {
++      uintptr_t start = (uintptr_t)(key & 0xffffffffu);
++      hist_add(prof_jit_fine, ((uint64_t)start << 32) | ((pc - start) >> JIT_FINE_SHIFT));
++   }
 +}
 +
 +uint64_t classify_pc(uintptr_t pc)
@@ -1126,16 +1142,54 @@ index 0000000..0151162
 +   }
 +}
 +
++/* (out_mutex gehalten, fine = Kopie) Stellen innerhalb einer übersetzten Funktion */
++void put_jit_fine(prof_hist &fine, uintptr_t start, uint32_t func_count)
++{
++   begin_line();
++   put("    ");
++   uint64_t name_key = ((uint64_t)K_JIT << 32) | start;
++   put_prof_key(name_key);
++   put(" (");
++   put_dec(func_count);
++   put(" Stichproben, 32-Byte-Abschnitte):");
++   for (int shown = 0; shown < 12; shown++) {
++      int best = -1;
++      for (unsigned i = 0; i < PROF_BINS; i++) {
++         prof_bin &b = fine.bins[i];
++         if (b.count && (uintptr_t)(b.key >> 32) == start &&
++             (best < 0 || b.count > fine.bins[best].count))
++            best = (int)i;
++      }
++      if (best < 0 || fine.bins[best].count * 50ull < func_count)
++         break;   /* unter 2 % der Funktion weglassen */
++      put(" +");
++      put_hex((uint32_t)(fine.bins[best].key & 0xffffffffu) << JIT_FINE_SHIFT, 4);
++      put(" ");
++      put_dec(fine.bins[best].count * 100ull / func_count);
++      put(" %");
++      fine.bins[best].count = 0;
++   }
++   end_line();
++}
++
 +/* (out_mutex gehalten) Rangliste ausgeben und leeren */
 +void put_profile(prof_hist &h, const char *title)
 +{
 +   pthread_mutex_lock(&prof_mutex);
-+   static prof_hist copy;
++   static prof_hist copy, fine;
 +   copy = h;
 +   memset(&h, 0, sizeof(h));
++   bool with_fine = &h == &prof_raster;
++   if (with_fine) {
++      fine = prof_jit_fine;
++      memset(&prof_jit_fine, 0, sizeof(prof_jit_fine));
++   }
 +   pthread_mutex_unlock(&prof_mutex);
 +   if (!copy.total)
 +      return;
++   uintptr_t top_jit[3] = {0, 0, 0};
++   uint32_t top_jit_count[3] = {0, 0, 0};
++   int top_jits = 0;
 +   begin_line();
 +   put(title);
 +   put(", ");
@@ -1164,9 +1218,15 @@ index 0000000..0151162
 +      put_prof_key(copy.bins[best].key);
 +      put(";");
 +      on_line++;
++      if (with_fine && top_jits < 3 && (unsigned)(copy.bins[best].key >> 32) == K_JIT) {
++         top_jit[top_jits] = (uintptr_t)(copy.bins[best].key & 0xffffffffu);
++         top_jit_count[top_jits++] = copy.bins[best].count;
++      }
 +      copy.bins[best].count = 0;
 +   }
 +   end_line();
++   for (int i = 0; i < top_jits; i++)
++      put_jit_fine(fine, top_jit[i], top_jit_count[i]);
 +}
 +
 +/* eine Zeile aus stat: Zustand, Name, CPU-Ticks, kstkeip */
@@ -1401,7 +1461,7 @@ index 0000000..0151162
 +            continue;
 +         uint64_t key = classify_pc(eip);
 +         pthread_mutex_lock(&prof_mutex);
-+         hist_add(prof_tasks[i].raster ? prof_raster : prof_other, key);
++         prof_count(prof_tasks[i].raster ? prof_raster : prof_other, key, eip);
 +         pthread_mutex_unlock(&prof_mutex);
 +      }
 +      if (use_signal) {
@@ -1444,7 +1504,7 @@ index 0000000..0151162
 +            }
 +            uint64_t key = classify_pc(pc);
 +            pthread_mutex_lock(&prof_mutex);
-+            hist_add(raster ? prof_raster : prof_other, key);
++            prof_count(raster ? prof_raster : prof_other, key, pc);
 +            pthread_mutex_unlock(&prof_mutex);
 +         }
 +      }

@@ -222,6 +222,9 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    übersetzte Funktion (`fs319_variant2:whole`, Namen meldet `patches/mesa/0006`), `libGL+Offset`
    (256-Byte-Abschnitte, über die Symboldatei den Funktionen zuzuordnen),
    Bibliothek mit Symbol, `anonym` (meist Box86-Dynarec). `WINLATOR_PROFILE=0` schaltet das ab.
+   Für die drei meistgenannten übersetzten Funktionen folgt je eine Zeile mit den heißen
+   Stellen in 32-Byte-Abschnitten (`+0x1a40 12 %`), die `tools/jithot.py` (Sitzungswerkzeug)
+   mit dem Code-Dump zu Befehlsfolgen auflöst.
    `WINLATOR_JIT_DUMP=1` (oder ein absoluter Ordner) schreibt für jede übersetzte Funktion das
    LLVM-IR nach der Optimierung (`<Modul>.ll`) und den Maschinencode (`<Modul>.<Funktion>.bin`,
    bis 64 KB, `index.txt` mit Adressen) nach `Documents/Winlator/jit` und schaltet dafür den
