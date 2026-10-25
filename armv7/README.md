@@ -241,7 +241,13 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    `Winlator-11.2-armv7hybrid.apk` nur bei 64-Bit-Kernel (`uname -m` zeigt `armv8l` oder `aarch64`)
 2. Beim ersten Start wird das Root-FS entpackt (einige Minuten), danach einen Container anlegen
    (Vorgaben passen sich an: ohne OpenGL ES 3 „Software“, ohne Vulkan WineD3D)
-3. Container starten: es sollte der Wine-Desktop mit dem Dateimanager (wfm) erscheinen
+3. Container starten: es sollte der Wine-Desktop mit dem Dateimanager (wfm) erscheinen.
+   Spiele brauchen meist einen **beschreibbaren** Spielordner (Spielstände, Protokolle). Auf der
+   SD-Karte darf eine App unter Android ab 4.4 nur in `Android/data/com.winlator/files/` schreiben;
+   ein Laufwerk, das woanders auf die Karte zeigt, ist für Wine schreibgeschützt. Beispiel
+   Worms 3D: Menüs laufen, beim Laden eines Matches Absturz (`Unhandled page fault … at address
+   0061B6F4`), weil `AIPlanLog.txt` nicht angelegt werden kann – auf dem PC mit schreibgeschütztem
+   Spielordner genau so nachgestellt.
 4. Klappt etwas nicht, schreiben die 32-Bit-Builds ohne weitere Einstellungen nach
    `Documents/Winlator` (ohne Speicherberechtigung nach `Android/data/com.winlator/files`):
    - `start.txt`: jeder Containerstart mit Gerät, CPU-Merkmalen, OpenGL ES, Speicher,
