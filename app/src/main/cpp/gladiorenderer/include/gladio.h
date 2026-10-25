@@ -124,6 +124,8 @@ typedef struct JMethods {
 
 #ifdef GL_SERVER
 extern uint64_t gladio_statsReplies;
+#define GLADIO_REPLY_CODE_SLOTS 1024
+extern uint32_t gladio_statsReplyCodes[GLADIO_REPLY_CODE_SLOTS]; /* Antworten je Anfragecode (Laufstatistik) */
 #endif
 
 static inline bool gl_send(RingBuffer* ring, short requestCode, void* data, int size) {
@@ -132,6 +134,7 @@ static inline bool gl_send(RingBuffer* ring, short requestCode, void* data, int 
     *(int*)(header + 2) = size;
 #ifdef GL_SERVER
     gladio_statsReplies++;
+    gladio_statsReplyCodes[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS]++;
 #endif
 
     bool result = RingBuffer_write(ring, header, HEADER_SIZE);

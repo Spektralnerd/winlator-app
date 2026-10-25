@@ -4,6 +4,19 @@
 #include "gladio.h"
 #include "gl_renderer.h"
 #include "gl_texture.h"
+#include <time.h>
+
+static inline int64_t gladio_nowNs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+/* Ausgegebene Zeichenstapel (GLRenderer_drawImmediate), für die Laufstatistik */
+typedef struct GladioBatchStats {
+    uint64_t batches, driverDraws;
+    int64_t flushNs, setupNs, driverDrawNs;
+} GladioBatchStats;
 
 typedef struct GLXContext {
     EGLContext eglContext;
@@ -47,6 +60,7 @@ typedef struct GLContext {
         uint64_t bytes, drawBytes;
         int64_t waitNs, swapNs, drawNs;
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
+        GladioBatchStats batchAtStart;
     } stats;
 
     /* die letzten Anfragen (Ring), fürs Protokoll beim Ende der Verbindung – z. B. nach einem Absturz des Programms */
@@ -59,6 +73,7 @@ typedef struct GLContext {
 
 /* Zähler über alle Kontexte (Antworten an den Client, Texturdaten, gelinkte Programme) */
 extern uint64_t gladio_statsReplies;
+extern GladioBatchStats gladio_batchStats;
 extern uint64_t gladio_statsTexBytes;
 extern uint64_t gladio_statsPrograms;
 

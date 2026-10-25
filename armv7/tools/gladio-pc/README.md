@@ -55,7 +55,9 @@ Ergebnis: `build/gladio-pc-server` und `build/client/libGL.so.1` (`make client32
 `--es 2` erzwingt bei Mesa einen reinen ES-2.0-Kontext (`MESA_GLES_VERSION_OVERRIDE=2.0`,
 `MESA_GLSL_VERSION_OVERRIDE=100`) – das ist die Mali-400-Situation.
 Mit `--dump VERZ` landen die Bilder, die der Server bei `glXSwapBuffers` fertigstellt, als
-`frame-N.ppm` dort (`--frames 1,10` wählt die Bildnummern, `all` alle).
+`frame-N.ppm` dort (`--frames 1,10` wählt die Bildnummern, `all` alle). Legt man im
+Ablageverzeichnis eine Datei `now` an, wird das nächste Bild abgelegt; eine Datei `trace`
+schreibt alle Anfragen des nächsten Bilds ins Server-Protokoll (`TRACE name größe arg0 arg1`).
 
 Umgebungsvariablen des Servers: `GLADIO_SOCKET`, `GLADIO_PC_ES` (2|3), `GLADIO_PC_DUMP`,
 `GLADIO_PC_DUMP_FRAMES`, `GLADIO_PC_SIZE` (Fenstergröße ohne `$DISPLAY`), `EGL_PLATFORM`

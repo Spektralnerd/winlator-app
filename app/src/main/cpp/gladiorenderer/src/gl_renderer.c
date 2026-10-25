@@ -298,6 +298,7 @@ bool GLRenderer_useARBProgram(GLRenderer* renderer, bool fullUpdate) {
 void GLRenderer_drawImmediate(GLRenderer* renderer) {
     if (!renderer || ArrayDeque_isEmpty(&renderer->meshes)) return;
     GLClientState* clientState = &renderer->clientState;
+    int64_t flushStart = gladio_nowNs();
 
     ShaderMaterial* material = NULL;
     if (!clientState->program && !ARBProgram_isActive(GL_VERTEX_PROGRAM_ARB)) {
@@ -317,6 +318,9 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         else updateVertexBuffers(renderer, clientState->arbProgram[0]->material->location.attributes);
     }
 
+    int64_t driverDrawStart = gladio_nowNs();
+    gladio_batchStats.setupNs += driverDrawStart - flushStart;
+    gladio_batchStats.batches++;
     while (!ArrayDeque_isEmpty(&renderer->meshes)) {
         Mesh* mesh = ArrayDeque_removeFirst(&renderer->meshes);
         GLenum drawMode = parseDrawMode(mesh->mode, renderer->state.polygonMode);
@@ -332,6 +336,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         int count = mesh->end - mesh->start;
         const void* indices = GLES2 ? (const void*)(renderer->geometry.indices.buffer + mesh->start * sizeof(short)) : (const void*)(mesh->start * sizeof(short));
         glDrawElements(drawMode, count, GL_UNSIGNED_SHORT, indices);
+        gladio_batchStats.driverDraws++;
         MEMFREE(mesh);
 
         if (drawMode == GL_POINTS && renderer->state.point.smooth && !renderer->state.point.sprite) {
@@ -343,6 +348,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
     /* ES 2.0 (Mali-400, Kachel-Renderer): ein glFlush mitten im Bild lässt den Treiber das
      * Bild bis hierher rendern und Farbe+Tiefe in den Speicher schreiben – bei ~60 Stapeln je
      * Bild kostet das mehr als das Zeichnen selbst. Für die Richtigkeit ist es nicht nötig. */
+    gladio_batchStats.driverDrawNs += gladio_nowNs() - driverDrawStart;
     if (!GLES2) glFlush();
     renderer->geometry.indices.position = 0;
     renderer->geometry.vertices.position = 0;
@@ -364,6 +370,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
     GLBuffer* elementArrayBuffer = clientState->vao->buffer[indexOfGLTarget(GL_ELEMENT_ARRAY_BUFFER)];
     glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer ? arrayBuffer->id : 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elementArrayBuffer ? elementArrayBuffer->id : 0);
+    gladio_batchStats.flushNs += gladio_nowNs() - flushStart;
 }
 
 void GLRenderer_beginImmediate(GLRenderer* renderer, GLenum mode) {

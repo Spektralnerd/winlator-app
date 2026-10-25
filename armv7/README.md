@@ -171,6 +171,12 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   hier auf die GPU – ist dieser Wert groß, ist die GPU die Bremse), „Ausführen“ der Rest
   (GL-Aufrufe samt dem, was der Treiber dabei synchron erledigt), „Zeichnen“ der Anteil davon
   für Zeichenaufrufe und das Ausgeben der Stapel (Vertexdaten umsetzen, Puffer füllen).
+  Dazu kommen `gladio: Stapel je Bild: … ausgegeben mit … Treiber-Zeichenaufrufen in … ms
+  (Shader, Uniforms, Vertexzeiger … ms; Treiber-Zeichnen … ms)` – wie viele Stapel der Server
+  tatsächlich an den Treiber gibt und wie lange der Treiber dafür braucht –,
+  `gladio: Antworten je Bild außer SWAP: …` (Anfragen, auf deren Antwort das Programm warten
+  muss; währenddessen arbeiten Client und Server nicht gleichzeitig) und
+  `gladio: häufigste Anfragen je Bild: …`.
 - Fixed-Function-Zeichnen (klassisches OpenGL ohne eigene Shader, z. B. Worms 3D): Der allgemeine
   Material-Shader des Servers entscheidet Texturumgebung, Alphatest, Nebel und Lichtzahl pro
   Pixel über Uniforms; die Mali-400 rechnet dabei praktisch alle Zweige aus. Im ES-2.0-Pfad

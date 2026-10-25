@@ -11,11 +11,11 @@ static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context);
 uint64_t gladio_statsReplies = 0;
 uint64_t gladio_statsTexBytes = 0;
 uint64_t gladio_statsPrograms = 0;
+GladioBatchStats gladio_batchStats = {0};
+uint32_t gladio_statsReplyCodes[GLADIO_REPLY_CODE_SLOTS] = {0};
 
-static int64_t nowNs(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+static inline int64_t nowNs(void) {
+    return gladio_nowNs();
 }
 
 static bool isDrawRequest(short requestCode) {
@@ -36,6 +36,41 @@ static bool isDrawRequest(short requestCode) {
 
 #define STATS_PERIOD_NS 5000000000LL
 
+static uint32_t requestCodeCounts[GLADIO_REPLY_CODE_SLOTS];
+/* PC-Prüfstand (Datei "trace" im Ablageverzeichnis): die Anfragen eines Bilds protokollieren */
+int gladio_traceRequests = 0;
+
+static const char* shortRequestName(int code) {
+    if (code == REQUEST_CODE_SET_CURRENT_RENDER_WINDOW) return "MAKE_CURRENT";
+    if (code == REQUEST_CODE_SWAP_DISPLAY_BUFFERS) return "SWAP";
+    if (code < REQUEST_CODE_GL_CALL_START) return "DSA";
+    const char* name = requestCodeToString(code);
+    return name[0] == 'g' && name[1] == 'l' ? name + 2 : name;
+}
+
+/* die häufigsten Anfragecodes einer Zählung, je Bild */
+static void printTopRequestCodes(const char* title, const uint32_t* counts, int maxShown, uint32_t frames) {
+    char line[320];
+    int pos = 0;
+    int shown[8];
+    if (maxShown > 8) maxShown = 8;
+    for (int n = 0; n < maxShown; n++) {
+        int best = -1;
+        for (int code = 0; code < GLADIO_REPLY_CODE_SLOTS; code++) {
+            if (code == REQUEST_CODE_SWAP_DISPLAY_BUFFERS || counts[code] == 0) continue;
+            bool done = false;
+            for (int k = 0; k < n; k++) if (shown[k] == code) done = true;
+            if (!done && (best < 0 || counts[code] > counts[best])) best = code;
+        }
+        if (best < 0) break;
+        shown[n] = best;
+        int written = snprintf(line + pos, sizeof(line) - pos, "%s%s %.1f", n > 0 ? ", " : "", shortRequestName(best), counts[best] / (double)frames);
+        if (written < 0 || pos + written >= (int)sizeof(line)) break;
+        pos += written;
+    }
+    if (pos > 0) println("gladio: %s: %s", title, line);
+}
+
 static void printStats(GLContext* context, int64_t now) {
     typeof(context->stats)* st = &context->stats;
     double seconds = (now - st->periodStartNs) / 1e9;
@@ -49,6 +84,15 @@ static void printStats(GLContext* context, int64_t now) {
     println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms (davon Zeichnen %.1f ms); Shader-Programme neu %u, gesamt %u",
             st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames, st->drawNs / 1e6 / frames,
             (uint32_t)(gladio_statsPrograms - st->programsAtStart), (uint32_t)gladio_statsPrograms);
+    GladioBatchStats* bs = &gladio_batchStats;
+    GladioBatchStats* b0 = &st->batchAtStart;
+    println("gladio: Stapel je Bild: %u ausgegeben mit %u Treiber-Zeichenaufrufen in %.1f ms (Shader, Uniforms, Vertexzeiger %.1f ms; Treiber-Zeichnen %.1f ms)",
+            (uint32_t)((bs->batches - b0->batches) / frames), (uint32_t)((bs->driverDraws - b0->driverDraws) / frames),
+            (bs->flushNs - b0->flushNs) / 1e6 / frames, (bs->setupNs - b0->setupNs) / 1e6 / frames, (bs->driverDrawNs - b0->driverDrawNs) / 1e6 / frames);
+
+    /* welche Anfragen auf eine Antwort warten lassen (der Client steht so lange) und welche am häufigsten kommen */
+    printTopRequestCodes("Antworten je Bild außer SWAP", gladio_statsReplyCodes, 4, frames);
+    printTopRequestCodes("häufigste Anfragen je Bild", requestCodeCounts, 8, frames);
 }
 
 static void resetStats(GLContext* context, int64_t now) {
@@ -58,6 +102,9 @@ static void resetStats(GLContext* context, int64_t now) {
     st->repliesAtStart = gladio_statsReplies;
     st->texBytesAtStart = gladio_statsTexBytes;
     st->programsAtStart = gladio_statsPrograms;
+    st->batchAtStart = gladio_batchStats;
+    memset(gladio_statsReplyCodes, 0, sizeof(gladio_statsReplyCodes));
+    memset(requestCodeCounts, 0, sizeof(requestCodeCounts));
 }
 
 pthread_mutex_t glx_context_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -309,6 +356,13 @@ static void* requestHandlerThread(void* param) {
         if (!gl_recv(context->serverRing, &requestCode, &context->inputBuffer)) break;
         if (blocked) context->stats.waitNs += nowNs() - waitStart;
         context->stats.requests++;
+        requestCodeCounts[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS]++;
+        if (gladio_traceRequests) {
+            int a0 = context->inputBuffer.size >= 4 ? ((int*)context->inputBuffer.buffer)[0] : 0;
+            int a1 = context->inputBuffer.size >= 8 ? ((int*)context->inputBuffer.buffer)[1] : 0;
+            println("TRACE %s %d 0x%x 0x%x", shortRequestName(requestCode), context->inputBuffer.size, a0, a1);
+            if (requestCode == REQUEST_CODE_SWAP_DISPLAY_BUFFERS) gladio_traceRequests = 0;
+        }
         context->stats.bytes += HEADER_SIZE + context->inputBuffer.size;
         context->lastRequests.code[context->lastRequests.count % 64] = requestCode;
         context->lastRequests.size[context->lastRequests.count % 64] = context->inputBuffer.size;
