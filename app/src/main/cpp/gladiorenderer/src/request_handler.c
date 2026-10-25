@@ -32,6 +32,19 @@ void gd_handle_glAlphaFunc(GLContext* context) {
 void gd_handle_glArrayElement(GLContext* context) {
     GLint i = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (GLES2) {
+        /* Stapel ausgerichtet halten (GLRenderer_prepareBatchArrays): erst die übrigen Arrays, dann der Vertex */
+        GLVertexAttrib* attribs = currentRenderer->clientState.vao->attribs;
+        if (!attribs[POSITION_ARRAY_INDEX].state) return;
+        GLRenderer_prepareBatchArrays(currentRenderer, 1);
+        for (int j = COLOR_ARRAY_INDEX, count = (MIN_VERTEX_ATTRIBS + MAX_TEXTURES); j < count; j++) {
+            if (attribs[j].state == VERTEX_ATTRIB_LEGACY_ENABLED) readVertexArrayElement(context, j, i);
+        }
+        readVertexArrayElement(context, POSITION_ARRAY_INDEX, i);
+        GLRenderer_addArrayElement(currentRenderer, currentRenderer->geometry.vertices.position-1);
+        return;
+    }
+
     for (int j = 0, count = (MIN_VERTEX_ATTRIBS + MAX_TEXTURES); j < count; j++) readVertexArrayElement(context, j, i);
 
     GLClientState* clientState = &currentRenderer->clientState;
@@ -442,12 +455,8 @@ void gd_handle_glColor4f(GLContext* context) {
     GLfloat blue = ArrayBuffer_getFloat(&context->inputBuffer);
     GLfloat alpha = ArrayBuffer_getFloat(&context->inputBuffer);
 
-    currentRenderer->state.color[0] = red;
-    currentRenderer->state.color[1] = green;
-    currentRenderer->state.color[2] = blue;
-    currentRenderer->state.color[3] = alpha;
-
-    currentRenderer->geometry.colors.position++;
+    const float newColor[] = {red, green, blue, alpha};
+    GLRenderer_setCurrentAttrib(currentRenderer, COLOR_ARRAY_INDEX, newColor);
     if (currentRenderer->state.colorMaterial.enabled) {
         float color[] = {red, green, blue, alpha};
         GLRenderer_setMaterialParams(currentRenderer, currentRenderer->state.colorMaterial.face, currentRenderer->state.colorMaterial.mode, color);
@@ -2204,13 +2213,9 @@ void gd_handle_glMultiTexCoord4f(GLContext* context) {
     GLfloat q = ArrayBuffer_getFloat(&context->inputBuffer);
 
     int index = target - GL_TEXTURE0;
-    if (index < MAX_TEXTURES) {
-        float* texCoord = currentRenderer->state.texCoords[index];
-        texCoord[0] = s;
-        texCoord[1] = t;
-        texCoord[2] = r;
-        texCoord[3] = q;
-        currentRenderer->geometry.texCoords[index].position++;
+    if (index >= 0 && index < MAX_TEXTURES) {
+        const float texCoord[] = {s, t, r, q};
+        GLRenderer_setCurrentAttrib(currentRenderer, TEXCOORD_ARRAY_INDEX + index, texCoord);
     }
 }
 
@@ -2226,11 +2231,8 @@ void gd_handle_glNormal3f(GLContext* context) {
     GLfloat ny = ArrayBuffer_getFloat(&context->inputBuffer);
     GLfloat nz = ArrayBuffer_getFloat(&context->inputBuffer);
 
-    currentRenderer->state.normal[0] = nx;
-    currentRenderer->state.normal[1] = ny;
-    currentRenderer->state.normal[2] = nz;
-
-    currentRenderer->geometry.normals.position++;
+    const float normal[] = {nx, ny, nz};
+    GLRenderer_setCurrentAttrib(currentRenderer, NORMAL_ARRAY_INDEX, normal);
 }
 
 void gd_handle_glNormalPointer(GLContext* context) {
@@ -2707,13 +2709,8 @@ void gd_handle_glTexCoord4f(GLContext* context) {
     GLfloat t = ArrayBuffer_getFloat(&context->inputBuffer);
     GLfloat r = ArrayBuffer_getFloat(&context->inputBuffer);
     GLfloat q = ArrayBuffer_getFloat(&context->inputBuffer);
-\
-    float* texCoord = currentRenderer->state.texCoords[0];
-    texCoord[0] = s;
-    texCoord[1] = t;
-    texCoord[2] = r;
-    texCoord[3] = q;
-    currentRenderer->geometry.texCoords[0].position++;
+    const float texCoord[] = {s, t, r, q};
+    GLRenderer_setCurrentAttrib(currentRenderer, TEXCOORD_ARRAY_INDEX, texCoord);
 }
 
 void gd_handle_glTexCoordPointer(GLContext* context) {

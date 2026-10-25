@@ -290,6 +290,10 @@ static void swapDisplayBuffers(GLContext* context, int drawableId) {
 }
 
 static bool isCanDrawImmediate(short requestCode) {
+    /* ES 2.0: der Wechsel der Textureinheit ändert nichts an der Zeichnung des Stapels (Texturzustand,
+     * Matrizen und Arrays je Einheit stehen fest, die Anfragen dazu geben den Stapel aus). Worms 3D
+     * schaltet vor jedem Zeichenaufruf alle acht Einheiten durch; ohne das entstand je Aufruf ein Stapel. */
+    if (GLES2 && (requestCode == REQUEST_CODE_GL_ACTIVE_TEXTURE || requestCode == REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE)) return false;
     return requestCode == REQUEST_CODE_GL_BEGIN ||
            requestCode == REQUEST_CODE_GL_END ||
            requestCode == REQUEST_CODE_GL_DRAW_ARRAYS ||
@@ -719,6 +723,8 @@ void readCommandBuffer(GLContext* context) {
     RingBuffer_read(context->serverRing, context->inputBuffer.buffer + context->inputBuffer.position, bufferSize);
     context->inputBuffer.size += bufferSize;
 
+    /* ES 2.0: 16-Bit-Indizes – höchstens ein Vertex je 6 Byte Befehle (glArrayElement) */
+    if (GLES2) GLRenderer_reserveBatchVertices(currentRenderer, bufferSize / 6);
     GLRenderer_beginImmediate(currentRenderer, mode);
     while (ArrayBuffer_available(&context->inputBuffer) > 0) {
         short requestCode = ArrayBuffer_getShort(&context->inputBuffer);
@@ -817,6 +823,11 @@ static bool readRangedLegacyArrays(GLContext* context, GLenum drawMode, int draw
     if (renderer->geometry.vertices.position + vertexCount > 65535 && !ArrayDeque_isEmpty(&renderer->meshes)) {
         GLRenderer_drawImmediate(renderer);
     }
+    if (GLES2) {
+        /* ohne Vertex-Array entsteht nichts (die übrigen Arrays dürfen den Stapel nicht verschieben) */
+        if (renderer->clientState.vao->attribs[POSITION_ARRAY_INDEX].state != VERTEX_ATTRIB_LEGACY_ENABLED) return true;
+        GLRenderer_prepareBatchArrays(renderer, vertexCount);
+    }
 
     GLRenderer_beginImmediate(renderer, drawMode);
     int base = renderer->geometry.vertices.position;
@@ -858,6 +869,21 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
     bool meshCreated = false;
 
     GLClientState* clientState = &currentRenderer->clientState;
+    bool skipLegacy = false;
+    if (GLES2) {
+        /* Stapel ausrichten (GLRenderer_prepareBatchArrays); ohne Vertex-Array entsteht nichts */
+        bool anyLegacy = false;
+        for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
+            if (clientState->vao->attribs[i].state == VERTEX_ATTRIB_LEGACY_ENABLED && !GLClientState_isLegacyEnabledWithProgram(clientState, i)) anyLegacy = true;
+        }
+        if (anyLegacy) {
+            if (clientState->vao->attribs[POSITION_ARRAY_INDEX].state != VERTEX_ATTRIB_LEGACY_ENABLED) skipLegacy = true;
+            else {
+                GLRenderer_reserveBatchVertices(currentRenderer, drawCount);
+                GLRenderer_prepareBatchArrays(currentRenderer, drawCount);
+            }
+        }
+    }
     for (int i = 0, j; i < clientState->vao->maxEnabledAttribs; i++) {
         bool legacyEnabledWithProgram = GLClientState_isLegacyEnabledWithProgram(clientState, i);
         if (clientState->vao->attribs[i].state == VERTEX_ATTRIB_ENABLED || legacyEnabledWithProgram) {
@@ -891,6 +917,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
             if (oldArrayBuffer) glBindBuffer(GL_ARRAY_BUFFER, oldArrayBuffer->id);
         }
         else if (clientState->vao->attribs[i].state == VERTEX_ATTRIB_LEGACY_ENABLED) {
+            if (skipLegacy) continue;
             if (!meshCreated) {
                 GLRenderer_beginImmediate(currentRenderer, drawMode);
                 meshCreated = true;
