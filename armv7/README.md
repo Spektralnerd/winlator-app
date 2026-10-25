@@ -220,6 +220,14 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   Vorher nötig: Feste Farbe/Normale/Texturkoordinate zwischen zusammengefassten Aufrufen und
   Aufrufe mit und ohne Array im selben Stapel wurden falsch gezeichnet (`batchtest.c`, sechs von
   acht Fällen); die Attribute bleiben jetzt auf die Vertices ausgerichtet (`gl_renderer.c`).
+  Außerdem geben Zustandsänderungen, die nur Server-Zustand betreffen (Matrizen, Licht, Material,
+  Texturumgebung, Alphatest, Schalter des festen Funktionsmodells), den Stapel nicht sofort aus:
+  Der alte Inhalt wird gemerkt und erst vor dem nächsten Zeichenaufruf verglichen
+  (`deferStateChange` in `gl_context.c`). Worms 3D setzt vor fast jedem Objekt Matrix, Licht und
+  Material neu, oft auf dieselben Werte; dann läuft der Stapel weiter. Treiberzustand
+  (`glEnable(GL_BLEND)`, `glBindTexture`) wird nur übersprungen, wenn er schon so ist. Die
+  Statistikzeile `gladio: Stapel ausgegeben vor: …` zeigt, was die Stapel noch trennt (Worms 3D:
+  vor allem Texturwechsel).
 - Client (`patch-gladio-client.py`): Einheitenwechsel gehen erst vor der nächsten anderen Anfrage
   und nur bei Änderung hinaus (Worms 3D: ~8400 von 13000 Anfragen je Bild entfallen);
   Matrixabfragen (`glGetFloatv(GL_MODELVIEW_MATRIX)`, 29-mal je Bild) beantwortet der Client aus

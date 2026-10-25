@@ -98,7 +98,9 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `batchtest.c` – Zeichenstapel des Servers: je Fall zwei Quadrate mit Anfragen dazwischen, die
   den Stapel nicht ausgeben (Farb-/Texturkoordinaten-/Normalen-Array an und aus, glColor/glNormal/
   glMultiTexCoord zwischen zwei Zeichenaufrufen, glBegin/glEnd und Arrays gemischt,
-  Einheitenwechsel wie bei Worms 3D). `./batchtest out.ppm`; Bauen:
+  Einheitenwechsel wie bei Worms 3D; zweite Hälfte: Matrix, Licht, Material, Texturumgebung,
+  Alphatest, Blending und Textur zwischen zwei Aufrufen geändert oder auf denselben Wert gesetzt).
+  `./batchtest out.ppm`; Bauen:
   `gcc -O1 -o batchtest batchtest.c -lX11 -lGL`.
 * `matrixtest.c` – Matrix- und Zustandsabfragen (glGetFloatv/glGetDoublev der drei Matrizen,
   GL_MATRIX_MODE, GL_DEPTH_WRITEMASK) nach einer Folge von Matrixoperationen, Push/Pop über die
@@ -165,7 +167,9 @@ Kanal und Anteil abweichender Pixel).
   ES-2.0-Pfad bleiben die Attribute jetzt auf die Vertices ausgerichtet (`GLRenderer_prepareBatchArrays`
   in `gl_renderer.c`); alle Fälle sind mit Mesa gleich (höchstens 2/255). Der ES-3-Pfad (arm64)
   ist unverändert. Danach zählen auch glActiveTexture/glClientActiveTexture im ES-2.0-Pfad nicht
-  mehr als Stapelgrenze: Worms 3D (Match) gibt statt ~430 nur noch ~150 Stapel je Bild an den Treiber.
+  mehr als Stapelgrenze: Worms 3D (Match) gibt statt ~430 nur noch ~150 Stapel je Bild an den Treiber;
+  mit dem aufgeschobenen Zustandsvergleich (`deferStateChange`) und dem angepassten Client noch
+  ~80 bei ~105 Zeichenaufrufen. Alle 16 Fälle von `batchtest` sind mit Mesa gleich.
 * Matrixabfragen (`matrixtest`): Der armv7-Client beantwortet sie aus mitgeführten Stapeln; alle
   17 Schritte stimmen mit Mesa überein (auch Push über die Grenze von 32 Einträgen hinaus).
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt

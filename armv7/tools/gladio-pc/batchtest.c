@@ -4,7 +4,7 @@
  * Zeichnung nicht ändern (Client-Arrays, aktuelle Farbe/Normale/Texturkoordinate, glBegin/glEnd,
  * im ES-2.0-Pfad auch glActiveTexture/glClientActiveTexture). Jeder Fall zeichnet zwei Quadrate
  * mit genau solchen Anfragen dazwischen; das Ergebnis muss dem direkten Zeichnen mit Mesa
- * entsprechen. 4x2 Felder je 128x128, Ergebnis als PPM (ppmdiff.py zum Vergleich).
+ * entsprechen. 4x4 Felder je 128x128, Ergebnis als PPM (ppmdiff.py zum Vergleich).
  *
  *   0  Farb-Array, dazwischen glActiveTexture/glClientActiveTexture über alle Einheiten
  *      (Muster von Worms 3D), zweites Quadrat mit anderem Farb-Array
@@ -18,6 +18,17 @@
  *   6  Beleuchtung: erst mit Normalen-Array, dann feste Normale per glNormal3f
  *   7  zwei Textureinheiten: Koordinaten-Arrays über glClientActiveTexture, zweites Quadrat
  *      mit anderem Array für Einheit 1
+ *
+ * Zweite Hälfte: Zustandsänderungen zwischen zwei Zeichenaufrufen, die der Server im ES-2.0-Pfad
+ * erst beim nächsten Zeichenaufruf vergleicht (gleicher Zustand: der Stapel läuft weiter):
+ *   8  Modelview: LoadIdentity, Licht setzen, wieder dieselbe Matrix (gleich) – dann andere Matrix
+ *   9  Beleuchtung an zwischen zwei Quadraten, Licht und Material gesetzt
+ *  10  Texturumgebung MODULATE -> REPLACE zwischen zwei Quadraten, dazwischen gleiche Werte
+ *  11  PushMatrix/Translate/PopMatrix: drittes Quadrat wieder an der Stelle des ersten
+ *  12  Alphatest: Funktion zwischen zwei Quadraten geändert (Alpha 0.4 je Vertex)
+ *  13  glEnable(GL_BLEND) bei schon eingeschaltetem Blending, dann glDisable
+ *  14  dieselbe Textur noch einmal gebunden, dann eine andere
+ *  15  Material zwischen zwei beleuchteten Quadraten geändert und zurückgesetzt
  */
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/gl.h>
@@ -28,12 +39,12 @@
 #include <string.h>
 
 #define W 512
-#define H 256
+#define H 512
 #define CELL 128
 
 static void cell(int index)
 {
-    int x = (index % 4) * CELL, y = (1 - index / 4) * CELL;
+    int x = (index % 4) * CELL, y = (3 - index / 4) * CELL;
     glViewport(x, y, CELL, CELL);
     glScissor(x, y, CELL, CELL);
     glMatrixMode(GL_PROJECTION); glLoadIdentity(); glOrtho(0, 4, 0, 4, -1, 1);
@@ -220,6 +231,130 @@ int main(int argc, char** argv)
     glClientActiveTexture(GL_TEXTURE0);
     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
     glDisable(GL_TEXTURE_2D);
+
+    /* 8: Modelview zurück auf dieselbe Matrix, dann eine andere */
+    cell(8);
+    glColor4f(1, 0.5f, 0, 1);
+    {
+        float m[16];
+        glTranslatef(0.2f, 0.2f, 0);
+        glGetFloatv(GL_MODELVIEW_MATRIX, m);
+        drawQuad(0, 0, 0);
+        glLoadIdentity();
+        const float dir[] = {0, 0, 1, 0};
+        glLightfv(GL_LIGHT0, GL_POSITION, dir);
+        glLoadMatrixf(m);
+        drawQuad(1, 0, 2);
+        glLoadIdentity();
+        glTranslatef(2.2f, 1.2f, 0);
+        drawQuad(0, 0, 0);
+        glLoadIdentity();
+    }
+
+    /* 9: Beleuchtung zwischen zwei Quadraten an */
+    cell(9);
+    {
+        const float dir[] = {0.4f, 0.3f, 1, 0}, dif[] = {0.2f, 0.9f, 0.4f, 1};
+        glColor4f(0.8f, 0.2f, 0.9f, 1);
+        drawQuad(0, 0.2f, 0.2f);
+        glLightfv(GL_LIGHT0, GL_POSITION, dir);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, dif);
+        glNormal3f(0, 0, 1);
+        glEnable(GL_LIGHTING);
+        glEnable(GL_LIGHT0);
+        drawQuad(1, 2.2f, 2.2f);
+        glDisable(GL_LIGHTING);
+    }
+
+    /* 10: Texturumgebung MODULATE -> REPLACE */
+    cell(10);
+    glBindTexture(GL_TEXTURE_2D, checker);
+    glEnable(GL_TEXTURE_2D);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glTexCoordPointer(2, GL_FLOAT, 0, texA);
+    glColor4f(0, 0.5f, 1, 1);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    drawQuad(0, 0.2f, 0.2f);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    drawQuad(1, 2.2f, 0.2f);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
+    drawQuad(0, 1.2f, 2.2f);
+    glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisable(GL_TEXTURE_2D);
+
+    /* 11: Push/Translate/Pop */
+    cell(11);
+    glColor4f(0.3f, 0.9f, 0.9f, 1);
+    glTranslatef(0.2f, 0.2f, 0);
+    drawQuad(0, 0, 0);
+    glPushMatrix();
+    glTranslatef(2, 2, 0);
+    glColor4f(0.9f, 0.9f, 0.3f, 1);
+    drawQuad(1, 0, 0);
+    glPopMatrix();
+    glColor4f(0.9f, 0.3f, 0.3f, 1);
+    drawQuad(0, 0.5f, 0.5f);
+    glLoadIdentity();
+
+    /* 12: Alphatest-Funktion geändert */
+    cell(12);
+    {
+        static const float alphaColors[16] = {1, 1, 1, 0.4f, 1, 1, 1, 0.4f, 1, 1, 1, 0.4f, 1, 1, 1, 0.4f};
+        glEnableClientState(GL_COLOR_ARRAY);
+        glColorPointer(4, GL_FLOAT, 0, alphaColors);
+        glEnable(GL_ALPHA_TEST);
+        glAlphaFunc(GL_GREATER, 0.5f);
+        drawQuad(0, 0.2f, 0.2f);
+        glAlphaFunc(GL_LESS, 0.5f);
+        drawQuad(1, 2.2f, 2.2f);
+        glDisable(GL_ALPHA_TEST);
+        glDisableClientState(GL_COLOR_ARRAY);
+    }
+
+    /* 13: Blending schon an, wieder an, dann aus */
+    cell(13);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1, 1, 1, 0.5f);
+    drawQuad(0, 0.2f, 0.2f);
+    glEnable(GL_BLEND);
+    drawQuad(1, 1.2f, 1.2f);
+    glDisable(GL_BLEND);
+    drawQuad(0, 2.2f, 2.2f);
+
+    /* 14: dieselbe Textur noch einmal, dann eine andere */
+    cell(14);
+    glColor4f(1, 1, 1, 1);
+    glBindTexture(GL_TEXTURE_2D, checker);
+    glEnable(GL_TEXTURE_2D);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+    glTexCoordPointer(2, GL_FLOAT, 0, texA);
+    drawQuad(0, 0.2f, 0.2f);
+    glBindTexture(GL_TEXTURE_2D, checker);
+    drawQuad(1, 2.2f, 0.2f);
+    glBindTexture(GL_TEXTURE_2D, stripes);
+    drawQuad(0, 1.2f, 2.2f);
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    /* 15: Material geändert und zurückgesetzt */
+    cell(15);
+    {
+        const float dir[] = {0, 0, 1, 0}, red[] = {1, 0.2f, 0.2f, 1}, blue[] = {0.2f, 0.3f, 1, 1};
+        glLightfv(GL_LIGHT0, GL_POSITION, dir);
+        glNormal3f(0, 0, 1);
+        glEnable(GL_LIGHTING);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, red);
+        drawQuad(0, 0.2f, 0.2f);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, blue);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, red);
+        drawQuad(1, 2.2f, 0.2f);
+        glMaterialfv(GL_FRONT_AND_BACK, GL_DIFFUSE, blue);
+        drawQuad(0, 1.2f, 2.2f);
+        glDisable(GL_LIGHTING);
+    }
 
     glFinish();
     printf("glGetError %u\n", glGetError());

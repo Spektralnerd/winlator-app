@@ -37,10 +37,12 @@ static bool isDrawRequest(short requestCode) {
 #define STATS_PERIOD_NS 5000000000LL
 
 static uint32_t requestCodeCounts[GLADIO_REPLY_CODE_SLOTS];
+static uint32_t flushCodeCounts[GLADIO_REPLY_CODE_SLOTS]; /* Anfragen, vor denen ein Stapel ausgegeben wurde */
 /* PC-Prüfstand (Datei "trace" im Ablageverzeichnis): die Anfragen eines Bilds protokollieren */
 int gladio_traceRequests = 0;
 
 static const char* shortRequestName(int code) {
+    if (code == GLADIO_REPLY_CODE_SLOTS - 1) return "Zustandswechsel"; /* aufgeschobene Änderungen (deferStateChange) */
     if (code == REQUEST_CODE_SET_CURRENT_RENDER_WINDOW) return "MAKE_CURRENT";
     if (code == REQUEST_CODE_SWAP_DISPLAY_BUFFERS) return "SWAP";
     if (code < REQUEST_CODE_GL_CALL_START) return "DSA";
@@ -93,6 +95,7 @@ static void printStats(GLContext* context, int64_t now) {
     /* welche Anfragen auf eine Antwort warten lassen (der Client steht so lange) und welche am häufigsten kommen */
     printTopRequestCodes("Antworten je Bild außer SWAP", gladio_statsReplyCodes, 4, frames);
     printTopRequestCodes("häufigste Anfragen je Bild", requestCodeCounts, 8, frames);
+    printTopRequestCodes("Stapel ausgegeben vor", flushCodeCounts, 6, frames);
 }
 
 static void resetStats(GLContext* context, int64_t now) {
@@ -105,6 +108,7 @@ static void resetStats(GLContext* context, int64_t now) {
     st->batchAtStart = gladio_batchStats;
     memset(gladio_statsReplyCodes, 0, sizeof(gladio_statsReplyCodes));
     memset(requestCodeCounts, 0, sizeof(requestCodeCounts));
+    memset(flushCodeCounts, 0, sizeof(flushCodeCounts));
 }
 
 pthread_mutex_t glx_context_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -347,6 +351,170 @@ static void printLastRequests(GLContext* context) {
     if (pos > 0) println("gladio: letzte Anfragen (%u insgesamt): %s", lr->count, line);
 }
 
+/*
+ * ES 2.0: Zustandsänderungen, die nur Server-Zustand betreffen (Matrizen, Licht, Material,
+ * Texturumgebung, Alphatest, Schalter des festen Funktionsmodells), geben einen wartenden Stapel
+ * nicht sofort aus. Der alte Inhalt der betroffenen Bereiche wird gemerkt; erst vor dem nächsten
+ * Zeichenaufruf (oder einer Anfrage, die ausgeben muss) wird verglichen. Ist alles wieder wie
+ * vorher – Worms 3D setzt vor fast jedem Objekt Matrix, Licht und Material neu, oft auf dieselben
+ * Werte –, läuft der Stapel weiter; sonst wird er mit dem alten Zustand ausgegeben.
+ * Änderungen, die gleich den Treiber erreichen (z. B. glEnable(GL_BLEND)), sind nur dann
+ * aufschiebbar, wenn sie nichts ändern.
+ */
+#define DEFERRED_REGIONS 16
+#define DEFERRED_REGION_MAX 128
+typedef struct DeferredRegion {
+    void* addr;
+    int size;
+    uint8_t old[DEFERRED_REGION_MAX];
+} DeferredRegion;
+static thread_local struct {
+    DeferredRegion regions[DEFERRED_REGIONS];
+    int count;
+} deferred;
+
+static bool deferRegion(void* addr, int size) {
+    for (int i = 0; i < deferred.count; i++) {
+        if (deferred.regions[i].addr == addr) return true;
+    }
+    if (deferred.count >= DEFERRED_REGIONS || size > DEFERRED_REGION_MAX) return false;
+    DeferredRegion* region = &deferred.regions[deferred.count++];
+    region->addr = addr;
+    region->size = size;
+    memcpy(region->old, addr, size);
+    return true;
+}
+
+/* Gemerkte Änderungen auflösen: Stapel mit dem alten Zustand ausgeben, falls sich etwas geändert hat (true) */
+static bool resolveDeferredState(GLRenderer* renderer) {
+    if (deferred.count == 0) return false;
+    bool changed = false;
+    for (int i = 0; i < deferred.count && !changed; i++) {
+        changed = memcmp(deferred.regions[i].addr, deferred.regions[i].old, deferred.regions[i].size) != 0;
+    }
+    if (changed && renderer && !ArrayDeque_isEmpty(&renderer->meshes)) {
+        uint8_t tmp[DEFERRED_REGION_MAX];
+        for (int i = 0; i < deferred.count; i++) {
+            DeferredRegion* region = &deferred.regions[i];
+            memcpy(tmp, region->addr, region->size);
+            memcpy(region->addr, region->old, region->size);
+            memcpy(region->old, tmp, region->size);
+        }
+        GLRenderer_drawImmediate(renderer);
+        for (int i = 0; i < deferred.count; i++) {
+            memcpy(deferred.regions[i].addr, deferred.regions[i].old, deferred.regions[i].size);
+        }
+        deferred.count = 0;
+        return true;
+    }
+    deferred.count = 0;
+    return false;
+}
+
+/* Vor einer Anfrage, die sonst den Stapel ausgeben würde: aufschiebbar? (Bereiche werden dabei gemerkt) */
+static bool deferStateChange(GLContext* context, GLRenderer* renderer, short requestCode) {
+    const int* args = (const int*)context->inputBuffer.buffer;
+    int size = context->inputBuffer.size;
+    switch (requestCode) {
+        case REQUEST_CODE_GL_MATRIX_MODE:
+            /* wählt nur den Stapel für folgende Anfragen */
+            return true;
+        case REQUEST_CODE_GL_LOAD_IDENTITY:
+        case REQUEST_CODE_GL_LOAD_MATRIXF:
+        case REQUEST_CODE_GL_LOAD_TRANSPOSE_MATRIXF:
+        case REQUEST_CODE_GL_MULT_MATRIXF:
+        case REQUEST_CODE_GL_MULT_TRANSPOSE_MATRIXF:
+        case REQUEST_CODE_GL_TRANSLATEF:
+        case REQUEST_CODE_GL_ROTATEF:
+        case REQUEST_CODE_GL_SCALEF:
+        case REQUEST_CODE_GL_ORTHO:
+        case REQUEST_CODE_GL_FRUSTUM:
+            if (renderer->matrixIndex > TEXTURE_MATRIX_INDEX) return false;
+            return deferRegion(GLRenderer_getCurrentMatrix(renderer), MAT4_SIZE);
+        case REQUEST_CODE_GL_LIGHTF:
+        case REQUEST_CODE_GL_LIGHTFV: {
+            if (size < 4) return false;
+            int index = args[0] - GL_LIGHT0;
+            if (index < 0) return false;
+            return index >= MAX_LIGHTS || deferRegion(&renderer->lights[index], sizeof(GLLight));
+        }
+        case REQUEST_CODE_GL_MATERIALF:
+        case REQUEST_CODE_GL_MATERIALFV:
+            return renderer->materials && deferRegion(renderer->materials, 2 * sizeof(GLMaterial));
+        case REQUEST_CODE_GL_TEX_ENVF:
+        case REQUEST_CODE_GL_TEX_ENVFV: {
+            if (size < 8 || args[0] != GL_TEXTURE_ENV) return false;
+            switch (args[1]) {
+                case GL_TEXTURE_ENV_MODE: case GL_TEXTURE_ENV_COLOR: case GL_RGB_SCALE: case GL_ALPHA_SCALE:
+                case GL_COMBINE_RGB: case GL_COMBINE_ALPHA: case GL_SOURCE0_RGB: case GL_SOURCE1_RGB:
+                case GL_SOURCE0_ALPHA: case GL_SOURCE1_ALPHA: case GL_OPERAND0_RGB: case GL_OPERAND1_RGB:
+                case GL_OPERAND0_ALPHA: case GL_OPERAND1_ALPHA:
+                    return deferRegion(&renderer->state.texEnv[renderer->clientState.activeTexture], sizeof(TexEnv));
+                default:
+                    return false;
+            }
+        }
+        case REQUEST_CODE_GL_ALPHA_FUNC:
+            return deferRegion(&renderer->state.alphaTest, sizeof(renderer->state.alphaTest));
+        case REQUEST_CODE_GL_ENABLE:
+        case REQUEST_CODE_GL_DISABLE: {
+            if (size < 4) return false;
+            GLenum cap = args[0];
+            bool state = requestCode == REQUEST_CODE_GL_ENABLE;
+            switch (cap) {
+                case GL_LIGHTING: return deferRegion(&renderer->state.lighting, sizeof(renderer->state.lighting));
+                case GL_COLOR_MATERIAL: return deferRegion(&renderer->state.colorMaterial.enabled, sizeof(bool));
+                case GL_ALPHA_TEST: return deferRegion(&renderer->state.alphaTest.enabled, sizeof(bool));
+                case GL_FOG: return deferRegion(&renderer->state.fog.enabled, sizeof(bool));
+                case GL_TEXTURE_1D:
+                case GL_TEXTURE_2D:
+                case GL_TEXTURE_3D:
+                case GL_TEXTURE_CUBE_MAP:
+                case GL_TEXTURE_RECTANGLE:
+                    return deferRegion(&renderer->state.enabledTextures[renderer->clientState.activeTexture], sizeof(uint8_t));
+                case GL_LINE_SMOOTH:
+                case GL_LINE_STIPPLE:
+                case GL_POLYGON_STIPPLE:
+                case GL_POLYGON_OFFSET_LINE:
+                case GL_VERTEX_PROGRAM_POINT_SIZE:
+                case GL_NORMALIZE:
+                case GL_TEXTURE_CUBE_MAP_SEAMLESS:
+                case GL_DEPTH_CLAMP:
+                    return true; /* setCapabilityState ignoriert sie */
+                case GL_POINT_SMOOTH:
+                case GL_POINT_SPRITE:
+                case GL_VERTEX_PROGRAM_ARB:
+                case GL_FRAGMENT_PROGRAM_ARB:
+                case GL_VERTEX_PROGRAM_TWO_SIDE:
+                case GL_PRIMITIVE_RESTART:
+                    return false;
+                default:
+                    if (cap >= GL_LIGHT0 && cap <= GL_LIGHT7) {
+                        int index = cap - GL_LIGHT0;
+                        return index >= MAX_LIGHTS || deferRegion(&renderer->lights[index], sizeof(GLLight));
+                    }
+                    if ((cap >= GL_TEXTURE_GEN_S && cap <= GL_TEXTURE_GEN_Q) || (cap >= GL_CLIP_PLANE0 && cap <= GL_CLIP_PLANE5)) return true;
+                    if (!GLES_isCapabilitySupported(cap)) return true;
+                    /* Treiberzustand: nur aufschiebbar, wenn er schon so ist */
+                    return (glIsEnabled(cap) != GL_FALSE) == state;
+            }
+        }
+        case REQUEST_CODE_GL_BIND_TEXTURE: {
+            /* dieselbe Textur noch einmal gebunden: nichts zu tun */
+            if (size < 8 || args[0] != GL_TEXTURE_2D) return false;
+            GLTexture* bound = renderer->clientState.texture[renderer->clientState.activeTexture][indexOfGLTarget(GL_TEXTURE_2D)];
+            if (args[1] == 0) return bound == NULL;
+            if (!bound || bound->type != GL_TEXTURE_2D || bound->normalizeCoords) return false;
+            GLX_CONTEXT_LOCK();
+            GLTexture* texture = SparseArray_get(renderer->clientState.textures, (GLuint)args[1]);
+            GLX_CONTEXT_UNLOCK();
+            return texture == bound;
+        }
+        default:
+            return false;
+    }
+}
+
 static void* requestHandlerThread(void* param) {
     GLContext* context = param;
     loadJMethods(&context->jmethods);
@@ -380,12 +548,36 @@ static void* requestHandlerThread(void* param) {
         bool drawing = isDrawRequest(requestCode);
         bool flushBatch = isCanDrawImmediate(requestCode) && currentRenderer && !ArrayDeque_isEmpty(&currentRenderer->meshes);
         int64_t drawStart = (drawing || flushBatch) ? nowNs() : 0;
-        if (flushBatch) {
-            GLRenderer_drawImmediate(currentRenderer);
-            if (!drawing) {
-                context->stats.drawNs += nowNs() - drawStart;
-                drawStart = 0;
+        if (GLES2 && currentRenderer) {
+            /* gemerkte Zustandsänderungen (deferStateChange): aufschieben, auflösen oder ausgeben */
+            if (flushBatch && deferStateChange(context, currentRenderer, requestCode)) {
+                flushBatch = false;
+                drawStart = drawing ? drawStart : 0;
             }
+            else if (drawing || flushBatch || deferred.count > 0) {
+                if (deferred.count > 0 && (drawing || isCanDrawImmediate(requestCode))) {
+                    if (!drawStart) drawStart = nowNs();
+                    if (resolveDeferredState(currentRenderer)) flushCodeCounts[GLADIO_REPLY_CODE_SLOTS - 1]++;
+                }
+                flushBatch = isCanDrawImmediate(requestCode) && !ArrayDeque_isEmpty(&currentRenderer->meshes);
+                if (flushBatch && requestCode == REQUEST_CODE_GL_PUSH_MATRIX) {
+                    /* Push ändert die oberste Matrix nicht */
+                    flushBatch = false;
+                }
+                else if (flushBatch && requestCode == REQUEST_CODE_GL_POP_MATRIX && currentRenderer->matrixIndex <= TEXTURE_MATRIX_INDEX) {
+                    /* Pop auf eine gleiche Matrix ändert nichts */
+                    ArrayList* stack = &currentRenderer->matrixStack[currentRenderer->matrixIndex];
+                    if (stack->size > 1 && memcmp(stack->elements[stack->size-1], stack->elements[stack->size-2], MAT4_SIZE) == 0) flushBatch = false;
+                }
+            }
+        }
+        if (flushBatch) {
+            flushCodeCounts[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS]++;
+            GLRenderer_drawImmediate(currentRenderer);
+        }
+        if (drawStart && !drawing) {
+            context->stats.drawNs += nowNs() - drawStart;
+            drawStart = 0;
         }
 
         switch (requestCode) {
