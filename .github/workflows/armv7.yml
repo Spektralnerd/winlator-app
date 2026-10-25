@@ -224,7 +224,7 @@ jobs:
           mkdir -p out/gladio-arm64
           sudo apt-get update -qq > /dev/null
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu ninja-build > /dev/null
-          bash armv7/scripts/build-gladio-arm64.sh out/gladio-arm64/gladio-1.1.tzst 2>&1 | tee out/gladio-arm64.log
+          bash armv7/scripts/gladio-client-arm64.sh out/gladio-arm64/gladio-1.1.tzst 2>&1 | tee out/gladio-arm64.log
           # ersetzt den Client des Originals für armv7hybrid und arm64; die Kennung sorgt dafür,
           # dass ein neuer Client auch bei gleicher Versionsnummer entpackt wird
           cp out/gladio-arm64/gladio-1.1.tzst out/gladio-arm64/gladio-1.1.id app/src/main/assets/graphics_driver/

@@ -5,7 +5,7 @@
 # Client, ein Bild Vorlauf. Gebaut mit aarch64-linux-gnu-gcc von Ubuntu 24.04 (glibc 2.39, wie die
 # Root-FS des Originals).
 #
-#   build-gladio-arm64.sh ZIEL.tzst      Paket wie graphics_driver/gladio-*.tzst des Originals
+#   gladio-client-arm64.sh ZIEL.tzst      Paket wie graphics_driver/gladio-*.tzst des Originals
 #                                        (./usr/lib/libGL.so.1.7.0); daneben ZIEL ohne .tzst + .id
 #                                        mit der Prüfsumme (XServerDisplayActivity entpackt den
 #                                        Client neu, wenn sie sich ändert)

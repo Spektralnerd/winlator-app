@@ -260,7 +260,7 @@ Festfunktions-Beleuchtung (`fftest`), die Zeichenstapel mit verrutschten oder fa
 (`batchtest`, vorher auch auf ES 3 sechs von acht Fällen falsch) samt aufgeschobenem
 Zustandsvergleich und Einheitenwechseln ohne Stapelgrenze, `glGetIntegerv(GL_MATRIX_MODE)`. Den
 64-Bit-Client baut die CI mit denselben Anpassungen wie den armhf-Client
-(`scripts/build-gladio-arm64.sh`, aarch64-gcc von Ubuntu 24.04, glibc 2.39 wie die Root-FS des
+(`scripts/gladio-client-arm64.sh`, aarch64-gcc von Ubuntu 24.04, glibc 2.39 wie die Root-FS des
 Originals) und ersetzt damit `graphics_driver/gladio-1.1.tzst`; daneben liegt eine Kennung
 (`gladio-1.1.id`), damit ein neuer Client auch bei gleicher Versionsnummer entpackt wird
 (`XServerDisplayActivity.extractGraphicsDriverFiles`). Die CI veröffentlicht das 64-Bit-APK als
