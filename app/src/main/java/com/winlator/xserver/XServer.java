@@ -1,5 +1,10 @@
 package com.winlator.xserver;
 
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
+
+import com.winlator.BuildConfig;
 import com.winlator.XServerDisplayActivity;
 import com.winlator.contentdialog.DebugDialog;
 import com.winlator.core.CursorLocker;
@@ -145,19 +150,86 @@ public class XServer {
         return null;
     }
 
+    /*
+     * 32-Bit-Variante: Mausbewegungen auf höchstens ~60 Ereignisse je Sekunde zusammenfassen. Jedes
+     * MotionNotify/RawMotion kostet unter Box86 mehrere Umläufe zum wineserver (alle emuliert); bei
+     * 100+ Ereignissen je Sekunde wurde das Spiel im Menü spürbar langsamer (Note 8.0, Worms 3D).
+     */
+    private static final boolean COALESCE_POINTER_MOVES = BuildConfig.X86_ONLY;
+    private static final long POINTER_MOVE_INTERVAL_MS = 16;
+    private final Object pointerMoveLock = new Object();
+    private final Handler pointerMoveHandler = new Handler(Looper.getMainLooper());
+    private long lastPointerMoveTime;
+    private boolean pointerMoveScheduled;
+    private boolean pendingAbsoluteMove;
+    private int pendingX, pendingY, pendingDx, pendingDy;
+
     public void injectPointerMove(int x, int y) {
+        if (COALESCE_POINTER_MOVES) {
+            synchronized (pointerMoveLock) {
+                pendingAbsoluteMove = true;
+                pendingX = x;
+                pendingY = y;
+                pendingDx = pendingDy = 0;
+            }
+            schedulePointerMove();
+            return;
+        }
         try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
             pointer.setPosition(x, y);
         }
     }
 
     public void injectPointerMoveDelta(int dx, int dy) {
+        if (COALESCE_POINTER_MOVES) {
+            synchronized (pointerMoveLock) {
+                pendingDx += dx;
+                pendingDy += dy;
+            }
+            schedulePointerMove();
+            return;
+        }
         try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
             pointer.setPosition(pointer.getX() + dx, pointer.getY() + dy);
             if (cursorLocker == null) pointer.clampPosition();
 
             XInputExtension xInputExtension = getExtension(XInputExtension.class);
             if (xInputExtension != null) xInputExtension.sendRawMotion(dx, dy);
+        }
+    }
+
+    private void schedulePointerMove() {
+        long delay;
+        synchronized (pointerMoveLock) {
+            if (pointerMoveScheduled) return;
+            delay = lastPointerMoveTime + POINTER_MOVE_INTERVAL_MS - SystemClock.uptimeMillis();
+            if (delay > 0) pointerMoveScheduled = true;
+        }
+        if (delay > 0) pointerMoveHandler.postDelayed(this::flushPointerMove, delay);
+        else flushPointerMove();
+    }
+
+    private void flushPointerMove() {
+        boolean absolute;
+        int x, y, dx, dy;
+        synchronized (pointerMoveLock) {
+            pointerMoveScheduled = false;
+            lastPointerMoveTime = SystemClock.uptimeMillis();
+            absolute = pendingAbsoluteMove;
+            x = pendingX; y = pendingY; dx = pendingDx; dy = pendingDy;
+            pendingAbsoluteMove = false;
+            pendingDx = pendingDy = 0;
+        }
+        if (!absolute && dx == 0 && dy == 0) return;
+        try (XLock lock = lock(Lockable.WINDOW_MANAGER, Lockable.INPUT_DEVICE)) {
+            if (absolute) pointer.setPosition(x, y);
+            if (dx != 0 || dy != 0) {
+                pointer.setPosition(pointer.getX() + dx, pointer.getY() + dy);
+                if (cursorLocker == null) pointer.clampPosition();
+
+                XInputExtension xInputExtension = getExtension(XInputExtension.class);
+                if (xInputExtension != null) xInputExtension.sendRawMotion(dx, dy);
+            }
         }
     }
 
