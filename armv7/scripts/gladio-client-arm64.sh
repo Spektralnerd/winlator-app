@@ -32,8 +32,16 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 set(CMAKE_C_COMPILER $CC)
 EOF
+# X11-Header (architekturneutral): der Cross-Compiler sucht nicht in /usr/include, also die des
+# Bauhosts (libx11-dev) über einen eigenen Ordner einbinden
+XINC=""
+if ! echo '#include <X11/Xlib.h>' | $CC -E -x c - >/dev/null 2>&1; then
+    [ -f /usr/include/X11/Xlib.h ] || { echo "X11-Header fehlen (libx11-dev)"; exit 1; }
+    mkdir -p "$WORK/x11inc" && ln -sfn /usr/include/X11 "$WORK/x11inc/X11"
+    XINC="-idirafter $WORK/x11inc"
+fi
 cmake -S "$SRC" -B "$WORK/build" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$WORK/aarch64.cmake" \
-    -DCMAKE_BUILD_TYPE=Release >/dev/null
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS="$XINC" >/dev/null
 ninja -C "$WORK/build"
 
 PKG="$WORK/pkg"
