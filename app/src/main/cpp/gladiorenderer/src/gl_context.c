@@ -960,7 +960,9 @@ void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx) {
 static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawCount, bool addIndices) {
     GLClientState* clientState = &currentRenderer->clientState;
     GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[arrayIdx];
-    if (vertexAttrib->type != GL_FLOAT || vertexAttrib->size < 1 || vertexAttrib->size > 4 || vertexAttrib->stride <= 0) return false;
+    /* Farben als 8-Bit-Werte (D3D-artig, z. B. Worms 3D) ebenfalls im Block */
+    bool ubyteColor = arrayIdx == COLOR_ARRAY_INDEX && vertexAttrib->type == GL_UNSIGNED_BYTE && (vertexAttrib->size == 3 || vertexAttrib->size == 4);
+    if ((vertexAttrib->type != GL_FLOAT && !ubyteColor) || vertexAttrib->size < 1 || vertexAttrib->size > 4 || vertexAttrib->stride <= 0) return false;
 
     Geometry* geometry = &currentRenderer->geometry;
     ArrayBuffer* dst;
@@ -982,7 +984,18 @@ static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawC
     int targetSize = dst->size + drawCount * dstComps * (int)sizeof(float);
     ENSURE_ARRAY_CAPACITY(targetSize, dst->capacity, dst->buffer, 1);
     float* out = (float*)(dst->buffer + dst->size);
-    for (int j = 0; j < drawCount; j++, out += dstComps) {
+    if (ubyteColor) {
+        const float scale = 1.0f / 255.0f;
+        bool hasAlpha = vertexAttrib->size == 4;
+        for (int j = 0; j < drawCount; j++, out += 4) {
+            const uint8_t* c = (const uint8_t*)(src + j * stride);
+            out[0] = c[0] * scale;
+            out[1] = c[1] * scale;
+            out[2] = c[2] * scale;
+            out[3] = hasAlpha ? c[3] * scale : 1.0f;
+        }
+    }
+    else for (int j = 0; j < drawCount; j++, out += dstComps) {
         out[0] = 0.0f;
         out[1] = 0.0f;
         out[2] = dstComps == 3 ? 1.0f : 0.0f;
