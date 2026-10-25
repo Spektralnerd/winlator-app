@@ -178,7 +178,7 @@ static void updateVertexBuffers(GLRenderer* renderer, int* attribLocations) {
     if (attribLocations[NORMAL_ARRAY_INDEX] != -1 && geometry->normals.size > 0) {
         bindVertexBuffer(renderer, renderer->bufferIds[3], attribLocations[NORMAL_ARRAY_INDEX], 3, geometry->normals.size, geometry->normals.buffer);
     }
-    else if (GLES2 && attribLocations[NORMAL_ARRAY_INDEX] != -1) {
+    else if (attribLocations[NORMAL_ARRAY_INDEX] != -1) {
         /* feste Normale für den ganzen Stapel (glNormal ohne Normalen-Array) */
         GLRenderer_disableVertexAttribute(renderer, attribLocations[NORMAL_ARRAY_INDEX]);
         glVertexAttrib3fv(attribLocations[NORMAL_ARRAY_INDEX], renderer->state.normal);
@@ -190,7 +190,7 @@ static void updateVertexBuffers(GLRenderer* renderer, int* attribLocations) {
             if (texture && texture->normalizeCoords) normalizeTexCoords(texture, &geometry->texCoords[i]);
             bindVertexBuffer(renderer, renderer->bufferIds[j+1], attribLocations[j], 4, geometry->texCoords[i].size, geometry->texCoords[i].buffer);
         }
-        else if (GLES2 && attribLocations[j] != -1) {
+        else if (attribLocations[j] != -1) {
             /* feste Texturkoordinate für den ganzen Stapel (glTexCoord/glMultiTexCoord ohne Array) */
             GLRenderer_disableVertexAttribute(renderer, attribLocations[j]);
             float texCoord[4];
@@ -345,12 +345,12 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         if (material) {
             if (drawMode == GL_POINTS) {
                 ShaderMaterial_updatePointUniforms(material, renderer);
-                /* ES 2.0: der Kreis für geglättete Punkte gehört auf Einheit 0 (gd_PointSprite), auch wenn
+                /* Der Kreis für geglättete Punkte gehört auf Einheit 0 (gd_PointSprite), auch wenn
                  * beim Ausgeben eine andere Einheit aktiv ist (glActiveTexture gibt den Stapel nicht aus) */
                 uint8_t activeTexture = renderer->clientState.activeTexture;
-                if (GLES2 && activeTexture != 0) glActiveTexture(GL_TEXTURE0);
+                if (activeTexture != 0) glActiveTexture(GL_TEXTURE0);
                 updatePointSmoothTexture(renderer);
-                if (GLES2 && activeTexture != 0) glActiveTexture(GL_TEXTURE0 + activeTexture);
+                if (activeTexture != 0) glActiveTexture(GL_TEXTURE0 + activeTexture);
             }
             else ShaderMaterial_disablePointSize(material);
         }
@@ -362,17 +362,11 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         MEMFREE(mesh);
 
         if (drawMode == GL_POINTS && renderer->state.point.smooth && !renderer->state.point.sprite) {
-            if (GLES2) {
-                uint8_t activeTexture = renderer->clientState.activeTexture;
-                GLTexture* texture = renderer->clientState.texture[0][indexOfGLTarget(GL_TEXTURE_2D)];
-                if (activeTexture != 0) glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);
-                if (activeTexture != 0) glActiveTexture(GL_TEXTURE0 + activeTexture);
-            }
-            else {
-                GLTexture* texture = GLTexture_getBound(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);
-            }
+            uint8_t activeTexture = renderer->clientState.activeTexture;
+            GLTexture* texture = renderer->clientState.texture[0][indexOfGLTarget(GL_TEXTURE_2D)];
+            if (activeTexture != 0) glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);
+            if (activeTexture != 0) glActiveTexture(GL_TEXTURE0 + activeTexture);
         }
     }
 
@@ -464,7 +458,7 @@ void GLRenderer_popMatrix(GLRenderer* renderer) {
 }
 
 /*
- * ES 2.0: Die Attribute des Zeichenstapels (Farbe, Normale, Texturkoordinaten je Einheit) bleiben
+ * Die Attribute des Zeichenstapels (Farbe, Normale, Texturkoordinaten je Einheit) bleiben
  * auf die Vertices ausgerichtet. Jedes ist entweder leer – dann gilt für alle Vertices des Stapels
  * der aktuelle Wert (glColor, glNormal, glTexCoord), gesetzt beim Ausgeben – oder hat genau einen
  * Eintrag je Vertex. Ändert sich der aktuelle Wert mitten im Stapel oder bringt ein Zeichenaufruf
@@ -509,12 +503,12 @@ static void padBatchAttrib(GLRenderer* renderer, int arrayIdx, int vertexCount) 
     buffer->size = targetSize;
 }
 
-/* glColor/glNormal/glTexCoord/glMultiTexCoord: aktuellen Wert setzen, ES 2.0 mit Ausrichtung (s. o.) */
+/* glColor/glNormal/glTexCoord/glMultiTexCoord: aktuellen Wert setzen, mit Ausrichtung (s. o.) */
 void GLRenderer_setCurrentAttrib(GLRenderer* renderer, int arrayIdx, const float* newValue) {
     int comps;
     float* value;
     ArrayBuffer* buffer = batchAttrib(renderer, arrayIdx, &comps, &value);
-    if (GLES2 && buffer->size == 0) {
+    if (buffer->size == 0) {
         int vertexCount = batchVertexCount(renderer);
         if (vertexCount > 0 && memcmp(value, newValue, comps * sizeof(float)) != 0) padBatchAttrib(renderer, arrayIdx, vertexCount);
     }
@@ -523,7 +517,7 @@ void GLRenderer_setCurrentAttrib(GLRenderer* renderer, int arrayIdx, const float
 }
 
 /*
- * ES 2.0, vor dem Einlesen eines Zeichenaufrufs mit Client-Arrays (addedVertices neue Vertices):
+ * Vor dem Einlesen eines Zeichenaufrufs mit Client-Arrays (addedVertices neue Vertices):
  * Attribute mit Array bekommen für die bisherigen Vertices den aktuellen Wert, Attribute ohne
  * Array, die im Stapel schon je Vertex geführt werden, für die neuen.
  */
@@ -542,7 +536,7 @@ void GLRenderer_prepareBatchArrays(GLRenderer* renderer, int addedVertices) {
     }
 }
 
-/* ES 2.0: Stapel vorher ausgeben, wenn addedVertices weitere Vertices nicht mehr in 16-Bit-Indizes passen */
+/* Stapel vorher ausgeben, wenn addedVertices weitere Vertices nicht mehr in 16-Bit-Indizes passen */
 void GLRenderer_reserveBatchVertices(GLRenderer* renderer, int addedVertices) {
     if (renderer->geometry.vertices.position + addedVertices > 65535 && !ArrayDeque_isEmpty(&renderer->meshes) && !renderer->activeMesh) {
         GLRenderer_drawImmediate(renderer);
@@ -551,7 +545,7 @@ void GLRenderer_reserveBatchVertices(GLRenderer* renderer, int addedVertices) {
 
 void GLRenderer_addVertex(GLRenderer* renderer, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
     if (!renderer->activeMesh) return;
-    if (GLES2) {
+    {
         /* Attribute, die im Stapel je Vertex geführt werden, bekommen den aktuellen Wert */
         int vertexCount = batchVertexCount(renderer);
         for (int arrayIdx = BATCH_ATTRIB_FIRST; arrayIdx < BATCH_ATTRIB_END; arrayIdx++) {

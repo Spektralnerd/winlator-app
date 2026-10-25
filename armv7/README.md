@@ -1,7 +1,8 @@
 # Winlator für 32-Bit-ARM (armv7)
 
 Dieser Zweig (`armv7`) baut Winlator 11.2 zusätzlich für Geräte mit 32-Bit-Android
-(`armeabi-v7a`). Das Original (arm64) bleibt unverändert baubar.
+(`armeabi-v7a`). Das Original (arm64) bleibt baubar; es bekommt die Fehlerbehebungen an Gladio
+mit, die auch 64 Bit betreffen (siehe „Gladio auf 64 Bit“ weiter unten), sonst ist es unverändert.
 
 ## Varianten
 
@@ -211,12 +212,13 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   1,3 MB je Bild). Der Client der Root-FS (`patch-gladio-client.py`) schickt jetzt den
   Vertexbereich einmal und die Indizes dazu, gekennzeichnet mit `GLADIO_DRAW_RANGED` im Modus;
   der Server baut daraus den Stapel mit den echten Indizes (`readRangedLegacyArrays`). Auf dem
-  PC: 417 statt 1319 KB je Bild. Der arm64-Client kennt das Format nicht und schickt wie bisher.
+  PC: 417 statt 1319 KB je Bild. Der Client des Original-Winlator kennt das Format nicht und
+  schickt wie bisher; der Server versteht beides.
 - Zeichenstapel: Der Server fasst aufeinanderfolgende Zeichenaufrufe zu einem Stapel zusammen,
   solange dazwischen nur Anfragen kommen, die an der Zeichnung nichts ändern. Im Match von Worms 3D
   lag vor jedem Zeichenaufruf ein Durchschalten aller acht Textureinheiten
   (glActiveTexture/glClientActiveTexture), das den Stapel jedes Mal ausgab: ~500 Treiberaufrufe je
-  Bild. Im ES-2.0-Pfad zählen diese Wechsel nicht mehr als Grenze (PC: ~150 statt ~430 Stapel).
+  Bild. Diese Wechsel zählen nicht mehr als Grenze (PC: ~150 statt ~430 Stapel).
   Vorher nötig: Feste Farbe/Normale/Texturkoordinate zwischen zusammengefassten Aufrufen und
   Aufrufe mit und ohne Array im selben Stapel wurden falsch gezeichnet (`batchtest.c`, sechs von
   acht Fällen); die Attribute bleiben jetzt auf die Vertices ausgerichtet (`gl_renderer.c`).
@@ -251,6 +253,21 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   `xserver: … Bilder zusammengesetzt …, Mausbewegungen … (davon … ohne Neuzeichnen)`.
 - Beim Ende einer Client-Verbindung (auch nach einem Absturz des Programms) stehen die letzten
   64 GL-Anfragen im Protokoll (`gladio: letzte Anfragen …`).
+
+**Gladio auf 64 Bit (`arm64`, `armv7hybrid`):** Mehrere der oben beschriebenen Fehler stecken im
+Original-Gladio und betreffen auch 64-Bit-Geräte (ES-3-Pfad). Behoben sind dort jetzt: die
+Festfunktions-Beleuchtung (`fftest`), die Zeichenstapel mit verrutschten oder falschen Attributen
+(`batchtest`, vorher auch auf ES 3 sechs von acht Fällen falsch) samt aufgeschobenem
+Zustandsvergleich und Einheitenwechseln ohne Stapelgrenze, `glGetIntegerv(GL_MATRIX_MODE)`. Den
+64-Bit-Client baut die CI mit denselben Anpassungen wie den armhf-Client
+(`scripts/build-gladio-arm64.sh`, aarch64-gcc von Ubuntu 24.04, glibc 2.39 wie die Root-FS des
+Originals) und ersetzt damit `graphics_driver/gladio-1.1.tzst`; daneben liegt eine Kennung
+(`gladio-1.1.id`), damit ein neuer Client auch bei gleicher Versionsnummer entpackt wird
+(`XServerDisplayActivity.extractGraphicsDriverFiles`). Die CI veröffentlicht das 64-Bit-APK als
+`Winlator-11.2-arm64.apk` im Release `armv7-apk`; es ist mit demselben festen Schlüssel signiert
+wie die 32-Bit-APKs (ein installiertes Original-Winlator muss dafür vorher entfernt werden).
+Was nur die Mali-400 braucht (spezialisierte ES-2.0-Shader, Bildübergabe ohne Kopie, kein
+`glFlush` je Stapel, Client-Arrays statt Pufferobjekte), bleibt auf den ES-2.0-Pfad beschränkt.
 
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit

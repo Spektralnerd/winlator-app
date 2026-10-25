@@ -32,7 +32,7 @@ void gd_handle_glAlphaFunc(GLContext* context) {
 void gd_handle_glArrayElement(GLContext* context) {
     GLint i = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (GLES2) {
+    {
         /* Stapel ausgerichtet halten (GLRenderer_prepareBatchArrays): erst die übrigen Arrays, dann der Vertex */
         GLVertexAttrib* attribs = currentRenderer->clientState.vao->attribs;
         if (!attribs[POSITION_ARRAY_INDEX].state) return;

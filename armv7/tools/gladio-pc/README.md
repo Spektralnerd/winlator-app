@@ -163,14 +163,14 @@ Kanal und Anteil abweichender Pixel).
   Client-Arrays, aktuelle Farbe/Normale/Texturkoordinate oder glBegin/glEnd kommen. Dabei bekamen
   zwei Aufrufe mit verschiedener fester Farbe beide die letzte, Arrays verrutschten gegeneinander,
   wenn ein Aufruf ein Array mitbrachte und der andere nicht, und feste Normalen/Texturkoordinaten
-  (ohne Array) kamen gar nicht an – sechs von acht Fällen falsch, auf beiden Pfaden. Im
-  ES-2.0-Pfad bleiben die Attribute jetzt auf die Vertices ausgerichtet (`GLRenderer_prepareBatchArrays`
-  in `gl_renderer.c`); alle Fälle sind mit Mesa gleich (höchstens 2/255). Der ES-3-Pfad (arm64)
-  ist unverändert. Danach zählen auch glActiveTexture/glClientActiveTexture im ES-2.0-Pfad nicht
-  mehr als Stapelgrenze: Worms 3D (Match) gibt statt ~430 nur noch ~150 Stapel je Bild an den Treiber;
-  mit dem aufgeschobenen Zustandsvergleich (`deferStateChange`) und dem angepassten Client noch
-  ~80 bei ~105 Zeichenaufrufen. Alle 16 Fälle von `batchtest` sind mit Mesa gleich.
-* Matrixabfragen (`matrixtest`): Der armv7-Client beantwortet sie aus mitgeführten Stapeln; alle
+  (ohne Array) kamen gar nicht an – sechs von acht Fällen falsch, auf beiden Pfaden. Jetzt
+  bleiben die Attribute auf die Vertices ausgerichtet (`GLRenderer_prepareBatchArrays` in
+  `gl_renderer.c`, ES 2 und ES 3); alle Fälle sind mit Mesa gleich (höchstens 2/255). Danach
+  zählen auch glActiveTexture/glClientActiveTexture nicht mehr als Stapelgrenze: Worms 3D (Match)
+  gibt statt ~430 nur noch ~150 Stapel je Bild an den Treiber; mit dem aufgeschobenen
+  Zustandsvergleich (`deferStateChange`) und dem angepassten Client noch ~80 bei ~105
+  Zeichenaufrufen. Alle 16 Fälle von `batchtest` sind auf beiden Pfaden mit Mesa gleich.
+* Matrixabfragen (`matrixtest`): Der angepasste Client beantwortet sie aus mitgeführten Stapeln; alle
   17 Schritte stimmen mit Mesa überein (auch Push über die Grenze von 32 Einträgen hinaus).
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher

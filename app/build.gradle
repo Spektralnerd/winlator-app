@@ -1,7 +1,7 @@
 apply plugin: 'com.android.application'
 
 // Zielarchitektur, wählbar mit -PwinlatorArch=...
-//   arm64        Original: arm64-v8a-App, Box64 + WoW64-Wine (Standard, unverändert)
+//   arm64        Original: arm64-v8a-App, Box64 + WoW64-Wine (Standard; nur Gladio-Korrekturen)
 //   armv7hybrid  armeabi-v7a-App mit dem originalen 64-Bit-Unterbau
 //                (für 32-Bit-Android auf einem 64-Bit-Kernel)
 //   armv7        alles 32 Bit: armeabi-v7a-App, Box86 + i386-Wine, Win32-Präfix
@@ -43,12 +43,12 @@ android {
         buildConfig true
     }
 
-    // Fester Schlüssel für die 32-Bit-Builds aus GitHub Actions, damit sich neue APKs über alte
+    // Fester Schlüssel für die Builds aus GitHub Actions, damit sich neue APKs über alte
     // installieren lassen (sonst erzeugt jeder Bauhost einen eigenen Debug-Schlüssel)
     def armv7Keystore = rootProject.file('armv7/signing/debug.keystore')
     signingConfigs {
         debug {
-            if (appAbi != 'arm64-v8a' && armv7Keystore.isFile()) {
+            if (armv7Keystore.isFile()) {
                 storeFile armv7Keystore
                 storePassword 'android'
                 keyAlias 'androiddebugkey'

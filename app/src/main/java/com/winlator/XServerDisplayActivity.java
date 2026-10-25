@@ -786,6 +786,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
         else cacheId += graphicsDriver[0]+"-"+DefaultVersion.valueOf(graphicsDriver[0]);
         cacheId += "-"+graphicsDriver[1]+"-"+DefaultVersion.valueOf(graphicsDriver[1]);
+        if (graphicsDriver[1].equals(GraphicsDrivers.GLADIO)) {
+            // Selbst gebauter Gladio-Client (CI: graphics_driver/gladio-<Version>.id mit Prüfsumme):
+            // ein neuer Client wird auch ohne neue Versionsnummer entpackt
+            byte[] gladioId = FileUtils.read(this, "graphics_driver/gladio-"+DefaultVersion.GLADIO+".id");
+            if (gladioId != null) cacheId += "-"+new String(gladioId, java.nio.charset.StandardCharsets.UTF_8).trim();
+        }
 
         String currentGraphicsDriver = preferences.getString("current_graphics_driver", "");
         boolean changed = !cacheId.equals(currentGraphicsDriver);

@@ -1,15 +1,16 @@
 name: Winlator armv7
 
-# Baut die 32-Bit-Varianten von Winlator:
+# Baut die 32-Bit-Varianten von Winlator und die 64-Bit-Variante mit den Gladio-Korrekturen:
 #   armv7hybrid  32-Bit-App + originaler 64-Bit-Unterbau (für 32-Bit-Android auf 64-Bit-Kernel)
 #   armv7        alles 32 Bit: Box86 + i386-Wine + armhf-Root-FS
+#   arm64        Original-Variante, Gladio-Client und -Server mit den Korrekturen
 #
 # Ablauf:
 #   plan      prüft, ob sich die Quellen des 32-Bit-Unterbaus geändert haben
 #   armhf     glibc, Box86, alsa-lib, Gladio/Vortek, Mesa, Debian-Bibliotheken, Hilfsprogramme
 #   wine      i386-Wine 10.10 + Win32-Präfix
 #   assemble  Assets zusammenstellen -> Release "armv7-rootfs" (armv7-assets.tar)
-#   apk       beide APKs bauen -> Release "armv7-apk" (Vorabversion)
+#   apk       APKs bauen -> Release "armv7-apk" (Vorabversion)
 #   logs      bei Fehlern die Protokolle -> Release "armv7-ci-logs"
 
 on:
@@ -218,6 +219,16 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash armv7/scripts/fetch-fluidsynth.sh || echo "::warning::FluidSynth nicht geladen, MIDI bleibt stumm"
 
+      - name: Gladio-Client für die 64-Bit-Root-FS (mit den Anpassungen des armhf-Clients)
+        run: |
+          mkdir -p out/gladio-arm64
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu ninja-build > /dev/null
+          bash armv7/scripts/build-gladio-arm64.sh out/gladio-arm64/gladio-1.1.tzst 2>&1 | tee out/gladio-arm64.log
+          # ersetzt den Client des Originals für armv7hybrid und arm64; die Kennung sorgt dafür,
+          # dass ein neuer Client auch bei gleicher Versionsnummer entpackt wird
+          cp out/gladio-arm64/gladio-1.1.tzst out/gladio-arm64/gladio-1.1.id app/src/main/assets/graphics_driver/
+
       - name: APK armv7hybrid
         run: |
           mkdir -p out
@@ -237,6 +248,8 @@ jobs:
           if gh release download armv7-rootfs -R "$GITHUB_REPOSITORY" -p 'armv7-assets.tar' -D /tmp; then
             tar -xf /tmp/armv7-assets.tar -C app/src/armv7/assets
             rm -f /tmp/armv7-assets.tar
+            # Kennung des armhf-Clients (überdeckt die des 64-Bit-Clients aus src/main/assets)
+            sha256sum app/src/armv7/assets/graphics_driver/gladio-1.1.tzst | cut -c1-16 > app/src/armv7/assets/graphics_driver/gladio-1.1.id
             find app/src/armv7/assets -type f | sort | xargs ls -la
             echo "ok=1" >> "$GITHUB_OUTPUT"
           else
@@ -249,10 +262,11 @@ jobs:
           bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=armv7 2>&1 | tee out/gradle-armv7.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7.apk
 
-      - name: Prüfbau arm64 (Original-Variante, wird nicht veröffentlicht)
+      - name: APK arm64 (Original-Variante mit den Gladio-Korrekturen)
         run: |
           bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=arm64 2>&1 | tee out/gradle-arm64.log
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep -c 'lib/arm64-v8a/'
+          cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-arm64.apk
 
       - name: Fehlerbericht
         if: failure()

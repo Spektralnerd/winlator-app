@@ -294,10 +294,10 @@ static void swapDisplayBuffers(GLContext* context, int drawableId) {
 }
 
 static bool isCanDrawImmediate(short requestCode) {
-    /* ES 2.0: der Wechsel der Textureinheit ändert nichts an der Zeichnung des Stapels (Texturzustand,
+    /* Der Wechsel der Textureinheit ändert nichts an der Zeichnung des Stapels (Texturzustand,
      * Matrizen und Arrays je Einheit stehen fest, die Anfragen dazu geben den Stapel aus). Worms 3D
      * schaltet vor jedem Zeichenaufruf alle acht Einheiten durch; ohne das entstand je Aufruf ein Stapel. */
-    if (GLES2 && (requestCode == REQUEST_CODE_GL_ACTIVE_TEXTURE || requestCode == REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE)) return false;
+    if (requestCode == REQUEST_CODE_GL_ACTIVE_TEXTURE || requestCode == REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE) return false;
     return requestCode == REQUEST_CODE_GL_BEGIN ||
            requestCode == REQUEST_CODE_GL_END ||
            requestCode == REQUEST_CODE_GL_DRAW_ARRAYS ||
@@ -352,7 +352,7 @@ static void printLastRequests(GLContext* context) {
 }
 
 /*
- * ES 2.0: Zustandsänderungen, die nur Server-Zustand betreffen (Matrizen, Licht, Material,
+ * Zustandsänderungen, die nur Server-Zustand betreffen (Matrizen, Licht, Material,
  * Texturumgebung, Alphatest, Schalter des festen Funktionsmodells), geben einen wartenden Stapel
  * nicht sofort aus. Der alte Inhalt der betroffenen Bereiche wird gemerkt; erst vor dem nächsten
  * Zeichenaufruf (oder einer Anfrage, die ausgeben muss) wird verglichen. Ist alles wieder wie
@@ -548,7 +548,7 @@ static void* requestHandlerThread(void* param) {
         bool drawing = isDrawRequest(requestCode);
         bool flushBatch = isCanDrawImmediate(requestCode) && currentRenderer && !ArrayDeque_isEmpty(&currentRenderer->meshes);
         int64_t drawStart = (drawing || flushBatch) ? nowNs() : 0;
-        if (GLES2 && currentRenderer) {
+        if (currentRenderer) {
             /* gemerkte Zustandsänderungen (deferStateChange): aufschieben, auflösen oder ausgeben */
             if (flushBatch && deferStateChange(context, currentRenderer, requestCode)) {
                 flushBatch = false;
@@ -915,8 +915,8 @@ void readCommandBuffer(GLContext* context) {
     RingBuffer_read(context->serverRing, context->inputBuffer.buffer + context->inputBuffer.position, bufferSize);
     context->inputBuffer.size += bufferSize;
 
-    /* ES 2.0: 16-Bit-Indizes – höchstens ein Vertex je 6 Byte Befehle (glArrayElement) */
-    if (GLES2) GLRenderer_reserveBatchVertices(currentRenderer, bufferSize / 6);
+    /* 16-Bit-Indizes – höchstens ein Vertex je 6 Byte Befehle (glArrayElement) */
+    GLRenderer_reserveBatchVertices(currentRenderer, bufferSize / 6);
     GLRenderer_beginImmediate(currentRenderer, mode);
     while (ArrayBuffer_available(&context->inputBuffer) > 0) {
         short requestCode = ArrayBuffer_getShort(&context->inputBuffer);
@@ -953,7 +953,7 @@ void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx) {
 }
 
 /*
- * ES 2.0: ein Client-Array aus Floats im Block in den Geometriepuffer umsetzen statt je Element
+ * Ein Client-Array aus Floats (oder 8-Bit-Farben) im Block in den Geometriepuffer umsetzen statt je Element
  * über internalReadVertexArrayElement (bei Worms 3D ~80000 Elemente je Bild; auf dem Cortex-A9
  * spart das mehrere Millisekunden). Liefert false, wenn der Einzelweg nötig bleibt.
  */
@@ -1028,11 +1028,9 @@ static bool readRangedLegacyArrays(GLContext* context, GLenum drawMode, int draw
     if (renderer->geometry.vertices.position + vertexCount > 65535 && !ArrayDeque_isEmpty(&renderer->meshes)) {
         GLRenderer_drawImmediate(renderer);
     }
-    if (GLES2) {
-        /* ohne Vertex-Array entsteht nichts (die übrigen Arrays dürfen den Stapel nicht verschieben) */
-        if (renderer->clientState.vao->attribs[POSITION_ARRAY_INDEX].state != VERTEX_ATTRIB_LEGACY_ENABLED) return true;
-        GLRenderer_prepareBatchArrays(renderer, vertexCount);
-    }
+    /* ohne Vertex-Array entsteht nichts (die übrigen Arrays dürfen den Stapel nicht verschieben) */
+    if (renderer->clientState.vao->attribs[POSITION_ARRAY_INDEX].state != VERTEX_ATTRIB_LEGACY_ENABLED) return true;
+    GLRenderer_prepareBatchArrays(renderer, vertexCount);
 
     GLRenderer_beginImmediate(renderer, drawMode);
     int base = renderer->geometry.vertices.position;
@@ -1075,7 +1073,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
 
     GLClientState* clientState = &currentRenderer->clientState;
     bool skipLegacy = false;
-    if (GLES2) {
+    {
         /* Stapel ausrichten (GLRenderer_prepareBatchArrays); ohne Vertex-Array entsteht nichts */
         bool anyLegacy = false;
         for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
@@ -1128,7 +1126,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
                 meshCreated = true;
             }
 
-            if (GLES2 && readLegacyFloatArrayBulk(context, i, drawCount, true)) continue;
+            if (readLegacyFloatArrayBulk(context, i, drawCount, true)) continue;
             for (j = 0; j < drawCount; j++) {
                 readVertexArrayElement(context, i, -1);
                 if (i == POSITION_ARRAY_INDEX) {
