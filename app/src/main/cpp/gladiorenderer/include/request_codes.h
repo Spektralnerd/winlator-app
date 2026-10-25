@@ -452,7 +452,7 @@
 #define REQUEST_CODE_GL_WAIT_SYNC 528
 #define REQUEST_CODE_GL_WINDOW_POS3F 529
 
-#if DEBUG_MODE
+#if DEBUG_MODE || defined(GL_SERVER) /* Server: Namen fürs Protokoll der letzten Anfragen */
 static const char* requestCodeStrings[] = {
     "glAccum",
     "glActiveTexture",
