@@ -95,6 +95,15 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   Vorder- und Rückseiten, GL_NORMALIZE, Material-Alpha mit Blending, Farb-Array ohne
   GL_COLOR_MATERIAL), mit Client-Arrays und glDrawElements (`./fftest out.ppm`).
   Bauen: `gcc -O1 -o fftest fftest.c -lX11 -lGL -lm`.
+* `batchtest.c` – Zeichenstapel des Servers: je Fall zwei Quadrate mit Anfragen dazwischen, die
+  den Stapel nicht ausgeben (Farb-/Texturkoordinaten-/Normalen-Array an und aus, glColor/glNormal/
+  glMultiTexCoord zwischen zwei Zeichenaufrufen, glBegin/glEnd und Arrays gemischt,
+  Einheitenwechsel wie bei Worms 3D). `./batchtest out.ppm`; Bauen:
+  `gcc -O1 -o batchtest batchtest.c -lX11 -lGL`.
+* `matrixtest.c` – Matrix- und Zustandsabfragen (glGetFloatv/glGetDoublev der drei Matrizen,
+  GL_MATRIX_MODE, GL_DEPTH_WRITEMASK) nach einer Folge von Matrixoperationen, Push/Pop über die
+  Stapelgrenze und glPushAttrib/glPopAttrib; gibt Text aus, mit Mesa vergleichen
+  (`./matrixtest > ref.txt`). Bauen: `gcc -O1 -o matrixtest matrixtest.c -lX11 -lGL`.
 
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
@@ -148,6 +157,17 @@ Kanal und Anteil abweichender Pixel).
   Normalen wurden nicht normiert, alle Lichter hatten Umgebungslicht 0.2 statt 0. Jetzt rechnen
   beide Pfade (allgemeiner Shader für ES 3, spezialisierte Shader für ES 2) wie GL; alle acht
   Fälle von `fftest` sind mit Mesa pixelgleich (Abweichung höchstens 1/255).
+* Zeichenstapel (`batchtest`): Der Server fasst Zeichenaufrufe zusammen, solange dazwischen nur
+  Client-Arrays, aktuelle Farbe/Normale/Texturkoordinate oder glBegin/glEnd kommen. Dabei bekamen
+  zwei Aufrufe mit verschiedener fester Farbe beide die letzte, Arrays verrutschten gegeneinander,
+  wenn ein Aufruf ein Array mitbrachte und der andere nicht, und feste Normalen/Texturkoordinaten
+  (ohne Array) kamen gar nicht an – sechs von acht Fällen falsch, auf beiden Pfaden. Im
+  ES-2.0-Pfad bleiben die Attribute jetzt auf die Vertices ausgerichtet (`GLRenderer_prepareBatchArrays`
+  in `gl_renderer.c`); alle Fälle sind mit Mesa gleich (höchstens 2/255). Der ES-3-Pfad (arm64)
+  ist unverändert. Danach zählen auch glActiveTexture/glClientActiveTexture im ES-2.0-Pfad nicht
+  mehr als Stapelgrenze: Worms 3D (Match) gibt statt ~430 nur noch ~150 Stapel je Bild an den Treiber.
+* Matrixabfragen (`matrixtest`): Der armv7-Client beantwortet sie aus mitgeführten Stapeln; alle
+  17 Schritte stimmen mit Mesa überein (auch Push über die Grenze von 32 Einträgen hinaus).
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
   hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung

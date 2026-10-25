@@ -212,6 +212,22 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   Vertexbereich einmal und die Indizes dazu, gekennzeichnet mit `GLADIO_DRAW_RANGED` im Modus;
   der Server baut daraus den Stapel mit den echten Indizes (`readRangedLegacyArrays`). Auf dem
   PC: 417 statt 1319 KB je Bild. Der arm64-Client kennt das Format nicht und schickt wie bisher.
+- Zeichenstapel: Der Server fasst aufeinanderfolgende Zeichenaufrufe zu einem Stapel zusammen,
+  solange dazwischen nur Anfragen kommen, die an der Zeichnung nichts ändern. Im Match von Worms 3D
+  lag vor jedem Zeichenaufruf ein Durchschalten aller acht Textureinheiten
+  (glActiveTexture/glClientActiveTexture), das den Stapel jedes Mal ausgab: ~500 Treiberaufrufe je
+  Bild. Im ES-2.0-Pfad zählen diese Wechsel nicht mehr als Grenze (PC: ~150 statt ~430 Stapel).
+  Vorher nötig: Feste Farbe/Normale/Texturkoordinate zwischen zusammengefassten Aufrufen und
+  Aufrufe mit und ohne Array im selben Stapel wurden falsch gezeichnet (`batchtest.c`, sechs von
+  acht Fällen); die Attribute bleiben jetzt auf die Vertices ausgerichtet (`gl_renderer.c`).
+- Client (`patch-gladio-client.py`): Einheitenwechsel gehen erst vor der nächsten anderen Anfrage
+  und nur bei Änderung hinaus (Worms 3D: ~8400 von 13000 Anfragen je Bild entfallen);
+  Matrixabfragen (`glGetFloatv(GL_MODELVIEW_MATRIX)`, 29-mal je Bild) beantwortet der Client aus
+  mitgeführten Matrixstapeln, statt jedes Mal auf den Server zu warten; `glXSwapBuffers` wartet
+  nur noch auf das vorige Bild, so dass das Spiel das nächste Bild vorbereitet, während der Server
+  das letzte zeichnet (`GLADIO_SYNC_SWAP=1` in den Umgebungsvariablen des Containers: wieder auf
+  jedes Bild warten). Nebenbei: `glGetDoublev` schrieb Matrizen (16 Werte) in eine einzelne
+  Variable, `glGetIntegerv(GL_MATRIX_MODE)` lieferte unbestimmte Werte (ES kennt die Abfrage nicht).
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens

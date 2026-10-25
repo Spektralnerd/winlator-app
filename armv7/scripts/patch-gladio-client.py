@@ -26,6 +26,18 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
 - indizierte Zeichenaufrufe mit Client-Arrays des festen Funktionsmodells schicken den
   Vertexbereich einmal statt je Index einen Vertex (Kennung GLADIO_DRAW_RANGED im Modus; der
   Server der armv7-App versteht beides, siehe gl_context.c)
+- glActiveTexture/glClientActiveTexture gehen erst vor der nächsten anderen Anfrage hinaus und
+  nur, wenn sich die Einheit gegenüber der zuletzt gesendeten geändert hat (Worms 3D schaltet vor
+  jedem Zeichenaufruf alle acht Einheiten durch: ~8400 von 13000 Anfragen je Bild)
+- der Client führt Matrixstapel (wie der Server: ein Texturstapel, höchstens 32 Einträge),
+  Matrixmodus und Tiefenmaske mit und beantwortet glGetFloatv/glGetDoublev(GL_*_MATRIX),
+  glGetIntegerv(GL_MATRIX_MODE) und glGetBooleanv(GL_DEPTH_WRITEMASK) selbst, statt auf den Server
+  zu warten (Worms 3D: 29 Matrixabfragen je Bild); was er nicht nachvollziehen kann, erfragt er
+- glGetDoublev schrieb die Antwort in eine einzelne float-Variable (bei Matrizen 16 Werte: Stapel
+  überschrieben); jetzt alle Werte in das Feld des Aufrufers
+- glXSwapBuffers wartet nur noch auf das vorige Bild, nicht auf das eben übergebene: ein Bild darf
+  beim Server in Arbeit sein, während das Programm das nächste vorbereitet (GLADIO_SYNC_SWAP=1:
+  wie früher auf jedes warten)
 """
 import pathlib
 import shutil
@@ -157,6 +169,508 @@ sub("src/main.c",
     "        }\n"
     "\n"
     "        int indexCount = 0;")
+
+# ---- weniger Anfragen und Wartezeiten (Worms 3D: 13000 Anfragen je Bild, davon 8400 Einheitenwechsel,
+#      29 Matrixabfragen, auf die der Client jeweils wartet) ----
+# Textureinheiten: glActiveTexture/glClientActiveTexture erst vor der nächsten anderen Anfrage senden
+# und nur, wenn sich der Wert gegenüber dem zuletzt gesendeten geändert hat.
+sub("include/gl_client_state.h",
+    "    struct {\n        short unpackRowLength;\n        short unpackImageHeight;\n    } pixelStore;\n#endif",
+    "    struct {\n        short unpackRowLength;\n        short unpackImageHeight;\n    } pixelStore;\n"
+    "\n"
+    "    /* patch-gladio-client.py: zuletzt an den Server geschickte Textureinheiten (-1 = unbekannt) und\n"
+    "     * die im Client mitgeführten Matrizen und Tiefenmaske (Abfragen ohne Warten auf den Server) */\n"
+    "    int8_t sentActiveTexture;\n"
+    "    int8_t sentActiveTexCoord;\n"
+    "    struct GladioShadow* shadow;\n"
+    "#endif")
+sub("include/gladio.h",
+    "static inline bool gl_send(RingBuffer* ring, short requestCode, void* data, int size) {\n",
+    "/* patch-gladio-client.py: verzögerte Einheitenwechsel (Bit 0 glActiveTexture, Bit 1 glClientActiveTexture) */\n"
+    "extern _Thread_local unsigned char gladio_unitPending;\n"
+    "extern void gladio_flushTextureUnits(RingBuffer* ring);\n"
+    "/* patch-gladio-client.py: ausstehende Antworten auf glXSwapBuffers abholen, bis höchstens keep übrig sind */\n"
+    "extern bool gladio_drainSwapReplies(int keep);\n"
+    "\n"
+    "static inline bool gl_send(RingBuffer* ring, short requestCode, void* data, int size) {\n"
+    "    if (gladio_unitPending && requestCode != REQUEST_CODE_GL_ACTIVE_TEXTURE && requestCode != REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE) {\n"
+    "        gladio_flushTextureUnits(ring);\n"
+    "    }\n")
+sub("src/gl_calls.c",
+    "    currentGLContext->clientState->activeTexture = texture - GL_TEXTURE0;\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ACTIVE_TEXTURE, &texture, sizeof(GLenum));\n",
+    "    currentGLContext->clientState->activeTexture = texture - GL_TEXTURE0;\n"
+    "    gladio_unitPending |= 1;\n")
+sub("src/gl_calls.c",
+    "    currentGLContext->clientState->activeTexCoord = texture - GL_TEXTURE0;\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE, &texture, sizeof(GLenum));\n",
+    "    currentGLContext->clientState->activeTexCoord = texture - GL_TEXTURE0;\n"
+    "    gladio_unitPending |= 2;\n")
+
+# sinf/cosf (glRotatef im Schatten) brauchen libm
+sub("CMakeLists.txt", "            src/gl_vao.c)", "            src/gl_vao.c)\ntarget_link_libraries(GL m)")
+
+# Hilfsfunktionen: Einheiten nachsenden, Matrizen wie der Server rechnen (Kopie aus winlator/mat4.h),
+# ausstehende Bildantworten abholen
+sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
+    "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
+    r"""
+/* ---- patch-gladio-client.py: Einheitenwechsel, Matrizen, Tiefenmaske, Bildantworten ---- */
+_Thread_local unsigned char gladio_unitPending = 0;
+
+void gladio_flushTextureUnits(RingBuffer* ring) {
+    unsigned char pending = gladio_unitPending;
+    gladio_unitPending = 0;
+    GLClientState* clientState = currentGLContext ? currentGLContext->clientState : NULL;
+    if (!clientState || !ring) return;
+    if ((pending & 1) && clientState->sentActiveTexture != (int8_t)clientState->activeTexture) {
+        GLenum unit = GL_TEXTURE0 + clientState->activeTexture;
+        gl_send(ring, REQUEST_CODE_GL_ACTIVE_TEXTURE, &unit, sizeof(GLenum));
+        clientState->sentActiveTexture = (int8_t)clientState->activeTexture;
+    }
+    if ((pending & 2) && clientState->sentActiveTexCoord != (int8_t)clientState->activeTexCoord) {
+        GLenum unit = GL_TEXTURE0 + clientState->activeTexCoord;
+        gl_send(ring, REQUEST_CODE_GL_CLIENT_ACTIVE_TEXTURE, &unit, sizeof(GLenum));
+        clientState->sentActiveTexCoord = (int8_t)clientState->activeTexCoord;
+    }
+}
+
+bool gladio_drainSwapReplies(int keep) {
+    static ArrayBuffer swapReply = {0};
+    GLContext* context = currentGLContext;
+    if (!context || !context->clientRing) return true;
+    while (context->pendingSwaps > keep) {
+        if (!gl_recv(context->clientRing, NULL, &swapReply)) return false;
+        context->pendingSwaps--;
+    }
+    return true;
+}
+
+/* Matrixstapel wie im Server (gl_renderer.c: höchstens 32 Einträge, ein Texturstapel für alle Einheiten) */
+#define SHADOW_STACK_DEPTH 32
+typedef struct GladioShadow {
+    bool broken;          /* Zustand nicht mehr nachvollziehbar (unbekannter Matrixmodus): alles beim Server erfragen */
+    int8_t matrixMode;    /* 0 Modelview, 1 Projektion, 2 Textur */
+    int8_t depthMask;     /* -1 unbekannt (nach glPopAttrib) */
+    uint8_t depth[3];
+    uint32_t known[3];    /* Bit i: Eintrag i des Stapels bekannt */
+    float stack[3][SHADOW_STACK_DEPTH][16];
+} GladioShadow;
+
+static void shadow_identity(float m[16]) {
+    memset(m, 0, 16 * sizeof(float));
+    m[0] = m[5] = m[10] = m[15] = 1.0f;
+}
+
+static void shadow_transpose(float matrix[16]) {
+    float tmp;
+    tmp = matrix[1]; matrix[1] = matrix[4]; matrix[4] = tmp;
+    tmp = matrix[2]; matrix[2] = matrix[8]; matrix[8] = tmp;
+    tmp = matrix[6]; matrix[6] = matrix[9]; matrix[9] = tmp;
+    tmp = matrix[3]; matrix[3] = matrix[12]; matrix[12] = tmp;
+    tmp = matrix[7]; matrix[7] = matrix[13]; matrix[13] = tmp;
+    tmp = matrix[11]; matrix[11] = matrix[14]; matrix[14] = tmp;
+}
+
+static void shadow_multiply(float result[16], const float ma[16], const float mb[16]) {
+    float a11 = ma[0], a12 = ma[4], a13 = ma[8], a14 = ma[12];
+    float a21 = ma[1], a22 = ma[5], a23 = ma[9], a24 = ma[13];
+    float a31 = ma[2], a32 = ma[6], a33 = ma[10], a34 = ma[14];
+    float a41 = ma[3], a42 = ma[7], a43 = ma[11], a44 = ma[15];
+    float b11 = mb[0], b12 = mb[4], b13 = mb[8], b14 = mb[12];
+    float b21 = mb[1], b22 = mb[5], b23 = mb[9], b24 = mb[13];
+    float b31 = mb[2], b32 = mb[6], b33 = mb[10], b34 = mb[14];
+    float b41 = mb[3], b42 = mb[7], b43 = mb[11], b44 = mb[15];
+    result[0] = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41;
+    result[4] = a11 * b12 + a12 * b22 + a13 * b32 + a14 * b42;
+    result[8] = a11 * b13 + a12 * b23 + a13 * b33 + a14 * b43;
+    result[12] = a11 * b14 + a12 * b24 + a13 * b34 + a14 * b44;
+    result[1] = a21 * b11 + a22 * b21 + a23 * b31 + a24 * b41;
+    result[5] = a21 * b12 + a22 * b22 + a23 * b32 + a24 * b42;
+    result[9] = a21 * b13 + a22 * b23 + a23 * b33 + a24 * b43;
+    result[13] = a21 * b14 + a22 * b24 + a23 * b34 + a24 * b44;
+    result[2] = a31 * b11 + a32 * b21 + a33 * b31 + a34 * b41;
+    result[6] = a31 * b12 + a32 * b22 + a33 * b32 + a34 * b42;
+    result[10] = a31 * b13 + a32 * b23 + a33 * b33 + a34 * b43;
+    result[14] = a31 * b14 + a32 * b24 + a33 * b34 + a34 * b44;
+    result[3] = a41 * b11 + a42 * b21 + a43 * b31 + a44 * b41;
+    result[7] = a41 * b12 + a42 * b22 + a43 * b32 + a44 * b42;
+    result[11] = a41 * b13 + a42 * b23 + a43 * b33 + a44 * b43;
+    result[15] = a41 * b14 + a42 * b24 + a43 * b34 + a44 * b44;
+}
+
+static GladioShadow* gladioShadow(void) {
+    GLClientState* clientState = currentGLContext ? currentGLContext->clientState : NULL;
+    if (!clientState) return NULL;
+    GladioShadow* shadow = clientState->shadow;
+    if (!shadow) {
+        shadow = calloc(1, sizeof(GladioShadow));
+        if (!shadow) return NULL;
+        shadow->depthMask = 1;
+        for (int i = 0; i < 3; i++) {
+            shadow->depth[i] = 1;
+            shadow->known[i] = 1;
+            shadow_identity(shadow->stack[i][0]);
+        }
+        clientState->shadow = shadow;
+    }
+    return shadow->broken ? NULL : shadow;
+}
+
+/* aktuelle Matrix des aktuellen Stapels; NULL, wenn unbekannt (requireKnown) oder kein Schatten */
+static float* shadowTop(bool requireKnown) {
+    GladioShadow* shadow = gladioShadow();
+    if (!shadow) return NULL;
+    if (shadow->matrixMode < 0) {
+        shadow->broken = true;
+        return NULL;
+    }
+    int m = shadow->matrixMode, d = shadow->depth[m] - 1;
+    if (requireKnown && !(shadow->known[m] & (1u << d))) return NULL;
+    return shadow->stack[m][d];
+}
+
+static void shadowSetTopKnown(void) {
+    GladioShadow* shadow = gladioShadow();
+    if (shadow && shadow->matrixMode >= 0) shadow->known[shadow->matrixMode] |= 1u << (shadow->depth[shadow->matrixMode] - 1);
+}
+
+static void shadowLoad(const float* m, bool transpose) {
+    float* top = shadowTop(false);
+    if (!top) return;
+    if (m) memcpy(top, m, 16 * sizeof(float));
+    else shadow_identity(top);
+    if (transpose) shadow_transpose(top);
+    shadowSetTopKnown();
+}
+
+static void shadowMultiply(const float* m, bool transpose) {
+    float* top = shadowTop(true);
+    if (!top) return;
+    float tmp[16];
+    memcpy(tmp, m, sizeof(tmp));
+    if (transpose) shadow_transpose(tmp);
+    shadow_multiply(top, top, tmp);
+}
+
+static void shadowTranslate(float x, float y, float z) {
+    float* matrix = shadowTop(true);
+    if (!matrix) return;
+    matrix[12] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+    matrix[13] = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+    matrix[14] = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+    matrix[15] = matrix[3] * x + matrix[7] * y + matrix[11] * z + matrix[15];
+}
+
+static void shadowScale(float x, float y, float z) {
+    float* matrix = shadowTop(true);
+    if (!matrix) return;
+    for (int i = 0; i < 4; i++) {
+        matrix[i] *= x;
+        matrix[4 + i] *= y;
+        matrix[8 + i] *= z;
+    }
+}
+
+static void shadowRotate(float angleDegrees, float x, float y, float z) {
+    float* matrix = shadowTop(true);
+    if (!matrix) return;
+    float angle = angleDegrees * (M_PI / 180.0f);
+    float len = sqrt(x * x + y * y + z * z), s, c, t;
+    if (fabs(len) < 0.000001) return;
+    len = 1 / len;
+    x *= len;
+    y *= len;
+    z *= len;
+    s = sinf(angle);
+    c = cosf(angle);
+    t = 1 - c;
+    float a00 = matrix[0], a01 = matrix[1], a02 = matrix[2], a03 = matrix[3];
+    float a10 = matrix[4], a11 = matrix[5], a12 = matrix[6], a13 = matrix[7];
+    float a20 = matrix[8], a21 = matrix[9], a22 = matrix[10], a23 = matrix[11];
+    float b00 = x * x * t + c, b01 = y * x * t + z * s, b02 = z * x * t - y * s;
+    float b10 = x * y * t - z * s, b11 = y * y * t + c, b12 = z * y * t + x * s;
+    float b20 = x * z * t + y * s, b21 = y * z * t - x * s, b22 = z * z * t + c;
+    matrix[0] = a00 * b00 + a10 * b01 + a20 * b02;
+    matrix[1] = a01 * b00 + a11 * b01 + a21 * b02;
+    matrix[2] = a02 * b00 + a12 * b01 + a22 * b02;
+    matrix[3] = a03 * b00 + a13 * b01 + a23 * b02;
+    matrix[4] = a00 * b10 + a10 * b11 + a20 * b12;
+    matrix[5] = a01 * b10 + a11 * b11 + a21 * b12;
+    matrix[6] = a02 * b10 + a12 * b11 + a22 * b12;
+    matrix[7] = a03 * b10 + a13 * b11 + a23 * b12;
+    matrix[8] = a00 * b20 + a10 * b21 + a20 * b22;
+    matrix[9] = a01 * b20 + a11 * b21 + a21 * b22;
+    matrix[10] = a02 * b20 + a12 * b21 + a22 * b22;
+    matrix[11] = a03 * b20 + a13 * b21 + a23 * b22;
+}
+
+static void shadowFrustum(float left, float right, float bottom, float top, float vnear, float vfar) {
+    float* matrix = shadowTop(true);
+    if (!matrix) return;
+    float m[16] = {0};
+    m[0] = 2.0f * vnear / (right - left);
+    m[5] = 2.0f * vnear / (top - bottom);
+    m[8] = (right + left) / (right - left);
+    m[9] = (top + bottom) / (top - bottom);
+    m[10] = - (vfar + vnear) / (vfar - vnear);
+    m[14] = - 2.0f * vfar * vnear / (vfar - vnear);
+    m[11] = -1;
+    shadow_multiply(matrix, matrix, m);
+}
+
+static void shadowOrtho(float left, float right, float top, float bottom, float vnear, float vfar) {
+    float* matrix = shadowTop(true);
+    if (!matrix) return;
+    float w = 1.0f / (right - left), h = 1.0f / (top - bottom), p = 1.0f / (vfar - vnear);
+    float m[16] = {0};
+    m[0] = 2 * w;
+    m[12] = -((right + left) * w);
+    m[5] = 2 * h;
+    m[13] = -((top + bottom) * h);
+    m[10] = -2 * p;
+    m[14] = -((vfar + vnear) * p);
+    m[15] = 1;
+    shadow_multiply(matrix, matrix, m);
+}
+
+static void shadowPush(void) {
+    GladioShadow* shadow = gladioShadow();
+    if (!shadow) return;
+    if (shadow->matrixMode < 0) {
+        shadow->broken = true;
+        return;
+    }
+    int m = shadow->matrixMode, d = shadow->depth[m];
+    if (d >= SHADOW_STACK_DEPTH) return;
+    memcpy(shadow->stack[m][d], shadow->stack[m][d - 1], 16 * sizeof(float));
+    if (shadow->known[m] & (1u << (d - 1))) shadow->known[m] |= 1u << d;
+    else shadow->known[m] &= ~(1u << d);
+    shadow->depth[m] = d + 1;
+}
+
+static void shadowPop(void) {
+    GladioShadow* shadow = gladioShadow();
+    if (!shadow) return;
+    if (shadow->matrixMode < 0) {
+        shadow->broken = true;
+        return;
+    }
+    if (shadow->depth[shadow->matrixMode] > 1) shadow->depth[shadow->matrixMode]--;
+}
+
+static int shadowMatrixIndex(GLenum pname) {
+    switch (pname) {
+        case GL_MODELVIEW_MATRIX: return 0;
+        case GL_PROJECTION_MATRIX: return 1;
+        case GL_TEXTURE_MATRIX: return 2;
+        default: return -1;
+    }
+}
+
+/* Matrixabfrage aus dem Schatten beantworten (16 Werte); false: beim Server fragen */
+static bool shadowGetMatrix(GLenum pname, float* data) {
+    int m = shadowMatrixIndex(pname);
+    GladioShadow* shadow = m >= 0 ? gladioShadow() : NULL;
+    if (!shadow) return false;
+    int d = shadow->depth[m] - 1;
+    if (!(shadow->known[m] & (1u << d))) return false;
+    memcpy(data, shadow->stack[m][d], 16 * sizeof(float));
+    return true;
+}
+
+/* Antwort des Servers auf eine Matrixabfrage merken */
+static void shadowLearnMatrix(GLenum pname, const void* data, int size) {
+    int m = shadowMatrixIndex(pname);
+    GladioShadow* shadow = m >= 0 && size >= (int)(16 * sizeof(float)) ? gladioShadow() : NULL;
+    if (!shadow) return;
+    int d = shadow->depth[m] - 1;
+    memcpy(shadow->stack[m][d], data, 16 * sizeof(float));
+    shadow->known[m] |= 1u << d;
+}
+""")
+
+# Matrixoperationen und Zustände im Schatten nachführen (nach dem Senden, wie der Server in Reihenfolge)
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MATRIX_MODE, &mode, sizeof(GLenum));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MATRIX_MODE, &mode, sizeof(GLenum));\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    if (shadow) shadow->matrixMode = mode >= GL_MODELVIEW && mode <= GL_TEXTURE ? (int8_t)(mode - GL_MODELVIEW) : -1;\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_IDENTITY, NULL, 0);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_IDENTITY, NULL, 0);\n"
+    "    shadowLoad(NULL, false);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_MATRIXF, m, 16 * sizeof(GLfloat));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_MATRIXF, m, 16 * sizeof(GLfloat));\n"
+    "    shadowLoad(m, false);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_TRANSPOSE_MATRIXF, m, 16 * sizeof(GLfloat));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_LOAD_TRANSPOSE_MATRIXF, m, 16 * sizeof(GLfloat));\n"
+    "    shadowLoad(m, true);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MULT_MATRIXF, m, 16 * sizeof(GLfloat));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MULT_MATRIXF, m, 16 * sizeof(GLfloat));\n"
+    "    shadowMultiply(m, false);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MULT_TRANSPOSE_MATRIXF, m, 16 * sizeof(GLfloat));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_MULT_TRANSPOSE_MATRIXF, m, 16 * sizeof(GLfloat));\n"
+    "    shadowMultiply(m, true);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_TRANSLATEF, outputBuffer.buffer, outputBuffer.size);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_TRANSLATEF, outputBuffer.buffer, outputBuffer.size);\n"
+    "    shadowTranslate(x, y, z);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_SCALEF, outputBuffer.buffer, outputBuffer.size);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_SCALEF, outputBuffer.buffer, outputBuffer.size);\n"
+    "    shadowScale(x, y, z);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ROTATEF, outputBuffer.buffer, outputBuffer.size);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ROTATEF, outputBuffer.buffer, outputBuffer.size);\n"
+    "    shadowRotate(angle, x, y, z);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_FRUSTUM, outputBuffer.buffer, outputBuffer.size);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_FRUSTUM, outputBuffer.buffer, outputBuffer.size);\n"
+    "    shadowFrustum(left, right, bottom, top, zNear, zFar);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ORTHO, outputBuffer.buffer, outputBuffer.size);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ORTHO, outputBuffer.buffer, outputBuffer.size);\n"
+    "    shadowOrtho(left, right, top, bottom, zNear, zFar);\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_PUSH_MATRIX, NULL, 0);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_PUSH_MATRIX, NULL, 0);\n"
+    "    shadowPush();\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_MATRIX, NULL, 0);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_MATRIX, NULL, 0);\n"
+    "    shadowPop();\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DEPTH_MASK, &flag, sizeof(GLboolean));\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DEPTH_MASK, &flag, sizeof(GLboolean));\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    if (shadow) shadow->depthMask = flag ? 1 : 0;\n")
+# glPopAttrib stellt Tiefenmaske und aktive Einheit des Servers wieder her: beides gilt danach als unbekannt
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_ATTRIB, NULL, 0);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_ATTRIB, NULL, 0);\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    if (shadow) shadow->depthMask = -1;\n"
+    "    currentGLContext->clientState->sentActiveTexture = -1;\n")
+sub("src/gl_calls.c",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_CLIENT_ATTRIB, NULL, 0);\n",
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_POP_CLIENT_ATTRIB, NULL, 0);\n"
+    "    currentGLContext->clientState->sentActiveTexCoord = -1;\n")
+
+# Abfragen aus dem Schatten beantworten, Antworten des Servers merken
+sub("src/gl_calls.c",
+    "void glGetFloatv(GLenum pname, GLfloat* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_FLOATV, &pname, sizeof(GLenum));\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(data, inputBuffer.buffer, inputBuffer.size);\n",
+    "void glGetFloatv(GLenum pname, GLfloat* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (shadowGetMatrix(pname, data)) {\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_FLOATV, &pname, sizeof(GLenum));\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(data, inputBuffer.buffer, inputBuffer.size);\n"
+    "    shadowLearnMatrix(pname, inputBuffer.buffer, inputBuffer.size);\n")
+sub("src/gl_calls.c",
+    "void glGetIntegerv(GLenum pname, GLint* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_INTEGERV, &pname, sizeof(GLenum));\n",
+    "void glGetIntegerv(GLenum pname, GLint* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (pname == GL_MATRIX_MODE) {\n"
+    "        GladioShadow* shadow = gladioShadow();\n"
+    "        if (shadow && shadow->matrixMode >= 0) {\n"
+    "            data[0] = GL_MODELVIEW + shadow->matrixMode;\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return;\n"
+    "        }\n"
+    "    }\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_INTEGERV, &pname, sizeof(GLenum));\n")
+sub("src/gl_calls.c",
+    "void glGetBooleanv(GLenum pname, GLboolean* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_BOOLEANV, &pname, sizeof(GLenum));\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(data, inputBuffer.buffer, inputBuffer.size);\n",
+    "void glGetBooleanv(GLenum pname, GLboolean* data) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (pname == GL_DEPTH_WRITEMASK) {\n"
+    "        GladioShadow* shadow = gladioShadow();\n"
+    "        if (shadow && shadow->depthMask >= 0) {\n"
+    "            data[0] = shadow->depthMask ? GL_TRUE : GL_FALSE;\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return;\n"
+    "        }\n"
+    "    }\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_BOOLEANV, &pname, sizeof(GLenum));\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(data, inputBuffer.buffer, inputBuffer.size);\n"
+    "    if (pname == GL_DEPTH_WRITEMASK && inputBuffer.size >= 1) {\n"
+    "        GladioShadow* shadow = gladioShadow();\n"
+    "        if (shadow) shadow->depthMask = data[0] ? 1 : 0;\n"
+    "    }\n")
+# glGetDoublev schrieb die Antwort (z. B. 16 Werte einer Matrix) in eine einzelne float-Variable
+sub("src/gl_calls.c",
+    "void glGetDoublev(GLenum pname, GLdouble* data) {\n"
+    "    GLfloat dataf;\n"
+    "    glGetFloatv(pname, &dataf);\n"
+    "    *data = dataf;\n"
+    "}",
+    "void glGetDoublev(GLenum pname, GLdouble* data) {\n"
+    "    float matrix[16];\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (shadowGetMatrix(pname, matrix)) {\n"
+    "        for (int i = 0; i < 16; i++) data[i] = matrix[i];\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_FLOATV, &pname, sizeof(GLenum));\n"
+    "    GL_RECV_CHECKED();\n"
+    "    const GLfloat* values = (const GLfloat*)inputBuffer.buffer;\n"
+    "    for (int i = 0, count = inputBuffer.size / (int)sizeof(GLfloat); i < count; i++) data[i] = values[i];\n"
+    "    shadowLearnMatrix(pname, inputBuffer.buffer, inputBuffer.size);\n"
+    "    GL_CALL_UNLOCK();\n"
+    "}")
+
+# glXSwapBuffers: nicht auf das eben übergebene Bild warten, nur auf das vorige (ein Bild darf beim
+# Server in Arbeit sein, während das Programm das nächste vorbereitet). GLADIO_SYNC_SWAP=1: wie früher.
+sub("include/gl_context.h", "    CommandBuffer commandBuffer;\n    uint8_t lockCount;\n} GLContext;",
+    "    CommandBuffer commandBuffer;\n    uint8_t lockCount;\n    int pendingSwaps; /* patch-gladio-client.py: Antworten auf glXSwapBuffers, die noch ausstehen */\n} GLContext;")
+sub("include/gladio.h",
+    "#define GL_RECV_CHECKED(...) \\\n    do { \\\n        if (!gl_recv(currentGLContext->clientRing, NULL, &inputBuffer)) { \\",
+    "#define GL_RECV_CHECKED(...) \\\n    do { \\\n        if (!gladio_drainSwapReplies(0) || !gl_recv(currentGLContext->clientRing, NULL, &inputBuffer)) { \\")
+sub("src/glx_calls.c",
+    "    GL_SEND_CHECKED(REQUEST_CODE_SWAP_DISPLAY_BUFFERS, &drawableId, sizeof(int));\n    GL_RECV_CHECKED();\n    GL_CALL_UNLOCK();",
+    "    GL_SEND_CHECKED(REQUEST_CODE_SWAP_DISPLAY_BUFFERS, &drawableId, sizeof(int));\n"
+    "    static int maxPendingSwaps = -1;\n"
+    "    if (maxPendingSwaps < 0) {\n"
+    "        const char* syncSwap = getenv(\"GLADIO_SYNC_SWAP\");\n"
+    "        maxPendingSwaps = syncSwap && atoi(syncSwap) ? 0 : 1;\n"
+    "    }\n"
+    "    currentGLContext->pendingSwaps++;\n"
+    "    gladio_drainSwapReplies(maxPendingSwaps);\n"
+    "    GL_CALL_UNLOCK();")
+# vor dem Ende eines Kontexts: ausstehende Bilder abwarten, verzögerte Einheitenwechsel senden
+sub("include/gl_context.h",
+    "static inline void destroyGLContextForCallingThread() {\n    if (!currentGLContext) return;\n",
+    "static inline void destroyGLContextForCallingThread() {\n    if (!currentGLContext) return;\n    gladio_drainSwapReplies(0);\n")
+sub("src/glx_calls.c",
+    "void glXDestroyContext(Display* dpy, GLXContext ctx) {\n    GLX_CALL_LOCK();\n",
+    "void glXDestroyContext(Display* dpy, GLXContext ctx) {\n    GLX_CALL_LOCK();\n"
+    "    if (currentGLContext && currentGLContext->glxContext == ctx) gladio_drainSwapReplies(0);\n"
+    "    if (ctx->clientState.shadow) free(ctx->clientState.shadow);\n")
+sub("src/glx_calls.c",
+    "Bool glXMakeCurrent(Display* dpy, GLXDrawable drawable, GLXContext ctx) {\n    GLX_CALL_LOCK();\n",
+    "Bool glXMakeCurrent(Display* dpy, GLXDrawable drawable, GLXContext ctx) {\n    GLX_CALL_LOCK();\n"
+    "    /* verzögerte Einheitenwechsel gehören zum bisherigen Kontext */\n"
+    "    if (currentGLContext && gladio_unitPending) gladio_flushTextureUnits(currentGLContext->serverRing);\n")
 
 if fbconfigDefaults:
     sub("src/glx_calls.c",

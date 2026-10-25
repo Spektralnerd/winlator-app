@@ -56,7 +56,7 @@ $(BUILD)/client-src/.patched: $(GLADIO_SRC)/include/gladio.h $(PATCH_CLIENT)
 $(BUILD)/client/libGL.so.1: $(BUILD)/client-src/.patched
 	@mkdir -p $(BUILD)/client
 	gcc $(CLIENT_CFLAGS) -I$(BUILD)/client-src/include -shared -Wl,-soname,libGL.so.1 -o $@ \
-	    $(addprefix $(BUILD)/client-src/src/,$(CLIENT_SRCS)) -lX11 -lpthread -ldl
+	    $(addprefix $(BUILD)/client-src/src/,$(CLIENT_SRCS)) -lX11 -lpthread -ldl -lm
 	ln -sf libGL.so.1 $(BUILD)/client/libGL.so
 
 # 32-Bit-Client für Wine i386 (Ringpufferkopf auf den 64-Bit-Server ausgerichtet).
@@ -70,7 +70,7 @@ $(BUILD)/client32/libGL.so.1: $(BUILD)/client32-src/.patched
 	@mkdir -p $(BUILD)/client32 $(BUILD)/client32-inc
 	@[ -d /usr/include/i386-linux-gnu/asm ] || ln -sfn /usr/include/x86_64-linux-gnu/asm $(BUILD)/client32-inc/asm
 	gcc -m32 $(CLIENT_CFLAGS) -I$(BUILD)/client32-src/include -idirafter $(BUILD)/client32-inc -shared -Wl,-soname,libGL.so.1 -o $@ \
-	    $(addprefix $(BUILD)/client32-src/src/,$(CLIENT_SRCS)) -L/usr/lib/i386-linux-gnu -l:libX11.so.6 -lpthread -ldl
+	    $(addprefix $(BUILD)/client32-src/src/,$(CLIENT_SRCS)) -L/usr/lib/i386-linux-gnu -l:libX11.so.6 -lpthread -ldl -lm
 	ln -sf libGL.so.1 $(BUILD)/client32/libGL.so
 
 client32: $(BUILD)/client32/libGL.so.1
