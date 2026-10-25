@@ -210,6 +210,15 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens
   ~60 Ereignisse je Sekunde zusammen (`XServer.java`, `BuildConfig.X86_ONLY`).
+- Bild zusammensetzen bei Mausbewegungen: Der X-Server-Renderer (`GLRenderer.java`) zeichnete
+  bei jeder Bewegung das ganze Bild neu (Swap-Intervall 0, also auch öfter als 60-mal je
+  Sekunde), auch wenn kein Mauszeiger zu sehen ist – Worms 3D blendet den X-Zeiger aus und
+  zeichnet seinen eigenen. Während der Bewegungen stieg auf der Mali-400 die Zeit der
+  Zeichenaufrufe des Spiels (Menü: „Zeichnen“ 6,7 → 22 ms, 42 → 22 Bilder/s) – vermutlich, weil
+  sich beide die GPU teilen (noch nicht nachgemessen). Die 32-Bit-Variante zeichnet bei Bewegungen
+  nur noch neu, wenn ein sichtbarer Zeiger im Spiel ist (an der neuen Position oder im zuletzt
+  gezeigten Bild) oder Lupe/Bildversatz dem Zeiger folgen. Alle 5 s steht im Log eine Zeile
+  `xserver: … Bilder zusammengesetzt …, Mausbewegungen … (davon … ohne Neuzeichnen)`.
 - Beim Ende einer Client-Verbindung (auch nach einem Absturz des Programms) stehen die letzten
   64 GL-Anfragen im Protokoll (`gladio: letzte Anfragen …`).
 

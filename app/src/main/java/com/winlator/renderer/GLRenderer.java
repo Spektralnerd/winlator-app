@@ -9,6 +9,7 @@ import android.opengl.GLSurfaceView;
 
 import androidx.core.graphics.ColorUtils;
 
+import com.winlator.BuildConfig;
 import com.winlator.R;
 import com.winlator.core.Bitmask;
 import com.winlator.core.Callback;
@@ -36,6 +37,8 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.IntBuffer;
 import java.util.ArrayList;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
@@ -66,6 +69,24 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
     protected short surfaceWidth;
     protected short surfaceHeight;
     public final EffectComposer effectComposer = new EffectComposer(this);
+
+    /*
+     * 32-Bit-Variante (Note 8.0, Mali-400): Mausbewegungen setzen das Bild nur neu zusammen, wenn sie
+     * etwas Sichtbares ändern – einen sichtbaren Mauszeiger (jetzt oder im zuletzt gezeigten Bild) oder
+     * die Lupe bzw. den Bildversatz am Zeiger. Spiele wie Worms 3D blenden den X-Zeiger aus und zeichnen
+     * ihren eigenen; jedes zusätzliche Zusammensetzen kostet GPU-Zeit, die dem Spiel fehlt.
+     */
+    private static final boolean SKIP_HIDDEN_POINTER_MOVES = BuildConfig.X86_ONLY;
+    private volatile boolean cursorDrawn = true;
+
+    /* 32-Bit-Variante: alle 5 s zusammengesetzte Bilder und Mausbewegungen ins Log (neben den gladio-Zeilen) */
+    private static final boolean LOG_STATS = BuildConfig.X86_ONLY;
+    private static final long STATS_INTERVAL_NS = 5000000000L;
+    private long statsStartTime;
+    private long statsDrawNs;
+    private int statsFrames;
+    private final AtomicInteger statsPointerMoves = new AtomicInteger();
+    private final AtomicInteger statsPointerMovesSkipped = new AtomicInteger();
 
     public GLRenderer(XServerView xServerView, XServer xServer) {
         this.xServerView = xServerView;
@@ -116,6 +137,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
 
     @Override
     public void onDrawFrame(GL10 gl) {
+        long startTime = LOG_STATS ? System.nanoTime() : 0;
         if (toggleFullscreen) {
             fullscreen = !fullscreen;
             toggleFullscreen = false;
@@ -126,6 +148,26 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
             effectComposer.render();
         }
         else drawFrame();
+
+        if (LOG_STATS) logStats(startTime);
+    }
+
+    private void logStats(long frameStartTime) {
+        long now = System.nanoTime();
+        if (statsStartTime == 0) statsStartTime = frameStartTime;
+        statsFrames++;
+        statsDrawNs += now - frameStartTime;
+
+        long elapsed = now - statsStartTime;
+        if (elapsed < STATS_INTERVAL_NS) return;
+        int pointerMoves = statsPointerMoves.getAndSet(0);
+        int pointerMovesSkipped = statsPointerMovesSkipped.getAndSet(0);
+        float seconds = elapsed / 1e9f;
+        System.out.println(String.format(Locale.ROOT, "xserver: %.1f s: %d Bilder zusammengesetzt (%.1f/s, je Bild %.1f ms), Mausbewegungen %d (davon %d ohne Neuzeichnen)",
+            seconds, statsFrames, statsFrames / seconds, statsDrawNs / 1e6f / statsFrames, pointerMoves, pointerMovesSkipped));
+        statsStartTime = now;
+        statsFrames = 0;
+        statsDrawNs = 0;
     }
 
     protected void drawFrame() {
@@ -156,7 +198,10 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
         XForm.makeTransform(tmpXForm2, -pointerX, -pointerY, magnifierZoom, magnifierZoom, 0);
 
         renderWindows();
-        if (cursorVisible) renderCursor();
+        if (cursorVisible) {
+            renderCursor();
+        }
+        else cursorDrawn = false;
     }
 
     @Override
@@ -198,7 +243,21 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
 
     @Override
     public void onPointerMove(short x, short y) {
+        if (LOG_STATS) statsPointerMoves.incrementAndGet();
+        if (SKIP_HIDDEN_POINTER_MOVES && !cursorDrawn && magnifierZoom == 1.0f && !screenOffsetYRelativeToCursor && !isCursorShownAtPointer()) {
+            if (LOG_STATS) statsPointerMovesSkipped.incrementAndGet();
+            return;
+        }
         xServerView.requestRender();
+    }
+
+    /* wie renderCursor(): wird an der aktuellen Zeigerposition ein Mauszeiger gezeichnet? (Aufruf mit WINDOW_MANAGER-Sperre) */
+    private boolean isCursorShownAtPointer() {
+        if (!cursorVisible) return false;
+        Window pointWindow = xServer.windowManager.findPointWindow(xServer.pointer.getClampedX(), xServer.pointer.getClampedY(), true);
+        if (pointWindow == null) pointWindow = xServer.windowManager.rootWindow;
+        Cursor cursor = pointWindow.attributes.getCursor();
+        return cursor == null || cursor.isVisible();
     }
 
     private void renderCursorDrawable(Drawable drawable, int x, int y) {
@@ -273,8 +332,12 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
 
             if (cursor != null) {
                 if (cursor.isVisible()) renderCursorDrawable(cursor.cursorImage, x - cursor.hotSpotX, y - cursor.hotSpotY);
+                cursorDrawn = cursor.isVisible();
             }
-            else renderCursorDrawable(rootCursorDrawable, x, y);
+            else {
+                renderCursorDrawable(rootCursorDrawable, x, y);
+                cursorDrawn = true;
+            }
         }
 
         quadVertices.disable();
