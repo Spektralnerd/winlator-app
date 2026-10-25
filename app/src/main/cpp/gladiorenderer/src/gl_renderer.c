@@ -326,7 +326,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
                 ShaderMaterial_updatePointUniforms(material, renderer);
                 updatePointSmoothTexture(renderer);
             }
-            else if (material->location.point[0] != -1) glUniform1f(material->location.point[0], 0.0f);
+            else ShaderMaterial_disablePointSize(material);
         }
 
         int count = mesh->end - mesh->start;

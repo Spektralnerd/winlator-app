@@ -132,8 +132,27 @@ typedef struct MaterialOptions {
     const FFSpec* spec; /* ES 2.0: einkompilierter Fixed-Function-Zustand, sonst NULL */
 } MaterialOptions;
 
+/* ES 2.0: zuletzt gesetzte Uniform-Werte je Programm (Treiberaufrufe sparen, siehe shader_material.c) */
+#define UC_MODELVIEW 0
+#define UC_PROJECTION 1
+#define UC_TEXTURE_MATRIX 2
+#define UC_ALPHA_TEST 3
+#define UC_FOG 4                       /* 5 */
+#define UC_NUM_LIGHTS 9
+#define UC_LIGHT_MODEL_AMBIENT 10
+#define UC_COLOR_MATERIAL 11
+#define UC_TWO_SIDE 12
+#define UC_LIGHTS 13                   /* MAX_LIGHTS * 7 */
+#define UC_MATERIALS (UC_LIGHTS + MAX_LIGHTS * 7)       /* 2 * 5 */
+#define UC_TEXTURE (UC_MATERIALS + 10)                  /* MAX_TEXTURES */
+#define UC_TEXENV (UC_TEXTURE + MAX_TEXTURES)           /* MAX_TEXTURES * 7 */
+#define UC_POINT (UC_TEXENV + MAX_TEXTURES * 7)         /* 7 */
+#define UC_SLOTS (UC_POINT + 7)
+
 typedef struct ShaderMaterial {
     GLuint program;
+    float* uniformCache;        /* UC_SLOTS * 16 Werte, nur im ES-2.0-Pfad */
+    uint8_t* uniformCacheValid;
 
     struct {
         int attributes[VERTEX_ATTRIB_COUNT];
@@ -160,6 +179,7 @@ typedef struct ShaderMaterial {
 extern ShaderMaterial* ShaderMaterial_create(MaterialOptions* options);
 extern void ShaderMaterial_destroy(ShaderMaterial* material);
 extern void ShaderMaterial_updatePointUniforms(ShaderMaterial* material, GLRenderer* renderer);
+extern void ShaderMaterial_disablePointSize(ShaderMaterial* material);
 extern void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* renderer, MaterialOptions* options);
 
 /* shader_material_es2.c: Fixed-Function-Zustand erfassen und spezialisierte GLSL-ES-1.00-Shader erzeugen */

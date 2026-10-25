@@ -643,13 +643,46 @@ ShaderMaterial* ShaderMaterial_create(MaterialOptions* options) {
     material->program = program;
     setupMaterial(material, options);
 
+    if (GLES2) {
+        material->uniformCache = calloc(UC_SLOTS * 16, sizeof(float));
+        material->uniformCacheValid = calloc(UC_SLOTS, 1);
+    }
+
     return material;
 }
 
 void ShaderMaterial_destroy(ShaderMaterial* material) {
     if (!material) return;
     glDeleteProgram(material->program);
+    MEMFREE(material->uniformCache);
+    MEMFREE(material->uniformCacheValid);
 }
+
+/*
+ * ES 2.0 (Mali-400): Jeder glUniform-Aufruf kostet im Treiber spürbar Zeit, und die Werte ändern
+ * sich zwischen Zeichenaufrufen meist nicht (Licht, Material, Nebel). Uniforms gehören zum
+ * Programm; ein Material-Programm wird nur hier gesetzt, deshalb reicht ein Vergleich mit dem
+ * zuletzt gesetzten Wert. Liefert true, wenn der Wert gesetzt werden muss.
+ */
+static inline bool uniformChanged(ShaderMaterial* material, int slot, const void* data, int bytes) {
+    if (!material->uniformCache) return true;
+    float* cached = material->uniformCache + slot * 16;
+    if (material->uniformCacheValid[slot] && memcmp(cached, data, bytes) == 0) return false;
+    memcpy(cached, data, bytes);
+    material->uniformCacheValid[slot] = 1;
+    return true;
+}
+
+#define U_MATRIX4(slot, location, values) \
+    do { const float* _v = (values); if ((location) != -1 && uniformChanged(material, slot, _v, 16 * sizeof(float))) glUniformMatrix4fv(location, 1, GL_FALSE, _v); } while (0)
+#define U_FLOATV(slot, location, n, values) \
+    do { const float* _v = (const float*)(values); if ((location) != -1 && uniformChanged(material, slot, _v, (n) * sizeof(float))) { \
+        switch (n) { case 1: glUniform1fv(location, 1, _v); break; case 2: glUniform2fv(location, 1, _v); break; \
+                     case 3: glUniform3fv(location, 1, _v); break; default: glUniform4fv(location, 1, _v); break; } } } while (0)
+#define U_FLOAT(slot, location, value) \
+    do { float _f = (value); if ((location) != -1 && uniformChanged(material, slot, &_f, sizeof(float))) glUniform1f(location, _f); } while (0)
+#define U_INT(slot, location, value) \
+    do { int _i = (value); if ((location) != -1 && uniformChanged(material, slot, &_i, sizeof(int))) glUniform1i(location, _i); } while (0)
 
 static void setLightUniforms(GLRenderer* renderer, ShaderMaterial* material) {
     int numLights = 0;
@@ -657,18 +690,19 @@ static void setLightUniforms(GLRenderer* renderer, ShaderMaterial* material) {
         GLLight* light = &renderer->lights[i];
         if (light->enabled) {
             j = numLights;
-            glUniform3fv(material->location.lights[j][0], 1, (const GLfloat*)light->ambient);
-            glUniform3fv(material->location.lights[j][1], 1, (const GLfloat*)light->diffuse);
-            glUniform3fv(material->location.lights[j][2], 1, (const GLfloat*)light->specular);
-            glUniform4fv(material->location.lights[j][3], 1, (const GLfloat*)light->position);
-            glUniform3fv(material->location.lights[j][4], 1, (const GLfloat*)light->attenuation);
-            glUniform2fv(material->location.lights[j][5], 1, (const GLfloat*)light->spotCutoffExponent);
-            glUniform3fv(material->location.lights[j][6], 1, (const GLfloat*)light->spotDirection);
+            int slot = UC_LIGHTS + j * 7;
+            U_FLOATV(slot + 0, material->location.lights[j][0], 3, light->ambient);
+            U_FLOATV(slot + 1, material->location.lights[j][1], 3, light->diffuse);
+            U_FLOATV(slot + 2, material->location.lights[j][2], 3, light->specular);
+            U_FLOATV(slot + 3, material->location.lights[j][3], 4, light->position);
+            U_FLOATV(slot + 4, material->location.lights[j][4], 3, light->attenuation);
+            U_FLOATV(slot + 5, material->location.lights[j][5], 2, light->spotCutoffExponent);
+            U_FLOATV(slot + 6, material->location.lights[j][6], 3, light->spotDirection);
             numLights++;
         }
     }
-    glUniform1i(material->location.numLights, numLights);
-    glUniform3fv(material->location.lightModelAmbient, 1, renderer->state.lightModelAmbient);
+    U_INT(UC_NUM_LIGHTS, material->location.numLights, numLights);
+    U_FLOATV(UC_LIGHT_MODEL_AMBIENT, material->location.lightModelAmbient, 3, renderer->state.lightModelAmbient);
 
     /* allgemeiner Shader: GL_COLOR_MATERIAL und zweiseitige Beleuchtung als Uniforms
      * (im ES-2.0-Pfad einkompiliert, dort gibt es die Uniforms nicht) */
@@ -684,7 +718,7 @@ static void setLightUniforms(GLRenderer* renderer, ShaderMaterial* material) {
         }
         glUniform4fv(material->location.colorMaterial, 2, values);
     }
-    if (material->location.twoSide != -1) glUniform1f(material->location.twoSide, renderer->state.lightModelTwoSide ? 1.0f : 0.0f);
+    U_FLOAT(UC_TWO_SIDE, material->location.twoSide, renderer->state.lightModelTwoSide ? 1.0f : 0.0f);
 }
 
 uint8_t ShaderMaterial_colorMaterialMask(GLRenderer* renderer) {
@@ -710,11 +744,12 @@ static void setMaterialUniforms(GLRenderer* renderer, ShaderMaterial* material) 
     GLMaterial* materials = renderer->materials;
 
     for (int i = 0; i < 2; i++) {
-        glUniform3fv(material->location.materials[i][0], 1, (const GLfloat*)materials[i].ambient);
-        glUniform3fv(material->location.materials[i][1], 1, (const GLfloat*)materials[i].diffuse);
-        glUniform4fv(material->location.materials[i][2], 1, (const GLfloat*)materials[i].specular);
-        glUniform3fv(material->location.materials[i][3], 1, (const GLfloat*)materials[i].emission);
-        if (material->location.materials[i][4] != -1) glUniform1f(material->location.materials[i][4], materials[i].alpha);
+        int slot = UC_MATERIALS + i * 5;
+        U_FLOATV(slot + 0, material->location.materials[i][0], 3, materials[i].ambient);
+        U_FLOATV(slot + 1, material->location.materials[i][1], 3, materials[i].diffuse);
+        U_FLOATV(slot + 2, material->location.materials[i][2], 4, materials[i].specular);
+        U_FLOATV(slot + 3, material->location.materials[i][3], 3, materials[i].emission);
+        U_FLOAT(slot + 4, material->location.materials[i][4], materials[i].alpha);
     }
 }
 
@@ -747,34 +782,38 @@ static void setARBProgramUniforms(ShaderMaterial* material, ARBProgram* program)
 }
 
 void ShaderMaterial_updatePointUniforms(ShaderMaterial* material, GLRenderer* renderer) {
-    glUniform1f(material->location.point[0], renderer->state.point.size);
-    glUniform1f(material->location.point[1], renderer->state.point.sizeMin);
-    glUniform1f(material->location.point[2], renderer->state.point.sizeMax);
-    glUniform1f(material->location.point[4], renderer->state.point.distanceAttenuation[0]);
-    glUniform1f(material->location.point[5], renderer->state.point.distanceAttenuation[1]);
-    glUniform1f(material->location.point[6], renderer->state.point.distanceAttenuation[2]);
+    U_FLOAT(UC_POINT + 0, material->location.point[0], renderer->state.point.size);
+    U_FLOAT(UC_POINT + 1, material->location.point[1], renderer->state.point.sizeMin);
+    U_FLOAT(UC_POINT + 2, material->location.point[2], renderer->state.point.sizeMax);
+    U_FLOAT(UC_POINT + 4, material->location.point[4], renderer->state.point.distanceAttenuation[0]);
+    U_FLOAT(UC_POINT + 5, material->location.point[5], renderer->state.point.distanceAttenuation[1]);
+    U_FLOAT(UC_POINT + 6, material->location.point[6], renderer->state.point.distanceAttenuation[2]);
+}
+
+void ShaderMaterial_disablePointSize(ShaderMaterial* material) {
+    U_FLOAT(UC_POINT + 0, material->location.point[0], 0.0f);
 }
 
 void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* renderer, MaterialOptions* options) {
     if (options->transformVertex) {
-        glUniformMatrix4fv(material->location.modelViewMatrix, 1, GL_FALSE, GLRenderer_getMatrixFromStack(renderer, MODEL_VIEW_MATRIX_INDEX));
-        glUniformMatrix4fv(material->location.projectionMatrix, 1, GL_FALSE, GLRenderer_getMatrixFromStack(renderer, PROJECTION_MATRIX_INDEX));
+        U_MATRIX4(UC_MODELVIEW, material->location.modelViewMatrix, GLRenderer_getMatrixFromStack(renderer, MODEL_VIEW_MATRIX_INDEX));
+        U_MATRIX4(UC_PROJECTION, material->location.projectionMatrix, GLRenderer_getMatrixFromStack(renderer, PROJECTION_MATRIX_INDEX));
     }
 
     if (options->numTextures >= 1) {
         if (!options->vertexProgram) {
-            glUniformMatrix4fv(material->location.textureMatrix, 1, GL_FALSE, GLRenderer_getMatrixFromStack(renderer, TEXTURE_MATRIX_INDEX));
+            U_MATRIX4(UC_TEXTURE_MATRIX, material->location.textureMatrix, GLRenderer_getMatrixFromStack(renderer, TEXTURE_MATRIX_INDEX));
         }
 
         for (int i = 0; i < MAX_TEXTURES; i++) {
             if (material->location.texture[i] != -1) {
-                glUniform1i(material->location.texture[i], i);
+                U_INT(UC_TEXTURE + i, material->location.texture[i], i);
 
                 if (options->spec) {
                     /* Modi sind einkompiliert; nur die Werte, die der Shader noch als Uniform liest */
-                    if (material->location.texEnv[i][1] != -1) glUniform4fv(material->location.texEnv[i][1], 1, renderer->state.texEnv[i].color);
-                    if (material->location.texEnv[i][3] != -1) glUniform2fv(material->location.texEnv[i][3], 1, renderer->state.texEnv[i].rgbaScale);
-                    if (material->location.texEnv[i][6] != -1) glUniform1f(material->location.texEnv[i][6], renderer->state.texEnv[i].lodBias);
+                    U_FLOATV(UC_TEXENV + i * 7 + 1, material->location.texEnv[i][1], 4, renderer->state.texEnv[i].color);
+                    U_FLOATV(UC_TEXENV + i * 7 + 3, material->location.texEnv[i][3], 2, renderer->state.texEnv[i].rgbaScale);
+                    U_FLOAT(UC_TEXENV + i * 7 + 6, material->location.texEnv[i][6], renderer->state.texEnv[i].lodBias);
                     continue;
                 }
 
@@ -801,15 +840,16 @@ void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* rendere
     }
 
     if (options->alphaTest && material->location.alphaTest != -1) {
-        glUniform2f(material->location.alphaTest, ShaderMaterial_alphaTestCode(renderer->state.alphaTest.enabled ? renderer->state.alphaTest.func : GL_ALWAYS), renderer->state.alphaTest.ref);
+        float alphaTest[2] = {ShaderMaterial_alphaTestCode(renderer->state.alphaTest.enabled ? renderer->state.alphaTest.func : GL_ALWAYS), renderer->state.alphaTest.ref};
+        U_FLOATV(UC_ALPHA_TEST, material->location.alphaTest, 2, alphaTest);
     }
 
     if (options->fog) {
-        glUniform4fv(material->location.fog[0], 1, renderer->state.fog.color);
-        glUniform1f(material->location.fog[1], renderer->state.fog.density);
-        glUniform1f(material->location.fog[2], renderer->state.fog.start);
-        glUniform1f(material->location.fog[3], renderer->state.fog.end);
-        if (!options->spec) glUniform1f(material->location.fog[4], ShaderMaterial_fogModeCode(renderer->state.fog.mode));
+        U_FLOATV(UC_FOG + 0, material->location.fog[0], 4, renderer->state.fog.color);
+        U_FLOAT(UC_FOG + 1, material->location.fog[1], renderer->state.fog.density);
+        U_FLOAT(UC_FOG + 2, material->location.fog[2], renderer->state.fog.start);
+        U_FLOAT(UC_FOG + 3, material->location.fog[3], renderer->state.fog.end);
+        if (!options->spec) U_FLOAT(UC_FOG + 4, material->location.fog[4], ShaderMaterial_fogModeCode(renderer->state.fog.mode));
     }
 
     if (options->lighting) {
