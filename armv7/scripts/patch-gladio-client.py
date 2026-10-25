@@ -23,6 +23,9 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   (Worms 3D ruft sie in jedem Bild auf)
 - glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA) überträgt alle vier Werte (wined3d: L8-Texturen
   als GL_R8 mit Swizzle)
+- indizierte Zeichenaufrufe mit Client-Arrays des festen Funktionsmodells schicken den
+  Vertexbereich einmal statt je Index einen Vertex (Kennung GLADIO_DRAW_RANGED im Modus; der
+  Server der armv7-App versteht beides, siehe gl_context.c)
 """
 import pathlib
 import shutil
@@ -114,6 +117,46 @@ sub("src/gl_calls.c",
     "    }\n"
     "    else values[0] = (GLfloat)params[0];\n"
     "    glLightModelfv(pname, values);\n}")
+
+# ---- indizierte Zeichenaufrufe: Vertexbereich einmal statt je Index (GLADIO_DRAW_RANGED) ----
+sub("src/main.c",
+    "void writeUnboundVertexArrays(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {",
+    "/* Alle eingeschalteten Arrays sind Client-Arrays des festen Funktionsmodells (ohne Programm)? */\n"
+    "static bool onlyLegacyClientArrays(GLClientState* clientState) {\n"
+    "    bool any = false;\n"
+    "    for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {\n"
+    "        GLVertexAttrib* attrib = &clientState->vao->attribs[i];\n"
+    "        if (!attrib->state) continue;\n"
+    "        if (attrib->state != VERTEX_ATTRIB_LEGACY_ENABLED || !attrib->pointer || GLClientState_isLegacyEnabledWithProgram(clientState, i)) return false;\n"
+    "        any = true;\n"
+    "    }\n"
+    "    return any;\n"
+    "}\n"
+    "\n"
+    "void writeUnboundVertexArrays(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {")
+sub("src/main.c",
+    "        else ArrayBuffer_putBytes(&outputBuffer, indices, count * sizeofGLType(indexType));\n\n        int indexCount = 0;",
+    "        else ArrayBuffer_putBytes(&outputBuffer, indices, count * sizeofGLType(indexType));\n"
+    "\n"
+    "        /* Server der armv7-App: Vertexbereich [min, max] einmal senden statt je Index einen Vertex.\n"
+    "         * Kennung 0x40000000 (GLADIO_DRAW_RANGED) im Modus = erstes int der Anfrage; dahinter\n"
+    "         * Indexversatz (basevertex - min) und Vertexzahl, dann die Arrays in Attributreihenfolge. */\n"
+    "        if (!elementArrayBuffer && count > 0 && onlyLegacyClientArrays(clientState)) {\n"
+    "            GLuint range[2];\n"
+    "            getRangeIndices(indices, count, indexType, basevertex, range);\n"
+    "            int vertexCount = (int)(range[1] - range[0]) + 1;\n"
+    "            *(int*)outputBuffer.buffer |= 0x40000000;\n"
+    "            ArrayBuffer_putInt(&outputBuffer, basevertex - (int)range[0]);\n"
+    "            ArrayBuffer_putInt(&outputBuffer, vertexCount);\n"
+    "            for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {\n"
+    "                GLVertexAttrib* attrib = &clientState->vao->attribs[i];\n"
+    "                if (attrib->state != VERTEX_ATTRIB_LEGACY_ENABLED) continue;\n"
+    "                ArrayBuffer_putBytes(&outputBuffer, (char*)attrib->pointer + (size_t)range[0] * attrib->stride, vertexCount * attrib->stride);\n"
+    "            }\n"
+    "            return;\n"
+    "        }\n"
+    "\n"
+    "        int indexCount = 0;")
 
 if fbconfigDefaults:
     sub("src/glx_calls.c",

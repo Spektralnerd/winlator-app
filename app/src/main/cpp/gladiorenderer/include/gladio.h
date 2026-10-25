@@ -27,6 +27,11 @@
 #define GL_SERVER 1
 #endif
 
+/* Kennung im Modus indizierter Zeichenaufrufe (armv7-Client, patch-gladio-client.py): die
+ * Client-Arrays des festen Funktionsmodells kommen als Vertexbereich (einmal je Vertex) statt
+ * je Index aufgerollt; dahinter Indexversatz und Vertexzahl. Siehe readUnboundVertexArrays. */
+#define GLADIO_DRAW_RANGED 0x40000000
+
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
 #define MAX_TEXTURE_TARGETS 4

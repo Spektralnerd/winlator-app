@@ -200,6 +200,12 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   direkt an `glVertexAttribPointer`/`glDrawElements` (der Treiber kopiert sie beim Zeichnen in
   seinen Bildspeicher), und Float-Arrays werden im Block umgesetzt
   (`readLegacyFloatArrayBulk` in `gl_context.c`).
+- Indizierte Zeichenaufrufe mit Client-Arrays (`glDrawElements` im festen Funktionsmodell): Der
+  Gladio-Client schickte je Index einen Vertex, gemeinsame Ecken also mehrfach (Worms-3D-Titelbild:
+  1,3 MB je Bild). Der Client der Root-FS (`patch-gladio-client.py`) schickt jetzt den
+  Vertexbereich einmal und die Indizes dazu, gekennzeichnet mit `GLADIO_DRAW_RANGED` im Modus;
+  der Server baut daraus den Stapel mit den echten Indizes (`readRangedLegacyArrays`). Auf dem
+  PC: 417 statt 1319 KB je Bild. Der arm64-Client kennt das Format nicht und schickt wie bisher.
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens

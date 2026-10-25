@@ -902,6 +902,7 @@ void gd_handle_glDrawElements(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -918,6 +919,7 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;
@@ -934,6 +936,7 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -951,6 +954,7 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;
@@ -981,6 +985,7 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -999,6 +1004,7 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
+    mode &= ~GLADIO_DRAW_RANGED;
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;

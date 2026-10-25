@@ -705,7 +705,7 @@ void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx) {
  * über internalReadVertexArrayElement (bei Worms 3D ~80000 Elemente je Bild; auf dem Cortex-A9
  * spart das mehrere Millisekunden). Liefert false, wenn der Einzelweg nötig bleibt.
  */
-static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawCount) {
+static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawCount, bool addIndices) {
     GLClientState* clientState = &currentRenderer->clientState;
     GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[arrayIdx];
     if (vertexAttrib->type != GL_FLOAT || vertexAttrib->size < 1 || vertexAttrib->size > 4 || vertexAttrib->stride <= 0) return false;
@@ -741,13 +741,57 @@ static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawC
     int base = dst->position;
     dst->position += drawCount;
 
-    if (arrayIdx == POSITION_ARRAY_INDEX) {
+    if (addIndices && arrayIdx == POSITION_ARRAY_INDEX) {
         for (int j = 0; j < drawCount; j++) GLRenderer_addArrayElement(currentRenderer, base + j);
     }
     return true;
 }
 
+/*
+ * Indizierter Zeichenaufruf mit Client-Arrays des festen Funktionsmodells im Bereichsformat
+ * (GLADIO_DRAW_RANGED, armv7-Client): jeder Vertex des Bereichs kommt einmal, die Indizes
+ * verweisen hinein (Index + Versatz). Der alte Client schickte je Index einen Vertex – bei
+ * Modellen mit gemeinsamen Ecken das Mehrfache an Daten, Umsetzung und Vertex-Shader-Arbeit.
+ */
+static bool readRangedLegacyArrays(GLContext* context, GLenum drawMode, int drawCount, const void* indices, GLenum indexType) {
+    int indexBias = ArrayBuffer_getInt(&context->inputBuffer);
+    int vertexCount = ArrayBuffer_getInt(&context->inputBuffer);
+    GLRenderer* renderer = currentRenderer;
+    if (vertexCount <= 0 || drawCount <= 0) return true;
+
+    /* 16-Bit-Indizes des Stapels: vorher ausgeben, wenn der Bereich nicht mehr hineinpasst */
+    if (renderer->geometry.vertices.position + vertexCount > 65535 && !ArrayDeque_isEmpty(&renderer->meshes)) {
+        GLRenderer_drawImmediate(renderer);
+    }
+
+    GLRenderer_beginImmediate(renderer, drawMode);
+    int base = renderer->geometry.vertices.position;
+    GLClientState* clientState = &renderer->clientState;
+    for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
+        if (clientState->vao->attribs[i].state != VERTEX_ATTRIB_LEGACY_ENABLED) continue;
+        if (readLegacyFloatArrayBulk(context, i, vertexCount, false)) continue;
+        for (int j = 0; j < vertexCount; j++) readVertexArrayElement(context, i, -1);
+    }
+
+    int bias = base + indexBias;
+    switch (indexType) {
+        case GL_UNSIGNED_BYTE:
+            for (int j = 0; j < drawCount; j++) GLRenderer_addArrayElement(renderer, ((const GLubyte*)indices)[j] + bias);
+            break;
+        case GL_UNSIGNED_SHORT:
+            for (int j = 0; j < drawCount; j++) GLRenderer_addArrayElement(renderer, ((const GLushort*)indices)[j] + bias);
+            break;
+        case GL_UNSIGNED_INT:
+            for (int j = 0; j < drawCount; j++) GLRenderer_addArrayElement(renderer, (int)((const GLuint*)indices)[j] + bias);
+            break;
+    }
+    GLRenderer_endImmediate(renderer);
+    return true;
+}
+
 bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount, void** outIndices, GLenum indexType) {
+    bool ranged = (drawMode & GLADIO_DRAW_RANGED) != 0;
+    drawMode &= ~GLADIO_DRAW_RANGED;
     if (indexType != GL_NONE) {
         if (GLBuffer_getBound(GL_ELEMENT_ARRAY_BUFFER)) {
             *outIndices = (void*)(uint64_t)ArrayBuffer_getInt(&context->inputBuffer);
@@ -756,6 +800,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
     }
 
     if (ArrayBuffer_available(&context->inputBuffer) == 0) return false;
+    if (ranged && indexType != GL_NONE) return readRangedLegacyArrays(context, drawMode, drawCount, *outIndices, indexType);
     bool meshCreated = false;
 
     GLClientState* clientState = &currentRenderer->clientState;
@@ -797,7 +842,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
                 meshCreated = true;
             }
 
-            if (GLES2 && readLegacyFloatArrayBulk(context, i, drawCount)) continue;
+            if (GLES2 && readLegacyFloatArrayBulk(context, i, drawCount, true)) continue;
             for (j = 0; j < drawCount; j++) {
                 readVertexArrayElement(context, i, -1);
                 if (i == POSITION_ARRAY_INDEX) {
