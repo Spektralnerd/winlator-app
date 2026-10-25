@@ -261,6 +261,41 @@ static bool isCanDrawImmediate(short requestCode) {
            requestCode == REQUEST_CODE_GL_ARRAY_ELEMENT ? false : true;
 }
 
+/* Beim Ende der Verbindung: die letzten Anfragen des Programms (nach einem Absturz des Programms
+ * zeigt das, womit es zuletzt beschäftigt war); gleiche Anfragen hintereinander werden gezählt */
+static void printLastRequests(GLContext* context) {
+    typeof(context->lastRequests)* lr = &context->lastRequests;
+    uint32_t n = lr->count < 64 ? lr->count : 64;
+    if (n == 0) return;
+    char line[1024];
+    int pos = 0;
+    uint32_t first = lr->count - n;
+    for (uint32_t i = first; i < lr->count; ) {
+        short code = lr->code[i % 64];
+        int size = lr->size[i % 64];
+        uint32_t repeat = 1;
+        while (i + repeat < lr->count && lr->code[(i + repeat) % 64] == code) repeat++;
+        const char* name;
+        if (code == REQUEST_CODE_SWAP_DISPLAY_BUFFERS) name = "SWAP";
+        else if (code == REQUEST_CODE_SET_CURRENT_RENDER_WINDOW) name = "MAKE_CURRENT";
+        else if (code >= REQUEST_CODE_GL_DSA_START && code < REQUEST_CODE_GL_CALL_START) name = "DSA";
+        else {
+            name = requestCodeToString(code);
+            if (name[0] == 'g' && name[1] == 'l') name += 2;
+        }
+        int written = repeat > 1 ? snprintf(line + pos, sizeof(line) - pos, "%s(%d)x%u ", name, size, repeat)
+                                 : snprintf(line + pos, sizeof(line) - pos, "%s(%d) ", name, size);
+        if (written < 0 || pos + written >= (int)sizeof(line) - 1) {
+            println("gladio: letzte Anfragen: %s", line);
+            pos = 0;
+            continue;
+        }
+        pos += written;
+        i += repeat;
+    }
+    if (pos > 0) println("gladio: letzte Anfragen (%u insgesamt): %s", lr->count, line);
+}
+
 static void* requestHandlerThread(void* param) {
     GLContext* context = param;
     loadJMethods(&context->jmethods);
@@ -275,6 +310,9 @@ static void* requestHandlerThread(void* param) {
         if (blocked) context->stats.waitNs += nowNs() - waitStart;
         context->stats.requests++;
         context->stats.bytes += HEADER_SIZE + context->inputBuffer.size;
+        context->lastRequests.code[context->lastRequests.count % 64] = requestCode;
+        context->lastRequests.size[context->lastRequests.count % 64] = context->inputBuffer.size;
+        context->lastRequests.count++;
         if (isDrawRequest(requestCode)) {
             context->stats.draws++;
             context->stats.drawBytes += context->inputBuffer.size;
@@ -350,6 +388,7 @@ static void* requestHandlerThread(void* param) {
 #endif
     }
 
+    printLastRequests(context);
     destroyDisplayBuffer();
     destroyDisplayBufAttachment(context);
     if (context->glxContext) {

@@ -237,6 +237,14 @@ static void stub_CallVoidMethod(JNIEnv* env, jobject obj, jmethodID mid, ...) {
 
 static bool wantDump(int frame) {
     if (!dumpDir) return false;
+    /* Datei "now" im Ablageverzeichnis: dieses Bild ablegen (zum Steuern von außen) */
+    char trigger[1024];
+    snprintf(trigger, sizeof(trigger), "%s/now", dumpDir);
+    if (access(trigger, F_OK) == 0) {
+        unlink(trigger);
+        return true;
+    }
+    if (!dumpFrames || !*dumpFrames) return false;
     if (!strcmp(dumpFrames, "all")) return true;
     const char* p = dumpFrames;
     while (*p) {

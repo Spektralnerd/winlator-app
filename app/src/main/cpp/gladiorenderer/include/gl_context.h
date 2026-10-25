@@ -48,6 +48,13 @@ typedef struct GLContext {
         int64_t waitNs, swapNs, drawNs;
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
     } stats;
+
+    /* die letzten Anfragen (Ring), fürs Protokoll beim Ende der Verbindung – z. B. nach einem Absturz des Programms */
+    struct {
+        short code[64];
+        int size[64];
+        uint32_t count;
+    } lastRequests;
 } GLContext;
 
 /* Zähler über alle Kontexte (Antworten an den Client, Texturdaten, gelinkte Programme) */
