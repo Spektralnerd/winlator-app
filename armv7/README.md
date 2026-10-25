@@ -191,6 +191,21 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   (`presentWindowTexture` in `GLXExtension.java`, `Texture.setExternalTextureId`); X-Server-Renderer
   und GLX-Kontexte teilen sich die Texturen, kopiert wird nichts mehr. Verschwindet die Textur
   (Fenstergröße, Kontextende), gibt der Server sie vorher frei (`releaseWindowTexture`).
+  Messung danach (Note 8.0): Titelbild 20 Bilder/s statt 1,4, Menüs 28–65/s, „Bildausgabe“
+  unter 2 ms.
+- Zeichenstapel (klassisches OpenGL mit Client-Arrays, `glBegin`/`glEnd`): Der Server legte je
+  Stapel für jedes Attribut ein neues Pufferobjekt an (`glBufferData`, bei Worms 3D ~250-mal je
+  Bild – auf der Mali-400 je eine GPU-Speicherzuteilung über den Kernel) und setzte die
+  Vertexdaten Element für Element um. Im ES-2.0-Pfad gehen die Daten jetzt als Client-Arrays
+  direkt an `glVertexAttribPointer`/`glDrawElements` (der Treiber kopiert sie beim Zeichnen in
+  seinen Bildspeicher), und Float-Arrays werden im Block umgesetzt
+  (`readLegacyFloatArrayBulk` in `gl_context.c`).
+- Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
+  emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
+  auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens
+  ~60 Ereignisse je Sekunde zusammen (`XServer.java`, `BuildConfig.X86_ONLY`).
+- Beim Ende einer Client-Verbindung (auch nach einem Absturz des Programms) stehen die letzten
+  64 GL-Anfragen im Protokoll (`gladio: letzte Anfragen …`).
 
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit
