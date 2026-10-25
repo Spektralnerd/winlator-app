@@ -700,6 +700,53 @@ void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx) {
     }
 }
 
+/*
+ * ES 2.0: ein Client-Array aus Floats im Block in den Geometriepuffer umsetzen statt je Element
+ * über internalReadVertexArrayElement (bei Worms 3D ~80000 Elemente je Bild; auf dem Cortex-A9
+ * spart das mehrere Millisekunden). Liefert false, wenn der Einzelweg nötig bleibt.
+ */
+static bool readLegacyFloatArrayBulk(GLContext* context, int arrayIdx, int drawCount) {
+    GLClientState* clientState = &currentRenderer->clientState;
+    GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[arrayIdx];
+    if (vertexAttrib->type != GL_FLOAT || vertexAttrib->size < 1 || vertexAttrib->size > 4 || vertexAttrib->stride <= 0) return false;
+
+    Geometry* geometry = &currentRenderer->geometry;
+    ArrayBuffer* dst;
+    int dstComps = 4;
+    if (arrayIdx == POSITION_ARRAY_INDEX) dst = &geometry->vertices;
+    else if (arrayIdx == COLOR_ARRAY_INDEX) dst = &geometry->colors;
+    else if (arrayIdx == NORMAL_ARRAY_INDEX) {
+        dst = &geometry->normals;
+        dstComps = 3;
+    }
+    else if (arrayIdx >= TEXCOORD_ARRAY_INDEX && arrayIdx < TEXCOORD_ARRAY_INDEX + MAX_TEXTURES) dst = &geometry->texCoords[arrayIdx - TEXCOORD_ARRAY_INDEX];
+    else return false;
+
+    int stride = vertexAttrib->stride;
+    int comps = MIN(vertexAttrib->size, dstComps);
+    if (ArrayBuffer_available(&context->inputBuffer) < drawCount * stride) return false;
+    const char* src = ArrayBuffer_getBytes(&context->inputBuffer, drawCount * stride);
+
+    int targetSize = dst->size + drawCount * dstComps * (int)sizeof(float);
+    ENSURE_ARRAY_CAPACITY(targetSize, dst->capacity, dst->buffer, 1);
+    float* out = (float*)(dst->buffer + dst->size);
+    for (int j = 0; j < drawCount; j++, out += dstComps) {
+        out[0] = 0.0f;
+        out[1] = 0.0f;
+        out[2] = dstComps == 3 ? 1.0f : 0.0f;
+        if (dstComps == 4) out[3] = 1.0f;
+        memcpy(out, src + j * stride, comps * sizeof(float));
+    }
+    dst->size = targetSize;
+    int base = dst->position;
+    dst->position += drawCount;
+
+    if (arrayIdx == POSITION_ARRAY_INDEX) {
+        for (int j = 0; j < drawCount; j++) GLRenderer_addArrayElement(currentRenderer, base + j);
+    }
+    return true;
+}
+
 bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount, void** outIndices, GLenum indexType) {
     if (indexType != GL_NONE) {
         if (GLBuffer_getBound(GL_ELEMENT_ARRAY_BUFFER)) {
@@ -750,6 +797,7 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
                 meshCreated = true;
             }
 
+            if (GLES2 && readLegacyFloatArrayBulk(context, i, drawCount)) continue;
             for (j = 0; j < drawCount; j++) {
                 readVertexArrayElement(context, i, -1);
                 if (i == POSITION_ARRAY_INDEX) {
