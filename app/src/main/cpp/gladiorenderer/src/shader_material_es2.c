@@ -86,16 +86,30 @@ void FFSpec_fromState(FFSpec* spec, GLRenderer* renderer, const MaterialOptions*
     spec->points = points;
 
     if (options->lighting) {
+        bool lightSpecular = false;
         for (int i = 0; i < MAX_LIGHTS; i++) {
             GLLight* light = &renderer->lights[i];
             if (!light->enabled) continue;
             uint8_t flags = 0;
-            if (light->position[3] > 0.0f) flags |= FF_LIGHT_POSITIONAL;
-            /* Spot: Öffnungswinkel (im Bogenmaß) kleiner als 180° (GL erlaubt 0–90° oder 180°) */
-            if (light->spotCutoffExponent[0] < 3.0f) flags |= FF_LIGHT_SPOT;
-            if (light->attenuation[0] != 1.0f || light->attenuation[1] != 0.0f || light->attenuation[2] != 0.0f) flags |= FF_LIGHT_ATTENUATION;
+            if (light->position[3] != 0.0f) {
+                flags |= FF_LIGHT_POSITIONAL;
+                /* Spot und Abschwächung gibt es in GL nur bei Punktlichtern; Spot: Öffnungswinkel
+                 * (im Bogenmaß) kleiner als 180° (GL erlaubt 0–90° oder 180°) */
+                if (light->spotCutoffExponent[0] < 3.0f) flags |= FF_LIGHT_SPOT;
+                if (light->attenuation[0] != 1.0f || light->attenuation[1] != 0.0f || light->attenuation[2] != 0.0f) flags |= FF_LIGHT_ATTENUATION;
+            }
+            if (light->specular[0] != 0.0f || light->specular[1] != 0.0f || light->specular[2] != 0.0f) lightSpecular = true;
             spec->lightFlags[spec->numLights++] = flags;
         }
+
+        spec->colorMaterial = ShaderMaterial_colorMaterialMask(renderer);
+        spec->twoSide = renderer->state.lightModelTwoSide;
+        bool materialSpecular = (spec->colorMaterial & FF_CM_SPECULAR) != 0;
+        for (int i = 0; i < (spec->twoSide ? 2 : 1) && renderer->materials; i++) {
+            const float* s = renderer->materials[i].specular;
+            if (s[0] != 0.0f || s[1] != 0.0f || s[2] != 0.0f) materialSpecular = true;
+        }
+        spec->specular = lightSpecular && materialSpecular;
     }
 
     if (options->alphaTest) {
@@ -158,6 +172,78 @@ static const char* precisionHeader() {
 
 /* ---------------------------------------------------------------- Vertex-Shader */
 
+/* Materialwert einer Seite: Vertexfarbe bei GL_COLOR_MATERIAL (für diese Seite), sonst die Uniform */
+static void materialExpr(char* dst, int size, const FFSpec* spec, int side, uint8_t cmBit, const char* member, const char* colorExpr) {
+    bool useColor = (spec->colorMaterial & cmBit) && (spec->colorMaterial & (side == 0 ? FF_CM_FRONT : FF_CM_BACK));
+    if (useColor) snprintf(dst, size, "%s", colorExpr);
+    else snprintf(dst, size, "materials[%d].%s", side, member);
+}
+
+/* Beleuchtung einer Seite (Normale, Material) nach target */
+static void emitLightingSide(ArrayBuffer* out, const FFSpec* spec, int side, const char* normalExpr, const char* target) {
+    char expr[96];
+    emit(out, "{\n");
+    emit(out, "vec3 n = %s;\n", normalExpr);
+    materialExpr(expr, sizeof(expr), spec, side, FF_CM_AMBIENT, "ambient", "gd_Color.rgb");
+    emit(out, "vec3 mAmbient = %s;\n", expr);
+    materialExpr(expr, sizeof(expr), spec, side, FF_CM_DIFFUSE, "diffuse", "gd_Color.rgb");
+    emit(out, "vec3 mDiffuse = %s;\n", expr);
+    materialExpr(expr, sizeof(expr), spec, side, FF_CM_DIFFUSE, "alpha", "gd_Color.a");
+    emit(out, "float mAlpha = %s;\n", expr);
+    materialExpr(expr, sizeof(expr), spec, side, FF_CM_EMISSION, "emission", "gd_Color.rgb");
+    emit(out, "vec3 lit = %s + gd_LightModelAmbient * mAmbient;\n", expr);
+    if (spec->specular) {
+        materialExpr(expr, sizeof(expr), spec, side, FF_CM_SPECULAR, "specular.rgb", "gd_Color.rgb");
+        emit(out, "vec3 mSpecular = %s;\n", expr);
+        emit(out, "float shininess = materials[%d].specular.w;\n", side);
+        emit(out, "vec3 viewDirection = normalize(-position.xyz);\n");
+    }
+
+    for (int i = 0; i < spec->numLights; i++) {
+        uint8_t flags = spec->lightFlags[i];
+        emit(out, "{\n");
+        if (flags & FF_LIGHT_POSITIONAL) {
+            emit(out, "vec3 lightDirection = normalize(lights[%d].position.xyz - position.xyz);\n", i);
+        }
+        else emit(out, "vec3 lightDirection = lights[%d].position.xyz;\n", i);
+
+        bool hasFactor = (flags & (FF_LIGHT_SPOT | FF_LIGHT_ATTENUATION)) != 0;
+        if (hasFactor) emit(out, "float factor = 1.0;\n");
+        if (flags & FF_LIGHT_SPOT) {
+            emit(out,
+                "float angleCos = dot(-lights[%d].spotDirection, lightDirection);\n"
+                "factor = angleCos >= cos(lights[%d].spotCutoffExponent.x) ? pow(max(angleCos, 0.0001), lights[%d].spotCutoffExponent.y) : 0.0;\n", i, i, i);
+        }
+        if (flags & FF_LIGHT_ATTENUATION) {
+            emit(out,
+                "float distance = length(lights[%d].position.xyz - position.xyz);\n"
+                "factor /= lights[%d].attenuation.x + lights[%d].attenuation.y * distance + lights[%d].attenuation.z * (distance * distance);\n", i, i, i, i);
+        }
+        emit(out,
+            "float NdotL = max(dot(n, lightDirection), 0.0);\n"
+            "vec3 contribution = lights[%d].ambient * mAmbient + NdotL * lights[%d].diffuse * mDiffuse;\n", i, i);
+        if (spec->specular) {
+            emit(out, "if (NdotL > 0.0) contribution += pow(max(dot(n, normalize(lightDirection + viewDirection)), 0.0001), shininess) * lights[%d].specular * mSpecular;\n", i);
+        }
+        emit(out, hasFactor ? "lit += factor * contribution;\n" : "lit += contribution;\n");
+        emit(out, "}\n");
+    }
+    emit(out, "%s = vec4(clamp(lit, 0.0, 1.0), mAlpha);\n", target);
+    emit(out, "}\n");
+}
+
+/*
+ * Beleuchtung wie in GL (je Vertex): Das Ergebnis ersetzt die Vertexfarbe, die nur über
+ * GL_COLOR_MATERIAL eingeht; Alpha ist das der diffusen Materialfarbe. Bei
+ * GL_LIGHT_MODEL_TWO_SIDE wird auch die Rückseite (Rückseitenmaterial, umgedrehte Normale)
+ * berechnet; der Fragment-Shader wählt wie GL nach der Orientierung des Dreiecks.
+ */
+static void emitLighting(ArrayBuffer* out, const FFSpec* spec) {
+    emit(out, "vec3 mvNormal = normalize(vec3(gd_ModelViewMatrix * vec4(gd_Normal, 0.0)));\n");
+    emitLightingSide(out, spec, 0, "mvNormal", "gd_FrontColor");
+    if (spec->twoSide) emitLightingSide(out, spec, 1, "-mvNormal", "gd_BackColor");
+}
+
 char* ShaderMaterialES2_vertexSource(const MaterialOptions* options) {
     const FFSpec* spec = options->spec;
     ArrayBuffer out = {0};
@@ -168,6 +254,7 @@ char* ShaderMaterialES2_vertexSource(const MaterialOptions* options) {
     }
     emit(&out, "attribute vec4 gd_Vertex;\nattribute vec4 gd_Color;\nattribute vec3 gd_Normal;\n");
     emit(&out, "varying vec4 gd_FrontColor;\n");
+    if (spec->numLights > 0 && spec->twoSide) emit(&out, "varying vec4 gd_BackColor;\n");
 
     bool useTexture = false;
     for (int i = 0; i < options->numTextures; i++) {
@@ -193,12 +280,11 @@ char* ShaderMaterialES2_vertexSource(const MaterialOptions* options) {
                 "vec3 diffuse;\n"
                 "vec4 specular;\n"
                 "vec3 emission;\n"
+                "float alpha;\n"
             "};\n"
             "uniform Light lights[%d];\n"
             "uniform vec3 gd_LightModelAmbient;\n"
-            "uniform Material materials[2];\n"
-            "varying vec3 gd_TotalDiffuseLight;\n"
-            "varying vec3 gd_TotalSpecularLight;\n", spec->numLights);
+            "uniform Material materials[2];\n", spec->numLights);
     }
 
     if (spec->fogMode) emit(&out, "varying float gd_FogFragCoord;\n");
@@ -222,48 +308,7 @@ char* ShaderMaterialES2_vertexSource(const MaterialOptions* options) {
     }
     else emit(&out, "vec4 position = gd_Vertex;\n");
 
-    if (spec->numLights > 0) {
-        emit(&out,
-            "vec3 mvNormal = vec3(gd_ModelViewMatrix * vec4(gd_Normal, 0.0));\n"
-            "int face = int(dot(mvNormal, position.xyz) >= 0.0);\n"
-            "vec3 totalDiffuse = vec3(0.0);\n"
-            "vec3 totalSpecular = materials[face].emission;\n"
-            "vec3 totalAmbient = gd_LightModelAmbient * materials[face].ambient;\n"
-            "vec3 viewDirection = normalize(-position.xyz);\n"
-            "float shininess = materials[face].specular.w;\n");
-
-        for (int i = 0; i < spec->numLights; i++) {
-            uint8_t flags = spec->lightFlags[i];
-            emit(&out, "{\n");
-            emit(&out, "totalAmbient += lights[%d].ambient * materials[face].ambient;\n", i);
-            if (flags & FF_LIGHT_POSITIONAL) {
-                emit(&out, "vec3 lightDirection = normalize(lights[%d].position.xyz - position.xyz);\n", i);
-            }
-            else emit(&out, "vec3 lightDirection = lights[%d].position.xyz;\n", i);
-
-            emit(&out, "float factor = 1.0;\n");
-            if (flags & FF_LIGHT_SPOT) {
-                emit(&out,
-                    "float angleCos = dot(-lights[%d].spotDirection, lightDirection);\n"
-                    "float spotCutoff = cos(lights[%d].spotCutoffExponent.x);\n"
-                    "factor = angleCos > spotCutoff ? pow(angleCos, lights[%d].spotCutoffExponent.y) : 0.0;\n", i, i, i);
-            }
-            if (flags & FF_LIGHT_ATTENUATION) {
-                emit(&out,
-                    "float distance = length(lights[%d].position.xyz - position.xyz);\n"
-                    "factor /= lights[%d].attenuation.x + lights[%d].attenuation.y * distance + lights[%d].attenuation.z * (distance * distance);\n", i, i, i, i);
-            }
-            emit(&out,
-                "float diffuse = clamp(dot(mvNormal, lightDirection), 0.0, 1.0);\n"
-                "totalDiffuse += diffuse * lights[%d].diffuse * materials[face].diffuse * factor;\n"
-                "vec3 lightVector = normalize(lightDirection + viewDirection);\n"
-                "float specular = pow(clamp(dot(mvNormal, lightVector), 0.0, 1.0), shininess);\n"
-                "totalSpecular += specular * lights[%d].specular * materials[face].specular.rgb * factor;\n", i, i);
-            emit(&out, "}\n");
-        }
-        emit(&out, "gd_TotalDiffuseLight = totalDiffuse + totalAmbient;\n");
-        emit(&out, "gd_TotalSpecularLight = totalSpecular;\n");
-    }
+    if (spec->numLights > 0) emitLighting(&out, spec);
 
     if (spec->fogMode) emit(&out, "gd_FogFragCoord = -position.z;\n");
 
@@ -290,7 +335,7 @@ static void combineSource(char* dst, int size, uint8_t code, int unit, bool alph
         case TE_SRC_PREVIOUS: snprintf(dst, size, "finalColor.%s", swizzle); break;
         case TE_SRC_TEXTURE: snprintf(dst, size, "tex%d.%s", unit, swizzle); break;
         case TE_SRC_CONSTANT: snprintf(dst, size, "gd_TexEnv%d.color.%s", unit, swizzle); break;
-        case TE_SRC_PRIMARY_COLOR: snprintf(dst, size, "gd_FrontColor.%s", swizzle); break;
+        case TE_SRC_PRIMARY_COLOR: snprintf(dst, size, "primaryColor.%s", swizzle); break;
         default: snprintf(dst, size, alpha ? "1.0" : "vec3(1.0)"); break;
     }
 }
@@ -407,7 +452,8 @@ char* ShaderMaterialES2_fragmentSource(const MaterialOptions* options) {
 
     emit(&out, "%s", precisionHeader());
     emit(&out, "varying vec4 gd_FrontColor;\n");
-    if (spec->numLights > 0) emit(&out, "varying vec3 gd_TotalDiffuseLight;\nvarying vec3 gd_TotalSpecularLight;\n");
+    bool twoSided = spec->numLights > 0 && spec->twoSide;
+    if (twoSided) emit(&out, "varying vec4 gd_BackColor;\n");
 
     bool useTexture = false;
     for (int i = 0; i < options->numTextures; i++) {
@@ -423,10 +469,9 @@ char* ShaderMaterialES2_fragmentSource(const MaterialOptions* options) {
     if (options->pointSprite) emit(&out, "uniform sampler2D gd_PointSprite;\n" SHADER_CHUNK_POINT);
 
     emit(&out, "void main() {\n");
-    if (spec->numLights > 0) {
-        emit(&out, "vec4 finalColor = vec4(gd_FrontColor.rgb * gd_TotalDiffuseLight + gd_TotalSpecularLight, gd_FrontColor.a);\n");
-    }
-    else emit(&out, "vec4 finalColor = gd_FrontColor;\n");
+    /* Primärfarbe; bei zweiseitiger Beleuchtung nach Orientierung des Dreiecks (wie GL) */
+    emit(&out, twoSided ? "vec4 primaryColor = gl_FrontFacing ? gd_FrontColor : gd_BackColor;\n" : "vec4 primaryColor = gd_FrontColor;\n");
+    emit(&out, "vec4 finalColor = primaryColor;\n");
 
     if (options->pointSprite) {
         emit(&out,

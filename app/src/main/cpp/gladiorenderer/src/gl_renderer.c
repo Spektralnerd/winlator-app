@@ -42,20 +42,23 @@ static void initMaterials(GLRenderer* renderer) {
     memcpy(materials[0].diffuse, diffuse, sizeof(diffuse));
     memcpy(materials[1].ambient, ambient, sizeof(ambient));
     memcpy(materials[1].diffuse, diffuse, sizeof(diffuse));
+    materials[0].alpha = materials[1].alpha = 1.0f;
 
     renderer->materials = materials;
 }
 
-static void initLight(GLLight* light) {
-    const float ambient[] = {0.2f, 0.2f, 0.2f};
+/* Vorgaben laut GL: Umgebungslicht 0 für alle Lichter, diffus/spekular 1 nur für GL_LIGHT0 */
+static void initLight(GLLight* light, int index) {
+    const float ambient[] = {0.0f, 0.0f, 0.0f};
     const float diffuse[] = {1.0f, 1.0f, 1.0f};
+    const float black[] = {0.0f, 0.0f, 0.0f};
     const float position[] = {0.0f, 0.0f, 1.0f, 0.0f};
     const float attenuation[] = {1.0f, 0.0f, 0.0f};
     const float spotDirection[] = {0.0f, 0.0f, -1.0f};
 
     memcpy(light->ambient, ambient, sizeof(ambient));
-    memcpy(light->diffuse, diffuse, sizeof(diffuse));
-    memcpy(light->specular, diffuse, sizeof(diffuse));
+    memcpy(light->diffuse, index == 0 ? diffuse : black, sizeof(diffuse));
+    memcpy(light->specular, index == 0 ? diffuse : black, sizeof(diffuse));
     memcpy(light->position, position, sizeof(position));
     memcpy(light->attenuation, attenuation, sizeof(position));
     memcpy(light->spotDirection, spotDirection, sizeof(spotDirection));
@@ -101,10 +104,13 @@ void GLRenderer_initOnEGLContext(GLRenderer* renderer) {
     renderer->state.alphaTest.func = GL_ALWAYS;
     renderer->state.alphaTest.ref = 0.0f;
 
+    renderer->state.colorMaterial.face = GL_FRONT_AND_BACK;
+    renderer->state.colorMaterial.mode = GL_AMBIENT_AND_DIFFUSE;
+
     renderer->state.shadeModel = GL_SMOOTH;
     renderer->state.clampReadColor = false;
 
-    for (int i = 0; i < MAX_LIGHTS; i++) initLight(&renderer->lights[i]);
+    for (int i = 0; i < MAX_LIGHTS; i++) initLight(&renderer->lights[i], i);
     /* Vorgabematerial (ambient 0.2, diffuse 0.8) auch ohne glMaterial-Aufruf der Anwendung */
     initMaterials(renderer);
 
@@ -573,6 +579,7 @@ void GLRenderer_setMaterialParams(GLRenderer* renderer, GLenum face, GLenum pnam
                     break;
                 case GL_DIFFUSE:
                     memcpy(material->diffuse, params, sizeof(material->diffuse));
+                    material->alpha = ((float*)params)[3];
                     break;
                 case GL_SPECULAR:
                     memcpy(material->specular, params, 3 * sizeof(float));
@@ -586,6 +593,7 @@ void GLRenderer_setMaterialParams(GLRenderer* renderer, GLenum face, GLenum pnam
                 case GL_AMBIENT_AND_DIFFUSE:
                     memcpy(material->ambient, params, sizeof(material->ambient));
                     memcpy(material->diffuse, params, sizeof(material->diffuse));
+                    material->alpha = ((float*)params)[3];
                     break;
             }
         }
@@ -601,14 +609,12 @@ void GLRenderer_setLightParams(GLRenderer* renderer, GLenum id, GLenum pname, vo
         case GL_POSITION: {
             memcpy(light->position, params, sizeof(light->position));
             float* modelViewMatrix = GLRenderer_getMatrixFromStack(renderer, MODEL_VIEW_MATRIX_INDEX);
-            if (light->position[3] > 0.0f) {
+            /* GL: Position (w != 0) und Richtung (w = 0) mit der aktuellen Modelview-Matrix ins
+             * Augensystem; Richtungen mit deren oberem 3x3-Teil (nicht der Inversen) */
+            if (light->position[3] != 0.0f) {
                 vec3_apply_mat4(light->position, modelViewMatrix);
             }
-            else {
-                float inverseMatrix[16];
-                mat4_inverse(inverseMatrix, modelViewMatrix);
-                vec3_transform_direction(light->position, inverseMatrix);
-            }
+            else vec3_transform_direction(light->position, modelViewMatrix);
             break;
         }
         case GL_AMBIENT:
@@ -641,9 +647,7 @@ void GLRenderer_setLightParams(GLRenderer* renderer, GLenum id, GLenum pname, vo
         case GL_SPOT_DIRECTION: {
             memcpy(light->spotDirection, params, sizeof(light->spotDirection));
             float* modelViewMatrix = GLRenderer_getMatrixFromStack(renderer, MODEL_VIEW_MATRIX_INDEX);
-            float inverseMatrix[16];
-            mat4_inverse(inverseMatrix, modelViewMatrix);
-            vec3_transform_direction(light->spotDirection, inverseMatrix);
+            vec3_transform_direction(light->spotDirection, modelViewMatrix);
             break;
         }
     }
@@ -654,8 +658,10 @@ void GLRenderer_setLightModelParams(GLRenderer* renderer, GLenum pname, GLfloat*
         case GL_LIGHT_MODEL_AMBIENT:
             memcpy(renderer->state.lightModelAmbient, params, sizeof(renderer->state.lightModelAmbient));
             break;
-        case GL_LIGHT_MODEL_LOCAL_VIEWER:
         case GL_LIGHT_MODEL_TWO_SIDE:
+            renderer->state.lightModelTwoSide = params[0] != 0.0f;
+            break;
+        case GL_LIGHT_MODEL_LOCAL_VIEWER:
         case GL_LIGHT_MODEL_COLOR_CONTROL:
             break;
         default:

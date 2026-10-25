@@ -100,9 +100,20 @@ typedef struct FFTexUnit {
     uint8_t flags;      /* FF_TEXUNIT_* */
 } FFTexUnit;
 
+/* GL_COLOR_MATERIAL: welche Materialfarben die Vertexfarbe ersetzt (0 = aus) */
+#define FF_CM_AMBIENT 1
+#define FF_CM_DIFFUSE 2
+#define FF_CM_SPECULAR 4
+#define FF_CM_EMISSION 8
+#define FF_CM_FRONT 16
+#define FF_CM_BACK 32
+
 typedef struct FFSpec {
     uint8_t numLights;              /* eingeschaltete Lichter (dicht gepackt wie in setLightUniforms) */
     uint8_t lightFlags[MAX_LIGHTS]; /* FF_LIGHT_* je Licht */
+    uint8_t colorMaterial;          /* FF_CM_*, 0 = Vertexfarbe wird bei Beleuchtung nicht verwendet */
+    uint8_t twoSide;                /* GL_LIGHT_MODEL_TWO_SIDE */
+    uint8_t specular;               /* Glanzlicht möglich (Licht und Material mit Glanzfarbe != 0) */
     uint8_t alphaFunc;              /* Code wie ShaderMaterial_alphaTestCode(), 0 = kein Alphatest */
     uint8_t fogMode;                /* Code wie ShaderMaterial_fogModeCode(), 0 = kein Nebel */
     uint8_t points;                 /* Stapel enthält Punkte: gl_PointSize wird berechnet */
@@ -139,8 +150,10 @@ typedef struct ShaderMaterial {
         int lights[MAX_LIGHTS][7];
         int numLights;
         int lightModelAmbient;
+        int colorMaterial; /* allgemeiner Shader: vec4 (Umgebung, diffus, spekular, Emission) 0/1 */
+        int twoSide;       /* allgemeiner Shader: GL_LIGHT_MODEL_TWO_SIDE 0/1 */
 
-        int materials[2][4];
+        int materials[2][5];
     } location;
 } ShaderMaterial;
 
@@ -151,6 +164,8 @@ extern void ShaderMaterial_updateUniforms(ShaderMaterial* material, GLRenderer* 
 
 /* shader_material_es2.c: Fixed-Function-Zustand erfassen und spezialisierte GLSL-ES-1.00-Shader erzeugen */
 extern void FFSpec_fromState(FFSpec* spec, GLRenderer* renderer, const MaterialOptions* options, bool points);
+/* GL_COLOR_MATERIAL als FF_CM_*-Maske (0 = aus) */
+extern uint8_t ShaderMaterial_colorMaterialMask(GLRenderer* renderer);
 extern char* ShaderMaterialES2_vertexSource(const MaterialOptions* options);
 extern char* ShaderMaterialES2_fragmentSource(const MaterialOptions* options);
 

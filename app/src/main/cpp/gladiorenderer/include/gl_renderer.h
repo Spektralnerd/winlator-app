@@ -33,6 +33,7 @@ typedef struct GLMaterial {
     float diffuse[3];
     float specular[4];
     float emission[3];
+    float alpha; /* Alpha der diffusen Materialfarbe: Alpha des beleuchteten Ergebnisses */
 } GLMaterial;
 
 typedef struct Mesh {
@@ -117,6 +118,7 @@ typedef struct GLState {
     float color[4];
     float normal[3];
     float lightModelAmbient[4];
+    bool lightModelTwoSide;
     float texCoords[MAX_TEXTURES][4];
     TexEnv texEnv[MAX_TEXTURES];
     uint8_t enabledTextures[MAX_TEXTURES];

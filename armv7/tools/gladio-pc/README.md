@@ -88,6 +88,11 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   gl_Fog, GLSL 1.30 mit in/out und texture(), VBO/IBO, D3DCOLOR-Attribute, Framebuffer-
   Objekt (EXT), Alphatest, Blending, BGRA-Rücklesen (`./glsltest out.ppm`).
   Bauen: `gcc -O1 -o glsltest glsltest.c -lX11 -lGL -ldl`.
+* `fftest.c` – Festfunktions-Beleuchtung in acht Fällen (Richtungslicht unter gedrehter
+  Modelview, GL_COLOR_MATERIAL in zwei Modi, Spot mit Abschwächung, zweiseitige Beleuchtung mit
+  Vorder- und Rückseiten, GL_NORMALIZE, Material-Alpha mit Blending, Farb-Array ohne
+  GL_COLOR_MATERIAL), mit Client-Arrays und glDrawElements (`./fftest out.ppm`).
+  Bauen: `gcc -O1 -o fftest fftest.c -lX11 -lGL -lm`.
 
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
@@ -132,6 +137,15 @@ Kanal und Anteil abweichender Pixel).
   ~3/s, weil die Bildübergabe (`glCopyTexImage2D` im X-Server) ~300 ms je Bild kostete – daher
   jetzt die Übergabe ohne Kopie (drei Texturen im Wechsel, siehe `armv7/README.md`). Das
   PC-Testgeschirr liest das Bild dabei über ein Hilfs-FBO aus der übergebenen Textur.
+* Festfunktions-Beleuchtung (`fftest`, Worms 3D): Der Server multiplizierte bei Beleuchtung immer
+  mit der Vertexfarbe (in GL zählt sie nur mit GL_COLOR_MATERIAL) – Würmer wurden schwarz, sobald
+  das Spiel vorher eine schwarze Farbe gesetzt hatte (nach einem Sprung). Außerdem: Richtungslichter
+  und Spot-Richtungen wurden mit der Inversen der Modelview statt mit ihr ins Augensystem gebracht,
+  Spots mit Exponent 0 hatten keinen Kegel, das Rückseitenmaterial galt nach Normalenrichtung statt
+  nur bei GL_LIGHT_MODEL_TWO_SIDE nach Orientierung des Dreiecks, das Material-Alpha fehlte,
+  Normalen wurden nicht normiert, alle Lichter hatten Umgebungslicht 0.2 statt 0. Jetzt rechnen
+  beide Pfade (allgemeiner Shader für ES 3, spezialisierte Shader für ES 2) wie GL; alle acht
+  Fälle von `fftest` sind mit Mesa pixelgleich (Abweichung höchstens 1/255).
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
   hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung
