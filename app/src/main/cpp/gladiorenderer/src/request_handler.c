@@ -2709,6 +2709,8 @@ void gd_handle_glTexParameterfv(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     int paramCount = getGLCallParamsCount(pname, NULL);
+    // a client without the GL_TEXTURE_SWIZZLE_RGBA fix sends a single value; don't read past it
+    if (ArrayBuffer_available(&context->inputBuffer) < paramCount * (int)sizeof(GLfloat)) return;
     GLfloat* params = ArrayBuffer_getBytes(&context->inputBuffer, paramCount * sizeof(GLfloat));
 
     GLRenderer_setTexParameter(currentRenderer, target, pname, params);

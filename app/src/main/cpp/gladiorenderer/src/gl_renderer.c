@@ -1125,6 +1125,10 @@ void GLRenderer_setTexParameter(GLRenderer* renderer, GLenum target, GLenum pnam
             glTexParameteri(target, pname, param);
             break;
         }
+        case GL_TEXTURE_SWIZZLE_RGBA:
+            // OpenGL ES has no GL_TEXTURE_SWIZZLE_RGBA, set the four components one by one
+            for (int i = 0; i < 4; i++) glTexParameteri(target, GL_TEXTURE_SWIZZLE_R + i, (GLint)params[i]);
+            break;
         case GL_DEPTH_STENCIL_TEXTURE_MODE:
         case GL_TEXTURE_BASE_LEVEL:
         case GL_TEXTURE_COMPARE_FUNC:
