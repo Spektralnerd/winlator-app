@@ -238,6 +238,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
             this.graphicsDriver = GraphicsDrivers.parseIdentifiers(graphicsDriver);
             this.graphicsDriverConfig = GraphicsDrivers.parseConfigs(graphicsDriver, graphicsDriverConfig);
+            // Software-Treiber eingestellt, aber nicht in dieser APK (64-Bit-Build ohne llvmpipe-Paket)
+            if (this.graphicsDriver[1].equals(GraphicsDrivers.SOFTWARE) && !GraphicsDrivers.isSoftwareAvailable(this)) {
+                this.graphicsDriver[1] = GraphicsDrivers.DEFAULT_OPENGL_DRIVER;
+            }
             warnIfOpenGLDriverNeedsES3(this.graphicsDriver[1]);
             this.dxwrapper = DXWrappers.parseIdentifier(dxwrapper);
             this.dxwrapperConfig = DXWrappers.parseConfigs(dxwrapper, dxwrapperConfig);
@@ -786,11 +790,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
         else cacheId += graphicsDriver[0]+"-"+DefaultVersion.valueOf(graphicsDriver[0]);
         cacheId += "-"+graphicsDriver[1]+"-"+DefaultVersion.valueOf(graphicsDriver[1]);
-        if (graphicsDriver[1].equals(GraphicsDrivers.GLADIO)) {
-            // Selbst gebauter Gladio-Client (CI: graphics_driver/gladio-<Version>.id mit Prüfsumme):
-            // ein neuer Client wird auch ohne neue Versionsnummer entpackt
-            byte[] gladioId = FileUtils.read(this, "graphics_driver/gladio-"+DefaultVersion.GLADIO+".id");
-            if (gladioId != null) cacheId += "-"+new String(gladioId, java.nio.charset.StandardCharsets.UTF_8).trim();
+        // Selbst gebaute Pakete (CI) haben daneben eine Kennung mit ihrer Prüfsumme (<Paket>.id):
+        // ein neues Paket wird auch ohne neue Versionsnummer entpackt
+        String packageIdFile = null;
+        if (graphicsDriver[1].equals(GraphicsDrivers.GLADIO)) packageIdFile = "graphics_driver/gladio-"+DefaultVersion.GLADIO+".id";
+        else if (graphicsDriver[1].equals(GraphicsDrivers.SOFTWARE) && !Arch.X86_ONLY) packageIdFile = GraphicsDrivers.SOFTWARE_PACKAGE_64+".id";
+        if (packageIdFile != null) {
+            byte[] packageId = FileUtils.read(this, packageIdFile);
+            if (packageId != null) cacheId += "-"+new String(packageId, java.nio.charset.StandardCharsets.UTF_8).trim();
         }
 
         String currentGraphicsDriver = preferences.getString("current_graphics_driver", "");
@@ -839,15 +846,19 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
                 break;
             case GraphicsDrivers.SOFTWARE:
-                // Software-Rendering auf der CPU (32-Bit-Build: in der VirGL-Mesa-Bibliothek enthalten).
-                // Ohne GALLIUM_DRIVER nimmt Mesa den besten eingebauten Software-Treiber (llvmpipe, sonst softpipe).
+                // Software-Rendering auf der CPU. 32-Bit-Build: in dessen VirGL-Mesa-Bibliothek enthalten;
+                // 64-Bit-Root-FS: eigenes Paket mit nur llvmpipe/softpipe (die VirGL-Bibliothek des Originals
+                // bleibt unverändert). Ohne GALLIUM_DRIVER nimmt Mesa den besten eingebauten
+                // Software-Treiber (llvmpipe, sonst softpipe); GALLIUM_DRIVER=softpipe im Container wählt
+                // den einfachen Rasterer ohne JIT.
                 if (!envVars.has("LP_NUM_THREADS")) envVars.put("LP_NUM_THREADS", Runtime.getRuntime().availableProcessors());
                 // GALLIVM_PERF bleibt ohne Vorgabe: Der 8-Bit-Texturpfad (AoS) von llvmpipe stimmt auf
                 // echter Hardware; die schwarzen Texel gab es nur unter qemu (LLVM las dort die
                 // /proc/cpuinfo des PCs und erzeugte Code ohne Gleitkommaeinheit). Zum Vergleichen
                 // z. B. GALLIVM_PERF=no_aos_sampling oder brilinear,rho_approx im Container setzen.
 
-                if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst", rootDir);
+                if (changed) TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, Arch.X86_ONLY ?
+                    "graphics_driver/virgl-"+DefaultVersion.VIRGL+".tzst" : GraphicsDrivers.SOFTWARE_PACKAGE_64+".tzst", rootDir);
                 break;
             case GraphicsDrivers.GLADIO:
                 envVars.put("GLADIO_NO_ERROR", "1");

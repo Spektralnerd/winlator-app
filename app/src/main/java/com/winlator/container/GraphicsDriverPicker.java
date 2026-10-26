@@ -25,7 +25,7 @@ public class GraphicsDriverPicker {
         for (int i = 0; i < apiNames.length; i++) {
             final TaggedSelectionBox taggedSelectionBox = new TaggedSelectionBox(context);
             taggedSelectionBox.setLabel(apiNames[i]);
-            taggedSelectionBox.setItems(GraphicsDrivers.getItems(apiNames[i]));
+            taggedSelectionBox.setItems(GraphicsDrivers.getItems(context, apiNames[i]));
             taggedSelectionBox.setSelectedItem(GraphicsDrivers.getName(identifiers[i]));
             taggedSelectionBox.setTag(configs[i].toString());
             taggedSelectionBox.setOnButtonClickListener(() -> {

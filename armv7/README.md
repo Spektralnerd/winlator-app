@@ -2,7 +2,8 @@
 
 Dieser Zweig (`armv7`) baut Winlator 11.2 zusätzlich für Geräte mit 32-Bit-Android
 (`armeabi-v7a`). Das Original (arm64) bleibt baubar; es bekommt die Fehlerbehebungen an Gladio
-mit, die auch 64 Bit betreffen (siehe „Gladio auf 64 Bit“ weiter unten), sonst ist es unverändert.
+mit, die auch 64 Bit betreffen (siehe „Gladio auf 64 Bit“ weiter unten), und den OpenGL-Treiber
+„Software“ (siehe „Software auf 64 Bit“), sonst ist es unverändert.
 
 ## Varianten
 
@@ -80,7 +81,9 @@ Alles läuft über GitHub Actions (`.github/workflows/armv7.yml`):
    daraus die Container-Vorlage (Win32-Präfix)
 4. `assemble` (`assemble.sh`, Prüfung mit `check-rootfs.py`): Assets → Release `armv7-rootfs`
    (Datei `armv7-assets.tar`, wird nach `app/src/armv7/assets` entpackt)
-5. `apk`: beide APKs → Release `armv7-apk`
+5. `llvmpipe64` (arm64-Runner, `mesa-llvmpipe-arm64.sh`): Software-Treiber für die 64-Bit-Root-FS,
+   zwischengespeichert, bis sich Skript, Patch oder Mesa-Stand ändern
+6. `apk`: alle drei APKs → Release `armv7-apk`
 
 Warum Debian 12: Box86 reicht Strukturen des i386-Gasts unverändert an die armhf-Bibliotheken
 weiter, beide brauchen also dasselbe ABI mit 32-Bit-`time_t`. Neuere Distributionen haben armhf
@@ -268,6 +271,20 @@ Originals) und ersetzt damit `graphics_driver/gladio-1.1.tzst`; daneben liegt ei
 wie die 32-Bit-APKs (ein installiertes Original-Winlator muss dafür vorher entfernt werden).
 Was nur die Mali-400 braucht (spezialisierte ES-2.0-Shader, Bildübergabe ohne Kopie, kein
 `glFlush` je Stapel, Client-Arrays statt Pufferobjekte), bleibt auf den ES-2.0-Pfad beschränkt.
+
+**Software auf 64 Bit (`arm64`, `armv7hybrid`):** Der OpenGL-Treiber „Software“ (Mesa llvmpipe)
+gibt es auch mit der originalen 64-Bit-Root-FS, vor allem als Gegenprobe: Sieht ein Programm mit
+Gladio anders aus als mit Software, liegt der Fehler in Gladio oder im GPU-Treiber. Das Paket
+`graphics_driver/llvmpipe-23.1.9.tzst` (`./usr/lib/libGL.so.1.7.0`, daneben `.id` mit der
+Prüfsumme) baut `scripts/mesa-llvmpipe-arm64.sh` aus demselben Mesa-Stand wie die VirGL-Bibliothek
+des Originals (mesa3d-custom, `virgl-23.1.9`, GLX über Xlib), aber nur mit swrast (llvmpipe und
+softpipe), eingebautem glapi und statisch gelinktem LLVM 15; dazu `patches/mesa/0009` (die
+`WINLATOR_LP_*`-Stellschrauben). Die VirGL-Bibliothek des Originals bleibt unverändert. Gebaut wird
+nativ auf dem arm64-Runner (Ubuntu 24.04: glibc 2.39 und libstdc++ 6.0.32 wie die Root-FS); das
+Skript prüft jede benötigte Bibliothek samt Symbolversionen gegen die Root-FS des Originals und
+zeichnet zur Probe auf Xvfb ein Dreieck. Die Root-FS hat keine libtinfo, LLVM fragt darüber nur
+nach Terminalfarben: ein Ersatz ohne Terminal kommt statisch in die libGL. Fehlt das Paket (Build
+ohne CI), bietet die App den Treiber nicht an und nimmt für so eingestellte Container Gladio.
 
 **Stapel des Hauptthreads (Kernel mit 3G/1G-Aufteilung, z. B. Android 9 auf dem Galaxy Note 8.0):**
 Box86 führt den nativen Code des Hauptthreads (eingebundene Bibliotheken wie die libGL mit

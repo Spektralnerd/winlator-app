@@ -10,6 +10,8 @@ name: Winlator armv7
 #   armhf     glibc, Box86, alsa-lib, Gladio/Vortek, Mesa, Debian-Bibliotheken, Hilfsprogramme
 #   wine      i386-Wine 10.10 + Win32-Präfix
 #   assemble  Assets zusammenstellen -> Release "armv7-rootfs" (armv7-assets.tar)
+#   llvmpipe64  OpenGL-Treiber „Software“ (Mesa llvmpipe) für die 64-Bit-Root-FS, nativ auf arm64;
+#             zwischengespeichert, solange sich Skript, Patch und Mesa-Stand nicht ändern
 #   apk       APKs bauen -> Release "armv7-apk" (Vorabversion)
 #   logs      bei Fehlern die Protokolle -> Release "armv7-ci-logs"
 
@@ -195,9 +197,60 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  llvmpipe64:
+    # OpenGL-Treiber „Software“ für die originale 64-Bit-Root-FS (arm64, armv7hybrid): nativ auf
+    # arm64-Ubuntu 24.04, dessen glibc 2.39 und libstdc++ 6.0.32 zur Root-FS passen
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Zwischenspeicher
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/llvmpipe64
+          key: llvmpipe64-${{ hashFiles('armv7/scripts/mesa-llvmpipe-arm64.sh', 'armv7/patches/mesa/0009-lp-sampler-knobs.patch', 'armv7/scripts/env.sh') }}
+
+      - name: Mesa llvmpipe bauen
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq --no-install-recommends meson ninja-build pkg-config python3-mako \
+            bison flex llvm-15-dev libx11-dev libxext-dev libxcb1-dev libxcb-randr0-dev x11proto-dev \
+            libexpat1-dev zlib1g-dev libzstd-dev zstd file xvfb xauth > /dev/null
+          mkdir -p out/llvmpipe64
+          bash armv7/scripts/mesa-llvmpipe-arm64.sh out/llvmpipe64/llvmpipe-23.1.9.tzst \
+            app/src/main/assets/rootfs.tzst 2>&1 | tee out/llvmpipe64.log
+
+      - name: Fehlerbericht
+        if: failure()
+        run: bash armv7/scripts/ci-report.sh out/llvmpipe64.log "llvmpipe (arm64)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: llvmpipe64
+          path: out/llvmpipe64/
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-llvmpipe64
+          path: |
+            out/llvmpipe64.log
+            armv7/work/llvmpipe64/build/meson-logs/meson-log.txt
+          retention-days: 7
+          if-no-files-found: ignore
+
   apk:
-    needs: [plan, armhf, wine, assemble]
-    if: always() && needs.plan.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    # llvmpipe64 zählt hier nicht: ohne das Paket haben die 64-Bit-APKs nur keinen Software-Treiber
+    needs: [plan, armhf, wine, assemble, llvmpipe64]
+    if: >-
+      always() && needs.plan.result == 'success' &&
+      needs.armhf.result != 'failure' && needs.armhf.result != 'cancelled' &&
+      needs.wine.result != 'failure' && needs.wine.result != 'cancelled' &&
+      needs.assemble.result != 'failure' && needs.assemble.result != 'cancelled'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -228,6 +281,23 @@ jobs:
           # ersetzt den Client des Originals für armv7hybrid und arm64; die Kennung sorgt dafür,
           # dass ein neuer Client auch bei gleicher Versionsnummer entpackt wird
           cp out/gladio-arm64/gladio-1.1.tzst out/gladio-arm64/gladio-1.1.id app/src/main/assets/graphics_driver/
+
+      - name: Software-Treiber für die 64-Bit-Root-FS holen
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: llvmpipe64
+          path: out/llvmpipe64
+
+      - name: Software-Treiber einsetzen
+        run: |
+          # nur für armv7hybrid und arm64; das armv7-APK lässt llvmpipe-* aus (build.gradle)
+          if [ -f out/llvmpipe64/llvmpipe-23.1.9.tzst ]; then
+            cp out/llvmpipe64/llvmpipe-23.1.9.tzst out/llvmpipe64/llvmpipe-23.1.9.id app/src/main/assets/graphics_driver/
+            ls -la app/src/main/assets/graphics_driver/llvmpipe-*
+          else
+            echo "::warning::Kein llvmpipe-Paket: die 64-Bit-APKs haben keinen Software-Treiber"
+          fi
 
       - name: APK armv7hybrid
         run: |
@@ -281,8 +351,14 @@ jobs:
           done
           if [ -f out/Winlator-11.2-armv7.apk ]; then
             # das 32-Bit-APK darf keine Box64-/aarch64-Teile mehr enthalten
-            ! unzip -l out/Winlator-11.2-armv7.apk | grep -E 'assets/box64/|turnip-26\.2\.0|lib/arm64-v8a/' \
+            ! unzip -l out/Winlator-11.2-armv7.apk | grep -E 'assets/box64/|turnip-26\.2\.0|llvmpipe-|lib/arm64-v8a/' \
               || { echo "::error::64-Bit-Teile im armv7-APK"; exit 1; }
+          fi
+          if [ -f app/src/main/assets/graphics_driver/llvmpipe-23.1.9.tzst ]; then
+            for apk in out/Winlator-11.2-arm64.apk out/Winlator-11.2-armv7hybrid.apk; do
+              unzip -l "$apk" | grep -q 'assets/graphics_driver/llvmpipe-23.1.9.tzst' \
+                || { echo "::error::Software-Treiber fehlt in $apk"; exit 1; }
+            done
           fi
 
       - name: Release armv7-apk aktualisieren
@@ -306,7 +382,7 @@ jobs:
           if-no-files-found: ignore
 
   logs:
-    needs: [armhf, wine, assemble, apk]
+    needs: [armhf, wine, assemble, llvmpipe64, apk]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-24.04
     steps:

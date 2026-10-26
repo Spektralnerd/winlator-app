@@ -83,8 +83,9 @@ android {
 
     androidResources {
         if (x86Only) {
-            // reine 64-Bit-Bestandteile nicht ins 32-Bit-APK packen
-            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!box64:!turnip-26.2.0.tzst'
+            // reine 64-Bit-Bestandteile nicht ins 32-Bit-APK packen (llvmpipe-*: Software-Treiber für
+            // die 64-Bit-Root-FS; der 32-Bit-Build hat llvmpipe in seiner VirGL-Bibliothek)
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~:!box64:!turnip-26.2.0.tzst:!llvmpipe-*'
         }
     }
 
