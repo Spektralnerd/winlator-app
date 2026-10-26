@@ -1343,6 +1343,8 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
     PixelReadCache* pixelReadCache = renderer->pixelReadCache;
     if (pixelReadCache && !pixelPackBuffer && x == 0 && y == 0 &&
                           pixelReadCache->dataSize == srcDataSize &&
+                          pixelReadCache->format == format &&
+                          pixelReadCache->type == type &&
                           pixelReadCache->framebuffer == framebuffer &&
                          (renderer->frameCount-pixelReadCache->frameIndex) <= PIXEL_READ_CACHE_SKIP_FRAMES) {
         memcpy(pixels, pixelReadCache->data, srcDataSize);
@@ -1355,18 +1357,8 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
     char* srcData = convert ? malloc(srcDataSize) : pixels;
     glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, srcData);
 
-    if (x == 0 && y == 0 && width <= 256 && height <= 256 && !convert && !pixelPackBuffer) {
-        if (!pixelReadCache) renderer->pixelReadCache = pixelReadCache = calloc(1, sizeof(PixelReadCache));
-        if (srcDataSize != pixelReadCache->dataSize) {
-            MEMFREE(pixelReadCache->data);
-            pixelReadCache->data = malloc(srcDataSize);
-            pixelReadCache->dataSize = srcDataSize;
-        }
-        pixelReadCache->framebuffer = framebuffer;
-        pixelReadCache->frameIndex = renderer->frameCount;
-        memcpy(pixelReadCache->data, srcData, srcDataSize);
-    }
-    else freePixelReadCache(renderer);
+    bool cacheResult = x == 0 && y == 0 && width <= 256 && height <= 256 && !convert && !pixelPackBuffer;
+    if (!cacheResult) freePixelReadCache(renderer);
 
     if (pixelPackBuffer) {
         if (!convert) {
@@ -1418,10 +1410,12 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
                 }
                 break;
             case GL_BGRA:
+                // dstData and srcData are the same buffer here, so keep red before overwriting it
                 for (int i = 0; i < srcDataSize; i += 4) {
+                    char red = srcData[i+0];
                     dstData[i+0] = srcData[i+2];
                     dstData[i+1] = srcData[i+1];
-                    dstData[i+2] = srcData[i+0];
+                    dstData[i+2] = red;
                     dstData[i+3] = srcData[i+3];
                 }
                 break;
@@ -1433,6 +1427,21 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
         }
     }
     else println("gladio:readPixels: unimplemented type %x", type);
+
+    // cache the pixels as the client got them, in the requested format
+    if (cacheResult) {
+        if (!pixelReadCache) renderer->pixelReadCache = pixelReadCache = calloc(1, sizeof(PixelReadCache));
+        if (srcDataSize != pixelReadCache->dataSize) {
+            MEMFREE(pixelReadCache->data);
+            pixelReadCache->data = malloc(srcDataSize);
+            pixelReadCache->dataSize = srcDataSize;
+        }
+        pixelReadCache->framebuffer = framebuffer;
+        pixelReadCache->format = format;
+        pixelReadCache->type = type;
+        pixelReadCache->frameIndex = renderer->frameCount;
+        memcpy(pixelReadCache->data, pixels, srcDataSize);
+    }
 
     if (convert) free(srcData);
 }
