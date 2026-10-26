@@ -38,6 +38,9 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
 - glXSwapBuffers wartet nur noch auf das vorige Bild, nicht auf das eben übergebene: ein Bild darf
   beim Server in Arbeit sein, während das Programm das nächste vorbereitet (GLADIO_SYNC_SWAP=1:
   wie früher auf jedes warten)
+- glMapBuffer/glMapBufferRange und glGetBufferSubData auf einem GL_PIXEL_PACK_BUFFER warten erst auf
+  den Server: der schreibt die Pixel aus glReadPixels erst beim Abarbeiten in den geteilten Speicher
+  (vorher las das Programm alte Daten, beim ersten Mal Nullen)
 """
 import pathlib
 import shutil
@@ -685,6 +688,32 @@ if fbconfigDefaults:
         "        default: *value = 0; break;\n"
         "    }\n"
         "    return 0;\n}")
+
+# Pack-Puffer (glReadPixels in ein Pufferobjekt) füllt der Server im geteilten Speicher erst, wenn er die
+# Anfrage abarbeitet: vor glMapBuffer(Range)/glGetBufferSubData darauf warten, sonst las das Programm alte
+# Daten (beim ersten Mal Nullen)
+sub("src/gl_calls.c",
+    "void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void* data) {\n",
+    "/* patch-gladio-client.py: vor dem Lesen eines Pack-Puffers auf alle früheren Anfragen warten (erst die\n"
+    " * ausstehenden Bildantworten abholen, dann ein glFinish-Rundlauf). Aufruf mit gesperrtem GL_CALL_LOCK. */\n"
+    "static void gladio_waitForPixelPackBuffer(GLenum target) {\n"
+    "    if (target != GL_PIXEL_PACK_BUFFER || !currentGLContext) return;\n"
+    "    if (!gladio_drainSwapReplies(0)) return;\n"
+    "    if (gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_FINISH, NULL, 0)) {\n"
+    "        gl_recv(currentGLContext->clientRing, NULL, &inputBuffer);\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "void glGetBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, void* data) {\n")
+sub("src/gl_calls.c",
+    "    if (buffer) memcpy(data, buffer->mappedData + offset, size);\n",
+    "    if (buffer && buffer->mappedData) {\n"
+    "        gladio_waitForPixelPackBuffer(target);\n"
+    "        memcpy(data, buffer->mappedData + offset, size);\n"
+    "    }\n")
+sub("src/gl_calls.c",
+    "    buffer->mapped = true;\n\n    void* result = buffer->mappedData + offset;\n",
+    "    buffer->mapped = true;\n\n    gladio_waitForPixelPackBuffer(target);\n    void* result = buffer->mappedData + offset;\n")
 
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",

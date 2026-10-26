@@ -106,6 +106,10 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   GL_MATRIX_MODE, GL_DEPTH_WRITEMASK) nach einer Folge von Matrixoperationen, Push/Pop über die
   Stapelgrenze und glPushAttrib/glPopAttrib; gibt Text aus, mit Mesa vergleichen
   (`./matrixtest > ref.txt`). Bauen: `gcc -O1 -o matrixtest matrixtest.c -lX11 -lGL`.
+* `readtest.c` – glReadPixels: GL_BGRA zweimal hintereinander (Lesecache des Servers), GL_RGBA
+  danach, Lesen in einen Pack-Puffer mit glMapBuffer/glGetBufferSubData, auch gleich nach
+  glXSwapBuffers; gibt je Fall das erste Pixel aus, mit Mesa vergleichen (`./readtest`).
+  Bauen: `gcc -O1 -o readtest readtest.c -lX11 -lGL`.
 
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
@@ -172,6 +176,14 @@ Kanal und Anteil abweichender Pixel).
   Zeichenaufrufen. Alle 16 Fälle von `batchtest` sind auf beiden Pfaden mit Mesa gleich.
 * Matrixabfragen (`matrixtest`): Der angepasste Client beantwortet sie aus mitgeführten Stapeln; alle
   17 Schritte stimmen mit Mesa überein (auch Push über die Grenze von 32 Einträgen hinaus).
+* glReadPixels (`readtest`): Mit gebundenem Pack-Puffer ist `pixels` ein Versatz in den Puffer, der
+  Lesecache des Servers kopierte aber dorthin bzw. von dort (Absturz, memcpy an Adresse 0, sobald
+  vorher gleich groß an 0,0 gelesen worden war – auf beiden Pfaden). Der Cache gab außerdem für jedes
+  Format die vor der Umwandlung gemerkten RGBA-Pixel zurück (zweites GL_BGRA-Lesen als RGBA), und
+  seine Struktur lief bei jedem ungecachten Lesen aus. Der Client gab bei glMapBuffer und
+  glGetBufferSubData den geteilten Speicher eines Pack-Puffers zurück, bevor der Server die Pixel
+  hineingeschrieben hatte (beim ersten Mal Nullen); jetzt wartet er dort erst auf den Server (nach
+  den ausstehenden Bildantworten). Alle acht Fälle stimmen auf beiden Pfaden mit Mesa überein.
 * wined3d (Wine 10.10, `d3d9test`): Mit `GL_ARB_buffer_storage` in der Erweiterungsliste legt
   wined3d alle Puffer als `GL_PIXEL_UNPACK_BUFFER` an, für die der Server nur Schattenspeicher
   hat – nichts wurde gezeichnet (auch auf dem unveränderten ES-3-Pfad). Ohne die Erweiterung
