@@ -1325,7 +1325,7 @@ void GLRenderer_disableUnusedVertexAttributes(GLRenderer* renderer) {
 static void freePixelReadCache(GLRenderer* renderer) {
     if (renderer->pixelReadCache) {
         if (renderer->pixelReadCache->data) free(renderer->pixelReadCache->data);
-        renderer->pixelReadCache = NULL;
+        MEMFREE(renderer->pixelReadCache);
     }
 }
 
