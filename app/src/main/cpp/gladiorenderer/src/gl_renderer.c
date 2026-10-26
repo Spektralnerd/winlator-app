@@ -772,6 +772,16 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
             if (params) memcpy(params, GLRenderer_getMatrixFromStack(renderer, TEXTURE_MATRIX_INDEX), MAT4_SIZE);
             paramSize = MAT4_SIZE;
             break;
+        case GL_MATRIX_MODE: {
+            // not part of OpenGL ES: the driver rejects the query and the reply would be uninitialized
+            GLenum mode = GL_MODELVIEW + renderer->matrixIndex;
+            if (params) {
+                if (type == GL_FLOAT) *(GLfloat*)params = (GLfloat)mode;
+                else if (type == GL_BOOL) *(GLboolean*)params = GL_TRUE;
+                else *(GLint*)params = (GLint)mode;
+            }
+            break;
+        }
         case GL_MAX_PROJECTION_STACK_DEPTH:
         case GL_MAX_TEXTURE_STACK_DEPTH:
             if (params) *(GLint*)params = 2;
