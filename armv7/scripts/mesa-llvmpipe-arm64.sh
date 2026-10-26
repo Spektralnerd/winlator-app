@@ -186,7 +186,9 @@ int main(void) {
     if (!vi) { puts("kein Visual"); return 1; }
     XSetWindowAttributes swa = {0};
     swa.colormap = XCreateColormap(dpy, RootWindow(dpy, vi->screen), vi->visual, AllocNone);
-    Window win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), 0, 0, 64, 64, 0, vi->depth, InputOutput, vi->visual, CWColormap, &swa);
+    swa.border_pixel = 0;  /* sonst BadMatch, wenn das Visual nicht das des Hauptfensters ist */
+    Window win = XCreateWindow(dpy, RootWindow(dpy, vi->screen), 0, 0, 64, 64, 0, vi->depth, InputOutput, vi->visual,
+                               CWColormap | CWBorderPixel, &swa);
     XMapWindow(dpy, win);
     GLXContext ctx = glXCreateContext(dpy, vi, NULL, True);
     if (!ctx || !glXMakeCurrent(dpy, win, ctx)) { puts("kein Kontext"); return 1; }
