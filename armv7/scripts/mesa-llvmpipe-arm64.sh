@@ -92,9 +92,12 @@ EOF
 chmod +x "$WORK/bin/llvm-config"
 echo "llvm-config $("$WORK/bin/llvm-config" --version), Ziel $("$WORK/bin/llvm-config" --host-target)"
 echo "Systembibliotheken (statisch): $("$WORK/bin/llvm-config" --link-static --system-libs)"
+# Meson sucht LLVM zuerst über CMake und nähme dabei die neueste installierte Version (auf dem
+# Runner LLVM 17, mit dem Mesa 23.1 nicht baut) samt Polly; ohne CMake bleibt es bei llvm-config
 cat > "$WORK/native.ini" <<EOF
 [binaries]
 llvm-config = '$WORK/bin/llvm-config'
+cmake = 'false'
 EOF
 
 log "Mesa bauen (swrast: llvmpipe + softpipe, GLX über Xlib)"
@@ -102,13 +105,15 @@ B="$WORK/build"
 rm -rf "$B"
 meson setup "$B" "$M" --native-file "$WORK/native.ini" \
     -Dbuildtype=release -Dstrip=true -Dprefix="$ROOT_PREFIX/usr" -Dlibdir=lib \
-    -Dplatforms=x11 -Dglx=xlib -Ddri3=disabled -Dvulkan-drivers= -Dgallium-drivers=swrast \
+    -Dplatforms=x11 -Dglx=xlib -Ddri3=disabled -Dxlib-lease=disabled -Dvulkan-drivers= -Dgallium-drivers=swrast \
     -Dgallium-va=disabled -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dgallium-opencl=disabled \
     -Dlmsensors=disabled -Degl=disabled -Dgbm=disabled -Dgles1=disabled -Dgles2=disabled \
     -Dvalgrind=disabled -Dlibunwind=disabled -Dshared-glapi=disabled \
     -Dllvm=enabled -Dshared-llvm=disabled
+grep -q -- "-DLLVM_AVAILABLE" "$B/build.ninja" || { echo "Mesa wird ohne LLVM gebaut (kein llvmpipe)"; exit 1; }
+grep -q "Run-time dependency LLVM.*found: YES $LLVM_VER\." "$B/meson-logs/meson-log.txt" \
+    || { echo "Mesa nimmt nicht LLVM $LLVM_VER:"; grep "Run-time dependency LLVM" "$B/meson-logs/meson-log.txt"; exit 1; }
 ninja -C "$B" -j"$JOBS"
-grep -q -- "-DLLVM_AVAILABLE" "$B/build.ninja" || { echo "Mesa wurde ohne LLVM gebaut (kein llvmpipe)"; exit 1; }
 
 PKG="$WORK/pkg"
 rm -rf "$PKG" "$B/inst" && mkdir -p "$PKG/usr/lib"
