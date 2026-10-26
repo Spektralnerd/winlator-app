@@ -1662,7 +1662,7 @@ void GLRenderer_disableUnusedVertexAttributes(GLRenderer* renderer) {
 static void freePixelReadCache(GLRenderer* renderer) {
     if (renderer->pixelReadCache) {
         if (renderer->pixelReadCache->data) free(renderer->pixelReadCache->data);
-        renderer->pixelReadCache = NULL;
+        MEMFREE(renderer->pixelReadCache); /* auch die Struktur (lief vorher bei jedem ungecachten Lesen aus) */
     }
 }
 
@@ -1674,17 +1674,22 @@ void GLRenderer_resetFrameCount(GLRenderer* renderer) {
 void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void* pixels) {
     int srcDataSize = width * height * 4;
     GLuint framebuffer = renderer->clientState.framebuffer[indexOfGLTarget(GL_READ_FRAMEBUFFER)];
+    /* Mit gebundenem Pack-Puffer ist pixels ein Versatz in diesen Puffer, kein Zeiger: den Lesecache
+     * dann weder hineinkopieren noch daraus füllen (vorher Absturz, memcpy an Adresse 0) */
+    GLBuffer* pixelPackBuffer = GLBuffer_getBound(GL_PIXEL_PACK_BUFFER);
     PixelReadCache* pixelReadCache = renderer->pixelReadCache;
-    if (pixelReadCache && x == 0 && y == 0 &&
+    if (pixelReadCache && !pixelPackBuffer && x == 0 && y == 0 &&
                           pixelReadCache->dataSize == srcDataSize &&
+                          pixelReadCache->format == format &&
+                          pixelReadCache->type == type &&
                           pixelReadCache->framebuffer == framebuffer &&
                          (renderer->frameCount-pixelReadCache->frameIndex) <= PIXEL_READ_CACHE_SKIP_FRAMES) {
         memcpy(pixels, pixelReadCache->data, srcDataSize);
         return;
     }
 
-    GLBuffer* pixelPackBuffer = GLBuffer_getBound(GL_PIXEL_PACK_BUFFER);
     bool convert = format != GL_RGBA && format != GL_BGRA;
+    bool cacheResult = x == 0 && y == 0 && width <= 256 && height <= 256 && !convert && !pixelPackBuffer;
     if (GLES2 && pixelPackBuffer) {
         /* kein Pufferobjekt in ES 2.0: direkt in den geteilten Speicher des Clients lesen */
         if (!pixelPackBuffer->mappedData) return;
@@ -1698,18 +1703,7 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
     glReadPixels(x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, srcData);
     GLFramebuffer_endReadAccess(rebound);
 
-    if (x == 0 && y == 0 && width <= 256 && height <= 256 && !convert) {
-        if (!pixelReadCache) renderer->pixelReadCache = pixelReadCache = calloc(1, sizeof(PixelReadCache));
-        if (srcDataSize != pixelReadCache->dataSize) {
-            MEMFREE(pixelReadCache->data);
-            pixelReadCache->data = malloc(srcDataSize);
-            pixelReadCache->dataSize = srcDataSize;
-        }
-        pixelReadCache->framebuffer = framebuffer;
-        pixelReadCache->frameIndex = renderer->frameCount;
-        memcpy(pixelReadCache->data, srcData, srcDataSize);
-    }
-    else freePixelReadCache(renderer);
+    if (!cacheResult) freePixelReadCache(renderer);
 
     if (pixelPackBuffer) {
         if (!convert) {
@@ -1778,6 +1772,22 @@ void GLRenderer_readPixels(GLRenderer* renderer, GLint x, GLint y, GLsizei width
         }
     }
     else println("gladio:readPixels: unimplemented type %x", type);
+
+    /* Lesecache: die Pixel so, wie der Client sie bekommt (nach der Umwandlung), nur für dasselbe
+     * Format wiederverwenden (vorher kam ein zweites GL_BGRA-Lesen als RGBA aus dem Cache) */
+    if (cacheResult) {
+        if (!pixelReadCache) renderer->pixelReadCache = pixelReadCache = calloc(1, sizeof(PixelReadCache));
+        if (srcDataSize != pixelReadCache->dataSize) {
+            MEMFREE(pixelReadCache->data);
+            pixelReadCache->data = malloc(srcDataSize);
+            pixelReadCache->dataSize = srcDataSize;
+        }
+        pixelReadCache->framebuffer = framebuffer;
+        pixelReadCache->format = format;
+        pixelReadCache->type = type;
+        pixelReadCache->frameIndex = renderer->frameCount;
+        memcpy(pixelReadCache->data, pixels, srcDataSize);
+    }
 
     if (convert) free(srcData);
 }
