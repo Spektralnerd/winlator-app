@@ -1864,18 +1864,25 @@ void gd_handle_glLightModelf(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLfloat param = ArrayBuffer_getFloat(&context->inputBuffer);
 
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModelf");
+    GLfloat params[4] = {param, param, param, param};
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModelfv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModelfv");
+    // the client always sends four values (glLightModeliv is converted to glLightModelfv there)
+    GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
+    if (ArrayBuffer_available(&context->inputBuffer) < 4 * (int)sizeof(GLfloat)) return;
+    GLfloat* params = ArrayBuffer_getBytes(&context->inputBuffer, 4 * sizeof(GLfloat));
+
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModeli(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLint param = ArrayBuffer_getInt(&context->inputBuffer);
 
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glLightModeli");
+    GLfloat params[4] = {(GLfloat)param, (GLfloat)param, (GLfloat)param, (GLfloat)param};
+    GLRenderer_setLightModelParams(currentRenderer, pname, params);
 }
 
 void gd_handle_glLightModeliv(GLContext* context) {
