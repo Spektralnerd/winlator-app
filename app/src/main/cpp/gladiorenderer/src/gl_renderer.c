@@ -127,11 +127,18 @@ void GLRenderer_initOnEGLContext(GLRenderer* renderer) {
     renderer->queriesStartTime = nanoTime();
 }
 
+/* Stapel des festen Funktionsmodells (glBegin/glEnd, Client-Arrays der Anwendung) als Client-Arrays zeichnen:
+ * der Treiber kopiert die Daten beim Zeichnen in seinen Bildspeicher. Das ist billiger als je Stapel neue
+ * Pufferobjekte anzulegen (glBufferData = neue GPU-Speicherzuteilung) – auf ES 2.0 immer, auf ES 3.x,
+ * solange kein Vertex-Array-Objekt der Anwendung gebunden ist (ES 3 erlaubt Client-Arrays nur mit dem
+ * Vorgabe-VAO). Ein Intro mit ~3000 glBegin/glEnd je Bild lief über ES 3 so am PC 3 statt 20 Bilder/s. */
+static inline bool useClientArrays(GLRenderer* renderer) {
+    return GLES2 || renderer->clientState.vao == &renderer->clientState.defaultVAO;
+}
+
 static void bindVertexBuffer(GLRenderer* renderer, GLuint bufferId, GLint location, int itemSize, int size, const void* data) {
-    if (GLES2) {
-        /* Client-Arrays: der Treiber kopiert die Daten beim Zeichnen in seinen Bildspeicher. Das ist
-         * auf der Mali-400 billiger als je Stapel neue Pufferobjekte anzulegen (glBufferData = neue
-         * GPU-Speicherzuteilung über den Kernel); die Geometriepuffer bleiben bis zum nächsten Stapel gültig. */
+    if (useClientArrays(renderer)) {
+        /* die Geometriepuffer bleiben bis zum nächsten Stapel gültig */
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         GLRenderer_enableVertexAttribute(renderer, location);
         glVertexAttribPointer(location, itemSize, GL_FLOAT, GL_FALSE, 0, data);
@@ -155,7 +162,7 @@ static void normalizeTexCoords(GLTexture* texture, ArrayBuffer* texCoords) {
 
 static void updateVertexBuffers(GLRenderer* renderer, int* attribLocations) {
     Geometry* geometry = &renderer->geometry;
-    if (GLES2) glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); /* Indizes als Client-Array (siehe bindVertexBuffer) */
+    if (useClientArrays(renderer)) glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); /* Indizes als Client-Array (siehe bindVertexBuffer) */
     else {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, renderer->bufferIds[0]);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, geometry->indices.size, geometry->indices.buffer, GL_DYNAMIC_DRAW);
@@ -356,7 +363,7 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         }
 
         int count = mesh->end - mesh->start;
-        const void* indices = GLES2 ? (const void*)(renderer->geometry.indices.buffer + mesh->start * sizeof(short)) : (const void*)(mesh->start * sizeof(short));
+        const void* indices = useClientArrays(renderer) ? (const void*)(renderer->geometry.indices.buffer + mesh->start * sizeof(short)) : (const void*)(mesh->start * sizeof(short));
         glDrawElements(drawMode, count, GL_UNSIGNED_SHORT, indices);
         gladio_batchStats.driverDraws++;
         MEMFREE(mesh);
@@ -370,11 +377,11 @@ void GLRenderer_drawImmediate(GLRenderer* renderer) {
         }
     }
 
-    /* ES 2.0 (Mali-400, Kachel-Renderer): ein glFlush mitten im Bild lässt den Treiber das
-     * Bild bis hierher rendern und Farbe+Tiefe in den Speicher schreiben – bei ~60 Stapeln je
-     * Bild kostet das mehr als das Zeichnen selbst. Für die Richtigkeit ist es nicht nötig. */
+    /* Kein glFlush je Stapel (früher auf ES 3): auf Kachel-Renderern (Mali) lässt ein glFlush mitten im
+     * Bild den Treiber das Bild bis hierher rendern und Farbe+Tiefe in den Speicher schreiben – bei
+     * Tausenden Stapeln je Bild kostet das ein Vielfaches des Zeichnens. Für die Richtigkeit ist er
+     * nicht nötig. */
     gladio_batchStats.driverDrawNs += gladio_nowNs() - driverDrawStart;
-    if (!GLES2) glFlush();
     renderer->geometry.indices.position = 0;
     renderer->geometry.vertices.position = 0;
     GLRenderer_disableUnusedVertexAttributes(renderer);
