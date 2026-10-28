@@ -740,6 +740,10 @@ int main(int argc, char** argv) {
     if (getenv("GLADIO_PC_DUMP_FRAMES")) dumpFrames = getenv("GLADIO_PC_DUMP_FRAMES");
     if (getenv("GLADIO_PC_SIZE")) sscanf(getenv("GLADIO_PC_SIZE"), "%dx%d", &fallbackWidth, &fallbackHeight);
     if (dumpDir) mkdir(dumpDir, 0755);
+    { /* GLADIO_PC_TRACE=1: alle Anfragen bis zum ersten Bild protokollieren (TRACE-Zeilen), z. B. die Erkennung von wined3d */
+        extern int gladio_traceRequests;
+        if (getenv("GLADIO_PC_TRACE")) gladio_traceRequests = 1;
+    }
 
     if (!getenv("EGL_PLATFORM")) setenv("EGL_PLATFORM", "surfaceless", 0);
 

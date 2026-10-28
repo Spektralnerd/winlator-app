@@ -1734,6 +1734,12 @@ void gd_handle_glGetString(GLContext* context) {
             break;
         case GL_VENDOR:
             string = (const char*)glGetString(name);
+            if (!string) {
+                /* ohne aktuellen Kontext liefert der Treiber NULL (strlen stürzte dann ab) */
+                static int reports = 0;
+                if (reports++ < 5) println("gladio: glGetString(GL_VENDOR) lieferte NULL (glError 0x%x, EGL-Kontext %p)", glGetError(), eglGetCurrentContext());
+                string = "Gladio";
+            }
             break;
         case GL_RENDERER:
             string = GL_STRING_RENDERER;

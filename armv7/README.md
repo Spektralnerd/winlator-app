@@ -262,6 +262,13 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   `xserver: … Bilder zusammengesetzt …, Mausbewegungen … (davon … ohne Neuzeichnen)`.
 - Beim Ende einer Client-Verbindung (auch nach einem Absturz des Programms) stehen die letzten
   64 GL-Anfragen im Protokoll (`gladio: letzte Anfragen …`).
+- Stürzt der Server selbst ab (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT in der App), schreibt er vorher
+  einen Bericht ins Protokoll (`gladio-crash: …`, landet in `logcat.txt`): Fehleradresse, Register,
+  Bibliothek+Versatz von PC/LR mit dem nächsten exportierten Symbol, Rücksprungadressen vom Stack,
+  im Thread einer Verbindung die laufende und die letzten Anfragen, im X-Server-Thread die Phase
+  (`createGLXContext`/`destroyGLXContext`). Androids `crash_dump` liefert auf dem 3.0-Kernel des
+  Note 8.0 keinen Stack. Der ungekürzte Server (`libgladiorenderer-armv7-symbole.so.xz` im Release
+  `armv7-apk`, gleiche Build-ID wie im APK) löst die Versätze mit `llvm-addr2line -f -e` auf.
 
 **Gladio auf 64 Bit (`arm64`, `armv7hybrid`):** Mehrere der oben beschriebenen Fehler stecken im
 Original-Gladio und betreffen auch 64-Bit-Geräte (ES-3-Pfad). Behoben sind dort jetzt: die

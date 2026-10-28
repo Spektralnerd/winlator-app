@@ -26,10 +26,12 @@ add_library(gladiorenderer SHARED
             src/gl_framebuffer.c
             src/gl_es2.c
             src/shader_converter_es2.c
-            src/shader_material_es2.c)
+            src/shader_material_es2.c
+            src/crash_report.c)
 
 target_link_libraries(gladiorenderer
                       winlator
+                      dl
                       log
                       android
                       EGL

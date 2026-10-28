@@ -331,6 +331,16 @@ jobs:
         run: |
           bash ./gradlew --no-daemon --stacktrace clean assembleDebug -PwinlatorArch=armv7 2>&1 | tee out/gradle-armv7.log
           cp app/build/outputs/apk/debug/app-debug.apk out/Winlator-11.2-armv7.apk
+          # ungekürzter Gladio-Server (Symbole, Zeilen) zum Auflösen der Absturzberichte ("gladio-crash: ...");
+          # die Build-ID muss zu lib/armeabi-v7a/libgladiorenderer.so im APK passen
+          mkdir -p out/symbols
+          SO=$(find app/build/intermediates -path '*armeabi-v7a*' -name libgladiorenderer.so -not -path '*stripped*' -printf '%s %p\n' | sort -n | tail -1 | cut -d' ' -f2)
+          if [ -n "$SO" ]; then
+            xz -9 -c "$SO" > out/symbols/libgladiorenderer-armv7-symbole.so.xz
+            readelf -n "$SO" | grep "Build ID" || true
+          else
+            echo "::warning::ungekürzter libgladiorenderer.so (armeabi-v7a) nicht gefunden"
+          fi
 
       - name: APK arm64 (Original-Variante mit den Gladio-Korrekturen)
         run: |
@@ -367,6 +377,7 @@ jobs:
           NOTES="Automatischer Build von $(git rev-parse --short HEAD) ($(date -u '+%Y-%m-%d %H:%M UTC'))"
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             gh release upload "$TAG" out/*.apk --clobber -R "$GITHUB_REPOSITORY"
+            for f in out/symbols/*; do [ -f "$f" ] && gh release upload "$TAG" "$f" --clobber -R "$GITHUB_REPOSITORY"; done
             gh release edit "$TAG" --notes "$NOTES" -R "$GITHUB_REPOSITORY"
           else
             gh release create "$TAG" out/*.apk --prerelease --title "Winlator armv7 (Testbuilds)" \

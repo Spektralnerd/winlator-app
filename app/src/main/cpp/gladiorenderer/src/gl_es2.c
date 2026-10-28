@@ -154,6 +154,30 @@ void GLES_initOnContext() {
     gles.maxCubeMapSize = getInteger(GL_MAX_CUBE_MAP_TEXTURE_SIZE);
     gles.maxRenderbufferSize = getInteger(GL_MAX_RENDERBUFFER_SIZE);
 
+    /* GLADIO_GLES_LIMITS="varyings=12 vs_uniforms=256 fs_uniforms=256 textures=8 vtextures=0 ..." ersetzt
+     * einzelne Grenzen des Treibers (z. B. die der Mali-400, um sie auf dem PC mit Mesa nachzustellen). */
+    const char* limits = getenv("GLADIO_GLES_LIMITS");
+    if (limits) {
+        static const struct { const char* name; int* value; } names[] = {
+            {"varyings", &gles.maxVaryingVectors}, {"vs_uniforms", &gles.maxVertexUniformVectors},
+            {"fs_uniforms", &gles.maxFragmentUniformVectors}, {"attribs", &gles.maxVertexAttribs},
+            {"textures", &gles.maxTextureUnits}, {"vtextures", &gles.maxVertexTextureUnits},
+            {"texture_size", &gles.maxTextureSize}, {"cube_size", &gles.maxCubeMapSize},
+            {"renderbuffer_size", &gles.maxRenderbufferSize},
+        };
+        const char* p = limits;
+        char name[32];
+        int value, consumed;
+        while (sscanf(p, " %31[a-z_]=%d%n", name, &value, &consumed) == 2) {
+            if (strcmp(name, "highp_fragment") == 0) gles.fragmentHighp = value != 0;
+            for (int i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+                if (strcmp(name, names[i].name) == 0) *names[i].value = value;
+            }
+            p += consumed;
+        }
+        println("gladio: Grenzen aus GLADIO_GLES_LIMITS: %s", limits);
+    }
+
     if (gles.vertexArrayObject) {
         gles.glBindVertexArrayOES = (void*)eglGetProcAddress("glBindVertexArrayOES");
         gles.glDeleteVertexArraysOES = (void*)eglGetProcAddress("glDeleteVertexArraysOES");

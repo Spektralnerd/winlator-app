@@ -65,7 +65,11 @@ Umgebungsvariablen des Servers: `GLADIO_SOCKET`, `GLADIO_PC_ES` (2|3), `GLADIO_P
 App): `GLADIO_GLES=2|3` erzwingt den Pfad, `GLADIO_GLES_EXTENSIONS="GL_OES_… …"` ersetzt die
 Erweiterungsliste des Treibers (z. B. die der Mali-400, um deren Lücken – kein VAO, kein
 glMapBuffer, keine 32-Bit-Indizes – mit Mesa nachzustellen), `GLADIO_PBUFFER=1` erzwingt den
-Pbuffer-Pfad für Treiber ohne `EGL_KHR_surfaceless_context`.
+Pbuffer-Pfad für Treiber ohne `EGL_KHR_surfaceless_context`, `GLADIO_GLES_LIMITS="varyings=12
+vs_uniforms=256 fs_uniforms=256 textures=8 vtextures=0 texture_size=4096 highp_fragment=0"` ersetzt
+einzelne Grenzen (so meldet der Server dem Client dieselben Werte wie auf der Mali-400; auch
+`attribs`, `cube_size`, `renderbuffer_size`). `GLADIO_PC_TRACE=1` protokolliert alle Anfragen bis
+zum ersten Bild (`TRACE`-Zeilen, z. B. die Erkennung von wined3d).
 
 Windows-Programme über Wine: `make client32`, dann z. B.
 

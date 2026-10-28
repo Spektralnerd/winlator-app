@@ -4,6 +4,7 @@
 #include "sysvshared_memory.h"
 #include "request_handler.h"
 #include "gl_es2.h"
+#include "crash_report.h"
 
 extern EGLContext globalEGLContext;
 static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context);
@@ -318,7 +319,7 @@ static bool isCanDrawImmediate(short requestCode) {
 
 /* Beim Ende der Verbindung: die letzten Anfragen des Programms (nach einem Absturz des Programms
  * zeigt das, womit es zuletzt beschäftigt war); gleiche Anfragen hintereinander werden gezählt */
-static void printLastRequests(GLContext* context) {
+void gladio_printLastRequests(GLContext* context, const char* prefix) {
     typeof(context->lastRequests)* lr = &context->lastRequests;
     uint32_t n = lr->count < 64 ? lr->count : 64;
     if (n == 0) return;
@@ -341,14 +342,18 @@ static void printLastRequests(GLContext* context) {
         int written = repeat > 1 ? snprintf(line + pos, sizeof(line) - pos, "%s(%d)x%u ", name, size, repeat)
                                  : snprintf(line + pos, sizeof(line) - pos, "%s(%d) ", name, size);
         if (written < 0 || pos + written >= (int)sizeof(line) - 1) {
-            println("gladio: letzte Anfragen: %s", line);
+            println("%s: %s", prefix, line);
             pos = 0;
             continue;
         }
         pos += written;
         i += repeat;
     }
-    if (pos > 0) println("gladio: letzte Anfragen (%u insgesamt): %s", lr->count, line);
+    if (pos > 0) println("%s (%u insgesamt): %s", prefix, lr->count, line);
+}
+
+static void printLastRequests(GLContext* context) {
+    gladio_printLastRequests(context, "gladio: letzte Anfragen");
 }
 
 /*
@@ -518,6 +523,7 @@ static bool deferStateChange(GLContext* context, GLRenderer* renderer, short req
 static void* requestHandlerThread(void* param) {
     GLContext* context = param;
     loadJMethods(&context->jmethods);
+    GladioCrash_setThreadContext(context);
     short requestCode;
 
     resetStats(context, nowNs());
@@ -586,6 +592,10 @@ static void* requestHandlerThread(void* param) {
                 int contextId = ArrayBuffer_getInt(&context->inputBuffer);
                 JMethods* jmethods = &context->jmethods;
                 GLXContext* glxContext = (GLXContext*)(*jmethods->env)->CallLongMethod(jmethods->env, jmethods->obj, jmethods->getGLXContextPtr, context->clientFd, contextId);
+                if (!glxContext) {
+                    static int reports = 0;
+                    if (reports++ < 20) println("gladio: MAKE_CURRENT: GLX-Kontext %d unbekannt (Fenster 0x%x, fd %d)", contextId, windowId, context->clientFd);
+                }
 
                 if (glxContext && context->glxContext != glxContext) {
                     destroyDisplayBuffer();
@@ -639,17 +649,21 @@ static void* requestHandlerThread(void* param) {
     }
 
     printLastRequests(context);
+    GladioCrash_setPhase("Ende der Verbindung");
     destroyDisplayBuffer();
     destroyDisplayBufAttachment(context);
     if (context->glxContext) {
         eglMakeCurrent(eglGetDisplay(EGL_DEFAULT_DISPLAY), EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         context->glxContext = NULL;
     }
+    GladioCrash_setThreadContext(NULL);
+    GladioCrash_setPhase(NULL);
     (*context->jmethods.jvm)->DetachCurrentThread(context->jmethods.jvm);
     return NULL;
 }
 
 GLContext* createGLContext(JNIEnv* env, jobject obj, int clientFd) {
+    GladioCrash_install();
     GLContext* context = calloc(1, sizeof(GLContext));
     context->clientFd = clientFd;
 
@@ -714,15 +728,25 @@ void destroyGLContext(JNIEnv* env, GLContext* context) {
 /* Macht den GLX-Kontext aktuell; mit seinem Pbuffer, wenn EGL keine oberflächenlosen Kontexte kann. */
 static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context) {
     if (!eglMakeCurrent(eglDisplay, context->eglSurface, context->eglSurface, context->eglContext)) {
-        static bool reported = false;
-        if (!reported) {
-            reported = true;
-            println("gladio: eglMakeCurrent fehlgeschlagen: 0x%x (Pbuffer %d)", eglGetError(), context->eglSurface != EGL_NO_SURFACE);
+        static int reports = 0;
+        if (reports++ < 20) {
+            println("gladio: eglMakeCurrent fehlgeschlagen: 0x%x (GLX-Kontext %d, Pbuffer %d, Thread %d)", eglGetError(),
+                    context->renderer.contextId, context->eglSurface != EGL_NO_SURFACE, (int)currentThreadId());
         }
     }
 }
 
+static GLXContext* createGLXContextInternal(int contextId, GLXContext* sharedContext);
+
 GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
+    GladioCrash_install();
+    GladioCrash_setPhase("createGLXContext");
+    GLXContext* context = createGLXContextInternal(contextId, sharedContext);
+    GladioCrash_setPhase(NULL);
+    return context;
+}
+
+static GLXContext* createGLXContextInternal(int contextId, GLXContext* sharedContext) {
     static const EGLint ctxAttribListES3[] = {
         EGL_CONTEXT_CLIENT_VERSION, 3,
         EGL_NONE
@@ -797,6 +821,7 @@ GLXContext* createGLXContext(int contextId, GLXContext* sharedContext) {
 }
 
 void destroyGLXContext(GLXContext* context) {
+    GladioCrash_setPhase("destroyGLXContext");
     GLX_CONTEXT_LOCK();
     GLClientState_destroy(&context->renderer.clientState);
     EGLDisplay eglDisplay = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -806,6 +831,7 @@ void destroyGLXContext(GLXContext* context) {
     GLX_CONTEXT_UNLOCK();
     eglDestroyContext(eglDisplay, context->eglContext);
     if (context->eglSurface != EGL_NO_SURFACE) eglDestroySurface(eglDisplay, context->eglSurface);
+    GladioCrash_setPhase(NULL);
 }
 
 static void internalReadVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx, ArrayBuffer* dstBuffer, float* constValue) {
