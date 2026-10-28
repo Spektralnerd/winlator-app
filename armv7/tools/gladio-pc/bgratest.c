@@ -1,7 +1,8 @@
 /*
  * GL_BGRA-Eckpunktfarben aus Puffern (ARB_vertex_array_bgra), wie wined3d sie ab GL 3.2 für
- * D3DCOLOR angibt, und das Hochladen über abgebildete Puffer. Acht Felder (4 x 2), je ein Quadrat
- * mit Diffus- und Glanzfarbe (zwei GL_BGRA-Attribute, Abstand 32 Byte wie bei wined3d):
+ * D3DCOLOR angibt, und das Hochladen ohne Antwort des Servers (glFlushMappedBufferRange,
+ * glBufferSubData). Zwölf Felder (4 x 3), je ein Quadrat mit Diffus- und Glanzfarbe (zwei
+ * GL_BGRA-Attribute, Abstand 32 Byte wie bei wined3d):
  *
  *   0  glDrawArrays mit first > 0 aus einem festen Puffer
  *   1  glDrawElements mit Indexpuffer
@@ -13,6 +14,15 @@
  *   6  Diffusfarbe abgeschaltet (glVertexAttrib4f), danach wieder an ohne neues glVertexAttribPointer
  *      (rechte Hälfte des Felds)
  *   7  ganzer Puffer mit glMapBuffer(GL_WRITE_ONLY) neu beschrieben, danach gezeichnet
+ *   8  derselbe Pufferbereich dreimal mit glBufferSubData neu beschrieben, nach jedem Mal gezeichnet
+ *      (drei Streifen)
+ *   9  gezeichnet, dann dieselben Eckpunkte mit glBufferSubData überschrieben und noch einmal
+ *      gezeichnet (linke und rechte Hälfte; die Farben des ersten Aufrufs liest der Server erst beim
+ *      Zeichnen aus dem geteilten Speicher)
+ *  10  glCopyBufferSubData in einen zweiten Puffer, Quelle danach überschrieben, aus der Kopie
+ *      gezeichnet
+ *  11  über GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER kopiert, mit glGetBufferSubData zurückgelesen,
+ *      daraus mit glBufferData einen neuen Puffer gefüllt und gezeichnet
  *
  *   gcc -O1 -o bgratest bgratest.c -lX11 -lGL -ldl
  *   ./bgratest out.ppm          (mit Mesa direkt vergleichen: ppmdiff.py)
@@ -29,7 +39,7 @@
 #include <X11/Xlib.h>
 
 #define W 256
-#define H 128
+#define H 192
 
 typedef struct Vertex {
     float pos[4];
@@ -80,10 +90,12 @@ static const char* fs =
     "    ps_out = color;\n"
     "}\n";
 
-/* Quadrat (Dreiecksstreifen) im Feld 0..7; Farben als R,G,B */
+/* Quadrat (Dreiecksstreifen) im Feld 0..11 (Zeile 0 oben); Farben als R,G,B */
 static void quad(Vertex* v, int cell, const uint8_t d[3], const uint8_t s[3]) {
-    float x0 = -1.0f + (cell % 4) * 0.5f + 0.05f, y0 = (cell < 4 ? 0.0f : -1.0f) + 0.05f;
-    float x1 = x0 + 0.4f, y1 = y0 + 0.9f;
+    const float ch = 2.0f / 3.0f;
+    float top = 1.0f - (cell / 4) * ch;
+    float x0 = -1.0f + (cell % 4) * 0.5f + 0.05f, y0 = top - ch + 0.05f;
+    float x1 = x0 + 0.4f, y1 = top - 0.05f;
     float xy[4][2] = { {x0, y0}, {x1, y0}, {x0, y1}, {x1, y1} };
     for (int i = 0; i < 4; i++) {
         memset(&v[i], 0, sizeof(Vertex));
@@ -231,13 +243,87 @@ int main(int argc, char** argv) {
     glUnmapBuffer(GL_ARRAY_BUFFER);
     glDrawArrays(GL_TRIANGLE_STRIP, 2048 / sizeof(Vertex), 4);
 
+    /* 8: kleiner Puffer, dreimal derselbe Bereich mit glBufferSubData, je ein Streifen */
+    GLuint dyn;
+    glGenBuffers(1, &dyn);
+    glBindBuffer(GL_ARRAY_BUFFER, dyn);
+    glBufferData(GL_ARRAY_BUFFER, 4 * sizeof(Vertex), NULL, GL_DYNAMIC_DRAW);
+    pointers(0);
+    for (int k = 0; k < 3; k++) {
+        static const uint8_t c8[3][3] = { {255, 0, 0}, {0, 255, 0}, {0, 0, 255} };
+        Vertex v8[4];
+        quad(v8, 8, c8[k], c8[(k + 1) % 3]);
+        float x0 = v8[0].pos[0] + k * 0.4f / 3.0f;
+        v8[0].pos[0] = v8[2].pos[0] = x0;
+        v8[1].pos[0] = v8[3].pos[0] = x0 + 0.4f / 3.0f;
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v8), v8);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    /* 9: zeichnen, dieselben Eckpunkte überschreiben (rechte Hälfte, andere Farben), zeichnen */
+    Vertex v9[4];
+    quad(v9, 9, (const uint8_t[]){ 255, 128, 0 }, (const uint8_t[]){ 0, 0, 255 });
+    v9[1].pos[0] = v9[3].pos[0] = v9[0].pos[0] + 0.2f;
+    GLuint stat;
+    glGenBuffers(1, &stat);
+    glBindBuffer(GL_ARRAY_BUFFER, stat);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v9), v9, GL_STATIC_DRAW);
+    pointers(0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    quad(v9, 9, (const uint8_t[]){ 0, 128, 255 }, (const uint8_t[]){ 255, 0, 0 });
+    v9[0].pos[0] = v9[2].pos[0] = v9[0].pos[0] + 0.2f;
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v9), v9);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+    /* 10: in einen zweiten Puffer kopieren (Ziele GL_ARRAY_BUFFER/GL_ELEMENT_ARRAY_BUFFER), Quelle
+     * danach überschreiben, aus der Kopie zeichnen */
+    PFNGLCOPYBUFFERSUBDATAPROC pCopyBufferSubData = proc("glCopyBufferSubData");
+    Vertex v10[4], junk[4];
+    quad(v10, 10, (const uint8_t[]){ 100, 255, 100 }, (const uint8_t[]){ 255, 0, 255 });
+    memset(junk, 0, sizeof(junk));
+    GLuint src, dst;
+    glGenBuffers(1, &src);
+    glGenBuffers(1, &dst);
+    glBindBuffer(GL_ARRAY_BUFFER, src);
+    glBufferData(GL_ARRAY_BUFFER, 1024, NULL, GL_STATIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, 256, sizeof(v10), v10);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, dst);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, 1024, NULL, GL_STATIC_DRAW);
+    pCopyBufferSubData(GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER, 256, 512, sizeof(v10));
+    glBufferSubData(GL_ARRAY_BUFFER, 256, sizeof(junk), junk);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ARRAY_BUFFER, dst);
+    pointers(0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 512 / sizeof(Vertex), 4);
+
+    /* 11: über GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER kopieren (wie wined3d), aus der Kopie
+     * zurücklesen und daraus einen neuen Puffer füllen */
+    Vertex v11[4];
+    quad(v11, 11, (const uint8_t[]){ 255, 255, 255 }, (const uint8_t[]){ 0, 0, 0 });
+    glBindBuffer(GL_ARRAY_BUFFER, src);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v11), v11);
+    glBindBuffer(GL_COPY_READ_BUFFER, src);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, dst);
+    pCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, sizeof(v11));
+    Vertex back[4];
+    glGetBufferSubData(GL_COPY_WRITE_BUFFER, 0, sizeof(back), back);
+    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+    for (int i = 0; i < 4; i++) back[i].diffuse[1] = 64; /* Grün aus dem Rückgelesenen */
+    GLuint fresh;
+    glGenBuffers(1, &fresh);
+    glBindBuffer(GL_ARRAY_BUFFER, fresh);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(back), back, GL_STATIC_DRAW);
+    pointers(0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
     glFinish();
     unsigned char* px = malloc(W * H * 4);
     glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, px);
     glXSwapBuffers(dpy, win);
     printf("GL-Fehler: 0x%x\n", glGetError());
-    for (int c = 0; c < 8; c++) {
-        int x = (c % 4) * 64 + 20, y = (c < 4 ? 64 : 0) + 20;
+    for (int c = 0; c < 12; c++) {
+        int x = (c % 4) * 64 + 20, y = (2 - c / 4) * 64 + 20;
         unsigned char* p = px + (y * W + x) * 4;
         printf("Feld %d: %3d %3d %3d\n", c, p[0], p[1], p[2]);
     }

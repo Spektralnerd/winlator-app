@@ -118,11 +118,13 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   Bauen: `gcc -O1 -o readtest readtest.c -lX11 -lGL`.
 
 * `bgratest.c` – GL_BGRA-Eckpunktfarben aus Puffern (`ARB_vertex_array_bgra`, wie wined3d ab GL 3.2
-  D3DCOLOR angibt) und Hochladen über abgebildete Puffer, acht Fälle: glDrawArrays mit first > 0,
+  D3DCOLOR angibt) und Hochladen ohne Antwort des Servers, zwölf Fälle: glDrawArrays mit first > 0,
   Indexpuffer, Basis-Eckpunkt, Indizes im Client-Speicher, Teilbereich abgebildet mit
   GL_MAP_FLUSH_EXPLICIT_BIT (Versatz ab Bereichsanfang), zwei Aufrufe aus einem Streaming-Puffer,
   Attribut ab- und ohne neuen Zeiger wieder angeschaltet, glMapBuffer(GL_WRITE_ONLY) über schon
-  gezeichnete Daten (`./bgratest out.ppm`, mit Mesa vergleichen). Bauen:
+  gezeichnete Daten, derselbe Bereich dreimal mit glBufferSubData beschrieben und gezeichnet,
+  Eckpunkte nach dem Zeichnen überschrieben, aus einer Kopie (glCopyBufferSubData) gezeichnet und
+  zurückgelesen (`./bgratest out.ppm`, mit Mesa vergleichen). Bauen:
   `gcc -O1 -o bgratest bgratest.c -lX11 -lGL -ldl`.
 
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
@@ -233,12 +235,19 @@ Kanal und Anteil abweichender Pixel).
   ohne `ARB_buffer_storage` bei jedem Hochladen den ganzen 512-KB-Puffer mit
   GL_MAP_FLUSH_EXPLICIT_BIT ab, und glUnmapBuffer übertrug trotzdem den ganzen Bereich noch einmal;
   glFlushMappedBufferRange wartete auf den Server. Jetzt überträgt glUnmapBuffer mit dem Bit nichts
-  mehr, glFlushMappedBufferRange zählt den Versatz wie GL ab dem Bereichsanfang und wartet nicht
-  mehr (der Server liest beim Abarbeiten aus dem geteilten Speicher; dafür wartet der Client vor
-  jedem synchronisierten Abbilden zum Schreiben). Im Rennen am PC (2 Kerne, llvmpipe,
-  `WINEDEBUG=-all`): ES 3 mit CSMT von 2 auf ~20 Bilder/s, ohne CSMT ~55 (ES 2 mit CSMT ~45).
-  Was mit CSMT fehlt, kostet wined3d selbst: ohne `ARB_buffer_storage` wartet der Anwendungsthread
-  bei jedem Abbilden auf den CSMT-Thread. `bgratest` ist auf beiden Pfaden pixelgleich mit Mesa
-  (mit dem alten Client bekam das in Fall 6 ab- und ohne neuen Zeiger wieder angeschaltete
-  BGRA-Attribut keine Daten mehr, Fall 7 wurde schwarz); `d3d9test`, `glsltest`, `batchtest`, `fftest`, `matrixtest`, `readtest` und
-  `glrender2` liefern dasselbe wie vorher.
+  mehr, glFlushMappedBufferRange zählt den Versatz wie GL ab dem Bereichsanfang, und
+  glFlushMappedBufferRange und glBufferSubData warten nicht mehr: der Server liest beim Abarbeiten
+  aus dem geteilten Speicher, der Client merkt sich je Puffer, was der Server dort noch lesen wird
+  (auch BGRA-Farben beim Zeichnen und Kopien), und wartet nur, bevor er selbst hineinschreibt –
+  synchronisiertes Abbilden zum Schreiben wartet immer. glCopyBufferSubData führt jetzt auch den
+  geteilten Speicher des Ziels nach (vorher lasen glGetBufferSubData und die BGRA-Farben dort
+  Nullen). Im Rennen am PC (2 Kerne, llvmpipe, `WINEDEBUG=-all`): ES 3 mit CSMT von 2 auf
+  ~20 Bilder/s, ohne CSMT ~55; ES 2 mit CSMT von ~45 auf ~62 (vorher 235 Antworten je Bild für
+  glBufferSubData, jetzt eine). Was ES 3 mit CSMT fehlt, kostet wined3d selbst: ohne
+  `ARB_buffer_storage` wartet der Anwendungsthread bei jedem Abbilden auf den CSMT-Thread.
+  `bgratest` ist auf beiden Pfaden pixelgleich mit Mesa (der alte Client scheitert an drei Fällen:
+  das ab- und ohne neuen Zeiger wieder angeschaltete BGRA-Attribut bekam keine Daten mehr, aus
+  einer Kopie wurde schwarz bzw. nichts gezeichnet); `d3d9test`, `glsltest`, `batchtest`, `fftest`,
+  `matrixtest`, `readtest` und `glrender2` liefern dasselbe wie vorher. Nebenbefund: Pufferziele wie
+  `GL_COPY_READ_BUFFER`/`GL_COPY_WRITE_BUFFER` kennen Client und Server nicht (`indexOfGLTarget`
+  liefert 255, Zugriff hinter `vao->buffer`).

@@ -322,12 +322,14 @@ void gd_handle_glBufferSubData(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLintptr offset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr size = ArrayBuffer_getInt(&context->inputBuffer);
+    bool noReply = (target & GLADIO_NO_REPLY) != 0;
+    target &= ~GLADIO_NO_REPLY;
 
     GLBuffer* buffer = GLBuffer_getBound(target);
-    if (buffer && buffer->mappedData && GLES_isBufferTarget(target)) {
+    if (buffer && buffer->mappedData && GLES_isBufferTarget(target) && offset >= 0 && size > 0 && offset + size <= buffer->size) {
         glBufferSubData(target, offset, size, buffer->mappedData + offset);
     }
-    gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_SUB_DATA, NULL, 0);
+    if (!noReply) gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_SUB_DATA, NULL, 0);
 }
 
 void gd_handle_glCallList(GLContext* context) {
@@ -586,15 +588,29 @@ void gd_handle_glCopyBufferSubData(GLContext* context) {
     GLintptr writeOffset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr size = ArrayBuffer_getInt(&context->inputBuffer);
 
+    GLBuffer* readBuffer = GLBuffer_getBound(readTarget);
+    GLBuffer* writeBuffer = GLBuffer_getBound(writeTarget);
     if (GLES2) {
-        GLBuffer* readBuffer = GLBuffer_getBound(readTarget);
-        if (readBuffer && readBuffer->mappedData) {
-            glBufferSubData(writeTarget, writeOffset, size, readBuffer->mappedData + readOffset);
+        if (readBuffer && readBuffer->mappedData && writeBuffer) {
+            /* ES 2.0 kennt nur GL_ARRAY_BUFFER/GL_ELEMENT_ARRAY_BUFFER: das Ziel notfalls kurz dorthin binden */
+            bool rebind = !GLES_isBufferTarget(writeTarget);
+            if (rebind) glBindBuffer(GL_ARRAY_BUFFER, writeBuffer->id);
+            glBufferSubData(rebind ? GL_ARRAY_BUFFER : writeTarget, writeOffset, size, readBuffer->mappedData + readOffset);
+            if (rebind) {
+                GLBuffer* arrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER);
+                glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer ? arrayBuffer->id : 0);
+            }
         }
         else println("gladio:es2: glCopyBufferSubData ohne gemappte Quelle");
-        return;
     }
-    glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
+    else glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
+
+    /* den geteilten Speicher des Ziels nachführen: der Server liest ihn für BGRA-Farben, der Client beim
+     * Abbilden und glGetBufferSubData (der armv7-Client wartet dort auf ausstehende Kopien) */
+    if (readBuffer && writeBuffer && readBuffer->mappedData && writeBuffer->mappedData && size > 0 && readOffset >= 0 && writeOffset >= 0 &&
+        readOffset + size <= readBuffer->size && writeOffset + size <= writeBuffer->size) {
+        memmove((uint8_t*)writeBuffer->mappedData + writeOffset, (const uint8_t*)readBuffer->mappedData + readOffset, size);
+    }
 }
 
 void gd_handle_glCopyPixels(GLContext* context) {
@@ -1188,8 +1204,8 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLintptr offset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr length = ArrayBuffer_getInt(&context->inputBuffer);
-    bool noReply = (target & GLADIO_FLUSH_NO_REPLY) != 0;
-    target &= ~GLADIO_FLUSH_NO_REPLY;
+    bool noReply = (target & GLADIO_NO_REPLY) != 0;
+    target &= ~GLADIO_NO_REPLY;
 
     /* Länge 0: nur Antwort (der Client wartet, bis alles davor abgearbeitet ist) */
     GLBuffer* buffer = length > 0 ? GLBuffer_getBound(target) : NULL;

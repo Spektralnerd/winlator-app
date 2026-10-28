@@ -10,13 +10,20 @@ static bool isGLBufferTarget(GLenum target) {
 
 GLBuffer* GLBuffer_getBound(GLenum target) {
     GLClientState* clientState = &currentRenderer->clientState;
-    return clientState->vao->buffer[indexOfGLTarget(target)];
+    uint8_t index = indexOfGLTarget(target);
+    /* unbekanntes Ziel: indexOfGLTarget liefert 255 (vorher Zugriff hinter vao->buffer) */
+    return index < MAX_BUFFER_TARGETS ? clientState->vao->buffer[index] : NULL;
 }
 
 void GLBuffer_bind(GLenum target, GLuint id) {
     GLClientState* clientState = &currentRenderer->clientState;
+    uint8_t index = indexOfGLTarget(target);
+    if (index >= MAX_BUFFER_TARGETS) {
+        if (isGLBufferTarget(target)) glBindBuffer(target, id);
+        return;
+    }
     if (id == 0) {
-        clientState->vao->buffer[indexOfGLTarget(target)] = NULL;
+        clientState->vao->buffer[index] = NULL;
         if (isGLBufferTarget(target)) glBindBuffer(target, id);
         return;
     }
@@ -28,7 +35,7 @@ void GLBuffer_bind(GLenum target, GLuint id) {
         SparseArray_put(clientState->buffers, id, buffer);
     }
     GLX_CONTEXT_UNLOCK();
-    clientState->vao->buffer[indexOfGLTarget(target)] = buffer;
+    clientState->vao->buffer[index] = buffer;
     if (isGLBufferTarget(target)) glBindBuffer(target, id);
 }
 

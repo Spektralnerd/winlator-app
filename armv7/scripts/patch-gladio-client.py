@@ -53,13 +53,19 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   hinüber (ES-3.0-Pfad, LEGO Racers: ~230 Mal je Bild). Dazu zählt der Versatz von
   glFlushMappedBufferRange wie in GL ab dem Anfang des abgebildeten Bereichs (vorher als Versatz im
   Puffer; das fiel nicht auf, solange die Freigabe ohnehin alles übertrug)
-- glFlushMappedBufferRange wartet nicht mehr auf den Server (Kennung GLADIO_FLUSH_NO_REPLY im Ziel):
-  der Server liest die Daten beim Abarbeiten aus dem geteilten Speicher. Damit das stimmt, wartet
-  glMapBufferRange/glMapBuffer zum Schreiben ohne GL_MAP_UNSYNCHRONIZED_BIT (oder mit
-  GL_MAP_INVALIDATE_BUFFER_BIT) erst, bis der Server alles davor abgearbeitet hat – wie GL selbst.
-  wined3d bildet nur unsynchronisiert ab und wartet über Fences: vorher zwei Rundreisen je
-  Zeichenaufruf (Streaming-Puffer für Eckpunkte und Indizes), mit CSMT jedes Mal mit dem
-  Anwendungsthread im Schlepptau
+- glFlushMappedBufferRange und glBufferSubData warten nicht mehr auf den Server (Kennung
+  GLADIO_NO_REPLY im Ziel): der Server liest die Daten beim Abarbeiten aus dem geteilten Speicher.
+  Damit das stimmt, merkt sich der Client je Puffer den Bereich, den der Server noch lesen wird (auch
+  BGRA-Farben beim Zeichnen und die Quelle von glCopyBufferSubData), und wartet, bevor er mit
+  glBufferData/glBufferSubData dort hineinschreibt; glMapBufferRange/glMapBuffer zum Schreiben ohne
+  GL_MAP_UNSYNCHRONIZED_BIT (oder mit GL_MAP_INVALIDATE_BUFFER_BIT) wartet immer – wie GL selbst.
+  wined3d lädt je Zeichenaufruf Eckpunkte und Indizes hoch: vorher zwei Rundreisen je Aufruf (ES 3:
+  abbilden und übertragen, ES 2: glBufferSubData), mit CSMT jedes Mal mit dem Anwendungsthread im
+  Schlepptau. glCopyBufferSubData: der Server führt den geteilten Speicher des Ziels nach, der
+  Client wartet vor dem Lesen daraus (glGetBufferSubData, Abbilden zum Lesen)
+- Pufferziele GL_COPY_READ_BUFFER und GL_COPY_WRITE_BUFFER (MAX_BUFFER_TARGETS 8): vorher schrieb
+  GLBuffer_setBound für sie (indexOfGLTarget: 255) hinter das Feld vao->buffer; unbekannte Ziele
+  werden jetzt übergangen
 """
 import pathlib
 import shutil
@@ -774,7 +780,55 @@ sub("src/gl_buffer.c",
     "            glFlushMappedBufferRange(buffer->type, offset, length);\n",
     "            gladio_flushBufferRange(buffer->type, offset, length);\n")
 
-# ---- glFlushMappedBufferRange ohne Rundreise, dafür Warten vor synchronisiertem Abbilden ----
+# ---- Übertragungen ohne Rundreise ----
+# glFlushMappedBufferRange und glBufferSubData warten nicht auf den Server; er liest die Daten erst
+# beim Abarbeiten aus dem geteilten Speicher. Der Client merkt sich je Puffer den Bereich, den der
+# Server noch lesen wird (auch BGRA-Farben beim Zeichnen, glCopyBufferSubData), und wartet, bevor er
+# selbst hineinschreibt (glBufferData, glBufferSubData) – synchronisiertes Abbilden zum Schreiben
+# wartet immer, wie in GL. Jedes Warten erhöht den Zähler syncEpoch des Kontexts: ältere Bereiche
+# gelten dann als abgearbeitet.
+sub("include/gl_context.h",
+    "    int pendingSwaps; /* patch-gladio-client.py: Antworten auf glXSwapBuffers, die noch ausstehen */\n} GLContext;",
+    "    int pendingSwaps; /* patch-gladio-client.py: Antworten auf glXSwapBuffers, die noch ausstehen */\n"
+    "    unsigned syncEpoch; /* patch-gladio-client.py: zählt das Warten auf den Server (gladio_serverBarrier) */\n"
+    "} GLContext;")
+sub("include/gl_buffer.h", "    bool mapped;\n} GLBuffer;",
+    "    bool mapped;\n"
+    "    /* patch-gladio-client.py: Bereich, den der Server noch aus dem geteilten Speicher liest; gilt,\n"
+    "     * solange pendingEpoch dem syncEpoch von pendingContext entspricht */\n"
+    "    int pendingStart, pendingEnd;\n"
+    "    unsigned pendingEpoch;\n"
+    "    void* pendingContext;\n"
+    "} GLBuffer;")
+sub("include/gl_buffer.h",
+    "extern void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex);\n",
+    "extern void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex);\n"
+    "extern void gladio_markPending(GLBuffer* buffer, GLintptr offset, GLsizeiptr size);\n")
+sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
+    "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
+    "static void gladio_serverBarrier(void);\n"
+    "\n"
+    "/* Bereich, den der Server beim Abarbeiten noch aus dem geteilten Speicher des Puffers liest */\n"
+    "void gladio_markPending(GLBuffer* buffer, GLintptr offset, GLsizeiptr size) {\n"
+    "    GLContext* context = currentGLContext;\n"
+    "    if (!buffer || !context || size <= 0) return;\n"
+    "    if (buffer->pendingContext != context || buffer->pendingEpoch != context->syncEpoch || buffer->pendingStart >= buffer->pendingEnd) {\n"
+    "        buffer->pendingContext = context;\n"
+    "        buffer->pendingEpoch = context->syncEpoch;\n"
+    "        buffer->pendingStart = offset;\n"
+    "        buffer->pendingEnd = offset + size;\n"
+    "        return;\n"
+    "    }\n"
+    "    if (offset < buffer->pendingStart) buffer->pendingStart = offset;\n"
+    "    if (offset + size > buffer->pendingEnd) buffer->pendingEnd = offset + size;\n"
+    "}\n"
+    "\n"
+    "/* vor dem Schreiben in den geteilten Speicher: liest der Server dort noch, erst abwarten */\n"
+    "static void gladio_waitPending(GLBuffer* buffer, GLintptr offset, GLsizeiptr size) {\n"
+    "    GLContext* context = currentGLContext;\n"
+    "    if (!buffer || !context || buffer->pendingContext != context || buffer->pendingEpoch != context->syncEpoch) return;\n"
+    "    if (offset < buffer->pendingEnd && offset + size > buffer->pendingStart) gladio_serverBarrier();\n"
+    "}\n")
 sub("src/gl_calls.c",
     "    ArrayBuffer_rewind(&outputBuffer);\n"
     "    ArrayBuffer_putInt(&outputBuffer, target);\n"
@@ -783,15 +837,15 @@ sub("src/gl_calls.c",
     "    GL_SEND_CHECKED(REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE, outputBuffer.buffer, outputBuffer.size);\n"
     "    GL_RECV_CHECKED();\n",
     "    ArrayBuffer_rewind(&outputBuffer);\n"
-    "    ArrayBuffer_putInt(&outputBuffer, target | 0x40000000); /* GLADIO_FLUSH_NO_REPLY */\n"
+    "    ArrayBuffer_putInt(&outputBuffer, target | 0x40000000); /* GLADIO_NO_REPLY */\n"
     "    ArrayBuffer_putInt(&outputBuffer, offset);\n"
     "    ArrayBuffer_putInt(&outputBuffer, length);\n"
     "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE, outputBuffer.buffer, outputBuffer.size);\n"
-    "    buffer->flushPending = true;\n")
+    "    gladio_markPending(buffer, offset, length);\n")
 sub("src/gl_calls.c",
     "static void gladio_waitForPixelPackBuffer(GLenum target) {\n",
     "/* wartet, bis der Server alle früheren Anfragen abgearbeitet hat (glFlushMappedBufferRange ohne\n"
-    " * Daten); glFlushMappedBufferRange liest die Daten erst beim Abarbeiten aus dem geteilten Speicher */\n"
+    " * Daten: nur Antwort) */\n"
     "static void gladio_serverBarrier(void) {\n"
     "    if (!currentGLContext || !gladio_drainSwapReplies(0)) return;\n"
     "    ArrayBuffer_rewind(&outputBuffer);\n"
@@ -801,6 +855,7 @@ sub("src/gl_calls.c",
     "    if (gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE, outputBuffer.buffer, outputBuffer.size)) {\n"
     "        gl_recv(currentGLContext->clientRing, NULL, &inputBuffer);\n"
     "    }\n"
+    "    currentGLContext->syncEpoch++;\n"
     "}\n"
     "\n"
     "static void gladio_waitForPixelPackBuffer(GLenum target) {\n")
@@ -813,29 +868,76 @@ sub("src/gl_calls.c",
     "        bool legacyAccess = access == GL_READ_ONLY || access == GL_WRITE_ONLY || access == GL_READ_WRITE;\n"
     "        bool writes = legacyAccess ? access != GL_READ_ONLY : (access & GL_MAP_WRITE_BIT) != 0;\n"
     "        bool synchronized = legacyAccess || !(access & GL_MAP_UNSYNCHRONIZED_BIT) || (access & GL_MAP_INVALIDATE_BUFFER_BIT);\n"
-    "        if (writes && synchronized && target != GL_PIXEL_PACK_BUFFER) {\n"
-    "            gladio_serverBarrier();\n"
-    "            buffer->flushPending = false;\n"
-    "        }\n"
+    "        if (writes && synchronized && target != GL_PIXEL_PACK_BUFFER) gladio_serverBarrier();\n"
+    "        bool reads = legacyAccess ? access != GL_WRITE_ONLY : (access & GL_MAP_READ_BIT) != 0;\n"
+    "        if (reads) gladio_waitPending(buffer, offset, length > 0 ? length : buffer->size);\n"
     "    }\n")
-# glBufferData/glBufferSubData schreiben vor ihrer (wartenden) Anfrage in den geteilten Speicher:
-# stehen dort noch Übertragungen ohne Antwort aus, erst diese abarbeiten lassen
-sub("include/gl_buffer.h", "    bool mapped;\n} GLBuffer;", "    bool mapped;\n    bool flushPending; /* glFlushMappedBufferRange ohne Antwort unterwegs */\n} GLBuffer;")
-sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
-    "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
-    "static void gladio_serverBarrier(void);\n")
 sub("src/gl_calls.c", "    if (data) memcpy(buffer->mappedData, data, size);\n",
-    "    if (data && buffer->flushPending) {\n"
-    "        gladio_serverBarrier();\n"
-    "        buffer->flushPending = false;\n"
-    "    }\n"
+    "    if (data) gladio_waitPending(buffer, 0, size);\n"
     "    if (data) memcpy(buffer->mappedData, data, size);\n")
 sub("src/gl_calls.c", "    if (data) memcpy(buffer->mappedData + offset, data, size);\n",
-    "    if (data && buffer->flushPending) {\n"
-    "        gladio_serverBarrier();\n"
-    "        buffer->flushPending = false;\n"
-    "    }\n"
+    "    if (data) gladio_waitPending(buffer, offset, size);\n"
     "    if (data) memcpy(buffer->mappedData + offset, data, size);\n")
+sub("src/gl_calls.c",
+    "        ArrayBuffer_putInt(&outputBuffer, target);\n"
+    "        ArrayBuffer_putInt(&outputBuffer, offset);\n"
+    "        ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "        GL_SEND_CHECKED(REQUEST_CODE_GL_BUFFER_SUB_DATA, outputBuffer.buffer, outputBuffer.size);\n"
+    "        GL_RECV_CHECKED();\n",
+    "        ArrayBuffer_putInt(&outputBuffer, target | 0x40000000); /* GLADIO_NO_REPLY */\n"
+    "        ArrayBuffer_putInt(&outputBuffer, offset);\n"
+    "        ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "        gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_BUFFER_SUB_DATA, outputBuffer.buffer, outputBuffer.size);\n"
+    "        gladio_markPending(buffer, offset, size);\n")
+# glCopyBufferSubData: der Server liest die Quelle beim Abarbeiten aus dem geteilten Speicher
+sub("src/gl_calls.c",
+    "    ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_COPY_BUFFER_SUB_DATA, outputBuffer.buffer, outputBuffer.size);\n",
+    "    ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_COPY_BUFFER_SUB_DATA, outputBuffer.buffer, outputBuffer.size);\n"
+    "    gladio_markPending(GLBuffer_getBound(readTarget), readOffset, size);\n"
+    "    gladio_markPending(GLBuffer_getBound(writeTarget), writeOffset, size); /* der Server schreibt das Ziel auch in den geteilten Speicher */\n")
+# Lesen aus dem geteilten Speicher: ausstehende Kopien dorthin erst abwarten
+sub("src/gl_calls.c",
+    "        gladio_waitForPixelPackBuffer(target);\n        memcpy(data, buffer->mappedData + offset, size);\n",
+    "        gladio_waitForPixelPackBuffer(target);\n        gladio_waitPending(buffer, offset, size);\n        memcpy(data, buffer->mappedData + offset, size);\n")
+# Pufferziele GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER (wined3d kopiert Puffer darüber): vorher lieferte
+# indexOfGLTarget 255 und GLBuffer_setBound schrieb hinter vao->buffer; unbekannte Ziele übergehen
+sub("include/gladio.h", "#define MAX_BUFFER_TARGETS 6\n", "#define MAX_BUFFER_TARGETS 8 /* mit GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER (6, 7) */\n")
+sub("include/gladio.h",
+    "        case GL_TEXTURE_BUFFER:\n            return 5;\n        default:",
+    "        case GL_TEXTURE_BUFFER:\n            return 5;\n        case GL_COPY_READ_BUFFER:\n            return 6;\n        case GL_COPY_WRITE_BUFFER:\n            return 7;\n        default:")
+sub("src/gl_buffer.c",
+    "GLBuffer* GLBuffer_getBound(GLenum target) {\n"
+    "    GLClientState* clientState = currentGLContext->clientState;\n"
+    "    return clientState->vao->buffer[indexOfGLTarget(target)];\n"
+    "}\n",
+    "GLBuffer* GLBuffer_getBound(GLenum target) {\n"
+    "    GLClientState* clientState = currentGLContext->clientState;\n"
+    "    uint8_t index = indexOfGLTarget(target);\n"
+    "    return index < MAX_BUFFER_TARGETS ? clientState->vao->buffer[index] : NULL;\n"
+    "}\n")
+sub("src/gl_buffer.c",
+    "    clientState->vao->buffer[indexOfGLTarget(target)] = buffer;\n",
+    "    uint8_t index = indexOfGLTarget(target);\n"
+    "    if (index < MAX_BUFFER_TARGETS) clientState->vao->buffer[index] = buffer;\n")
+
+# BGRA-Farben liest der Server beim Zeichnen aus dem geteilten Speicher: Quellpuffer ganz vormerken
+sub("include/gl_vao.h", "    GLuint bgraBuffer;\n} GLVertexArrayObject;",
+    "    GLuint bgraBuffer;\n"
+    "    uint32_t bgraMask; /* patch-gladio-client.py: Attribute mit GL_BGRA aus einem Puffer */\n"
+    "    GLuint bgraSource[VERTEX_ATTRIB_COUNT];\n"
+    "} GLVertexArrayObject;")
+sub("src/gl_buffer.c",
+    "void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {\n",
+    "void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {\n"
+    "    {\n"
+    "        GLClientState* clientState = currentGLContext->clientState;\n"
+    "        for (uint32_t mask = clientState->vao->bgraMask; mask; mask &= mask - 1) {\n"
+    "            GLBuffer* source = SparseArray_get(clientState->buffers, clientState->vao->bgraSource[__builtin_ctz(mask)]);\n"
+    "            if (source) gladio_markPending(source, 0, source->size);\n"
+    "        }\n"
+    "    }\n")
 
 # ---- GL_BGRA aus einem Puffer: der Server stellt die Farben selbst um ----
 sub("src/gl_calls.c",
@@ -846,6 +948,7 @@ sub("src/gl_calls.c",
     "            if (!arrayBuffer) pointer = (void*)0;\n"
     "        }\n"
     "        else GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, true);\n",
+    "        if (index < 32) clientState->vao->bgraMask &= ~(1u << index);\n"
     "        if (!arrayBuffer) {\n"
     "            clientState->vao->attribs[index].stride = stride > 0 ? stride : MIN(4, size) * sizeofGLType(type);\n"
     "            clientState->vao->attribs[index].pointer = (void*)pointer;\n"
@@ -855,7 +958,13 @@ sub("src/gl_calls.c",
     "        else {\n"
     "            GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, true);\n"
     "            /* GL_BGRA aus dem Puffer: der Server liest die Farben selbst aus dem geteilten Speicher */\n"
-    "            if (size == GL_BGRA) normalized |= 0x80; /* GLADIO_VERTEX_ATTRIB_BGRA_BUFFER */\n"
+    "            if (size == GL_BGRA) {\n"
+    "                normalized |= 0x80; /* GLADIO_VERTEX_ATTRIB_BGRA_BUFFER */\n"
+    "                if (index < VERTEX_ATTRIB_COUNT && index < 32) {\n"
+    "                    clientState->vao->bgraMask |= 1u << index;\n"
+    "                    clientState->vao->bgraSource[index] = arrayBuffer->id;\n"
+    "                }\n"
+    "            }\n"
     "        }\n")
 
 if align64:

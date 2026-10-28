@@ -32,16 +32,17 @@
  * je Index aufgerollt; dahinter Indexversatz und Vertexzahl. Siehe readUnboundVertexArrays. */
 #define GLADIO_DRAW_RANGED 0x40000000
 
-/* Kennung im Ziel von glFlushMappedBufferRange (armv7-Client): ohne Antwort. Der Server liest die
- * Daten beim Abarbeiten aus dem geteilten Speicher; der Client wartet dafür vor jedem Abbilden zum
- * Schreiben, das nicht GL_MAP_UNSYNCHRONIZED_BIT ist (Anfrage mit Länge 0: nur Antwort). */
-#define GLADIO_FLUSH_NO_REPLY 0x40000000
+/* Kennung im Ziel von glFlushMappedBufferRange und glBufferSubData (armv7-Client): ohne Antwort.
+ * Der Server liest die Daten beim Abarbeiten aus dem geteilten Speicher; der Client wartet, bevor er
+ * dort Gelesenes überschreibt (patch-gladio-client.py). glFlushMappedBufferRange mit Länge 0 und
+ * ohne Kennung: nur Antwort (der Client wartet, bis alles davor abgearbeitet ist). */
+#define GLADIO_NO_REPLY 0x40000000
 
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
 #define MAX_TEXTURE_TARGETS 4
 #define MAX_FRAMEBUFFER_TARGETS 3
-#define MAX_BUFFER_TARGETS 6
+#define MAX_BUFFER_TARGETS 8 /* mit GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER (6, 7) */
 #define MAX_ARB_PROGRAM_TARGETS 2
 #define MAX_FB_COLOR_ATTACHMENTS 8
 #define MIN_VERTEX_ATTRIBS 3
@@ -316,6 +317,10 @@ static inline uint8_t indexOfGLTarget(GLenum target) {
             return 4;
         case GL_TEXTURE_BUFFER:
             return 5;
+        case GL_COPY_READ_BUFFER:
+            return 6;
+        case GL_COPY_WRITE_BUFFER:
+            return 7;
         default:
             if (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) return 2;
             println("gladio: unimplemented gl target %x", target);
