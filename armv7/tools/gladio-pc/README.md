@@ -152,6 +152,9 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9caps.c` – Direct3D-9-Formatabfragen (`CheckDeviceFormat` je Format für Textur, Filter,
   Renderziel, Mischen), wie Spiele sie beim Start stellen; gibt eine Tabelle aus. Bauen:
   `i686-w64-mingw32-gcc -O1 -o d3d9caps.exe d3d9caps.c -ld3d9`.
+* `d3d9stride0.c` – konstante Vertexfarbe aus einem Strom mit Schrittweite 0 (D3DCOLOR), wie die Unreal
+  Engine 3 ihn für Modelle ohne Vertexfarben bindet; zwei Vierecke, erwartete und gelesene Farben. Bauen:
+  `i686-w64-mingw32-gcc -O1 -o d3d9stride0.exe d3d9stride0.c -ld3d9 -lgdi32 -luser32`.
 * `d3d9hdr.c` – Gleitkomma-Renderziel (A16B16G16R16F) wie die Szenenfarbe der Unreal Engine 3: Werte über 1
   und Alpha-Mischen hinein, dann mit Faktor 0,25 in den Hintergrundpuffer; gibt die erwarteten und die
   gelesenen Farben aus. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9hdr.exe d3d9hdr.c -ld3d9 -lgdi32 -luser32`.
@@ -329,3 +332,11 @@ Kanal und Anteil abweichender Pixel).
   alle Gleitkommaformate als Renderziel mit Mischen, `d3d9hdr` liefert die erwarteten Farben (der vorige
   Server: Abfrage nein, Anlegen des Renderziels scheitert). Über ES 2.0 (Mali-400) bleibt es bei keinen
   Gleitkomma-Renderzielen.
+
+* Konstante Vertexattribute: wined3d setzt Ströme mit Schrittweite 0 nicht als Array, sondern mit
+  `glVertexAttrib4Nubv` (D3DCOLOR) bzw. `glVertexAttrib4Nub`/`4Nsv`/`4Nusv` (feste Farbe, normierte Formate).
+  Der Server verwarf diese Aufrufe („not implemented yet“ im Protokoll, bei Outlast nach den Intro-Videos),
+  das Attribut blieb (0,0,0,0) – Modelle ohne Vertexfarben wären schwarz. Jetzt rechnet der Server sie wie
+  GL 4.2 in Gleitkomma um. `d3d9stride0` zeigt auf beiden Pfaden die erwarteten Farben (der vorige Server:
+  beide Vierecke schwarz). `glProvokingVertex` (ES hat keine Wahl des bestimmenden Eckpunkts) wird ohne
+  Meldung verworfen.

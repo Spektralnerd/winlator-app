@@ -2617,7 +2617,9 @@ void gd_handle_glProgramStringARB(GLContext* context) {
 void gd_handle_glProvokingVertex(GLContext* context) {
     GLenum mode = ArrayBuffer_getInt(&context->inputBuffer);
 
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glProvokingVertex");
+    /* OpenGL ES kennt nur den letzten Eckpunkt als bestimmenden (flache Schattierung); wined3d ruft das
+     * bei jedem Kontext mit GL_FIRST_VERTEX_CONVENTION auf – ohne Meldung verwerfen */
+    (void)mode;
 }
 
 void gd_handle_glPushAttrib(GLContext* context) {
@@ -3520,38 +3522,63 @@ void gd_handle_glVertexAttrib3f(GLContext* context) {
     glVertexAttrib3f(index, x, y, z);
 }
 
+/* Normierte Vertexattribute: wined3d setzt D3DCOLOR-Ströme mit Schrittweite 0 (Unreal Engine 3: Strom ohne
+ * Vertexfarben) über glVertexAttrib4Nubv. Der Server verwarf sie bisher, das Attribut behielt seinen alten
+ * Wert. Umrechnung wie GL 4.2: vorzeichenlos c / max, vorzeichenbehaftet max(c / max, -1). */
+static void vertexAttrib4N(GLContext* context, int size, bool isSigned) {
+    GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
+    const uint8_t* data = ArrayBuffer_getBytes(&context->inputBuffer, 4 * size);
+    GLfloat v[4];
+    for (int i = 0; i < 4; i++) {
+        double value, max;
+        if (size == 1) {
+            value = isSigned ? (double)((const int8_t*)data)[i] : (double)data[i];
+            max = isSigned ? 127.0 : 255.0;
+        }
+        else if (size == 2) {
+            int16_t s16; uint16_t u16;
+            memcpy(isSigned ? (void*)&s16 : (void*)&u16, data + i * 2, 2);
+            value = isSigned ? (double)s16 : (double)u16;
+            max = isSigned ? 32767.0 : 65535.0;
+        }
+        else {
+            int32_t s32; uint32_t u32;
+            memcpy(isSigned ? (void*)&s32 : (void*)&u32, data + i * 4, 4);
+            value = isSigned ? (double)s32 : (double)u32;
+            max = isSigned ? 2147483647.0 : 4294967295.0;
+        }
+        value /= max;
+        v[i] = (GLfloat)(value < -1.0 ? -1.0 : value);
+    }
+    glVertexAttrib4f(index, v[0], v[1], v[2], v[3]);
+}
+
 void gd_handle_glVertexAttrib4Nbv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nbv");
+    vertexAttrib4N(context, 1, true);
 }
 
 void gd_handle_glVertexAttrib4Niv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Niv");
+    vertexAttrib4N(context, 4, true);
 }
 
 void gd_handle_glVertexAttrib4Nsv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nsv");
+    vertexAttrib4N(context, 2, true);
 }
 
 void gd_handle_glVertexAttrib4Nub(GLContext* context) {
-    GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
-    GLubyte x = ArrayBuffer_get(&context->inputBuffer);
-    GLubyte y = ArrayBuffer_get(&context->inputBuffer);
-    GLubyte z = ArrayBuffer_get(&context->inputBuffer);
-    GLubyte w = ArrayBuffer_get(&context->inputBuffer);
-
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nub");
+    vertexAttrib4N(context, 1, false);
 }
 
 void gd_handle_glVertexAttrib4Nubv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nubv");
+    vertexAttrib4N(context, 1, false);
 }
 
 void gd_handle_glVertexAttrib4Nuiv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nuiv");
+    vertexAttrib4N(context, 4, false);
 }
 
 void gd_handle_glVertexAttrib4Nusv(GLContext* context) {
-    println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glVertexAttrib4Nusv");
+    vertexAttrib4N(context, 2, false);
 }
 
 void gd_handle_glVertexAttrib4f(GLContext* context) {
