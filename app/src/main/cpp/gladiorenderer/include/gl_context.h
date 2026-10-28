@@ -58,7 +58,7 @@ typedef struct GLContext {
         int64_t periodStartNs;
         uint32_t frames, requests, draws;
         uint64_t bytes, drawBytes;
-        int64_t waitNs, swapNs, drawNs;
+        int64_t waitNs, swapNs, drawNs, uploadNs;
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
         GladioBatchStats batchAtStart;
     } stats;

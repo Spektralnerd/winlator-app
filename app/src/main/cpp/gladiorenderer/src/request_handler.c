@@ -295,7 +295,11 @@ void gd_handle_glBufferData(GLContext* context) {
 
     GLBuffer* buffer = GLBuffer_getBound(target);
     if (buffer && buffer->mappedData && GLES_isBufferTarget(target)) {
-        glBufferData(target, size, buffer->mappedData, usage);
+        /* ES 2: GL_STREAM_DRAW wird Streaming-Puffer (der Client wartet hier auf die Antwort: der geteilte
+         * Speicher hat den Stand der GL-Reihenfolge); dann nur die Kopie nachführen */
+        if (GLES2 && usage == GL_STREAM_DRAW && (target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER)) GLES_beginStreaming(buffer);
+        if (buffer->streaming && GLES2) GLES_uploadStreaming(buffer, 0, MIN(size, buffer->size));
+        else glBufferData(target, size, buffer->mappedData, usage);
     }
     gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_DATA, NULL, 0);
 }
@@ -310,8 +314,11 @@ void gd_handle_glBufferStorage(GLContext* context) {
 
     bool success = fd > 0;
     if (success && target != GL_PIXEL_UNPACK_BUFFER && GLES_isBufferTarget(target)) {
-        GLenum usage = (flags & GL_DYNAMIC_STORAGE_BIT) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
+        /* GL_CLIENT_STORAGE_BIT: der Client legt so Puffer mit GL_STREAM_DRAW an (patch-gladio-client.py) */
+        GLenum usage = (flags & GL_DYNAMIC_STORAGE_BIT) ? GL_DYNAMIC_DRAW : (flags & GL_CLIENT_STORAGE_BIT) ? GL_STREAM_DRAW : GL_STATIC_DRAW;
         glBufferData(target, size, NULL, usage);
+        /* ES 2: von Anfang an Streaming-Puffer (der neue Speicher ist leer wie der GL-Puffer) */
+        if (GLES2 && usage == GL_STREAM_DRAW && (target == GL_ARRAY_BUFFER || target == GL_ELEMENT_ARRAY_BUFFER)) GLES_beginStreaming(buffer);
     }
 
     send_fds(context->clientFd, &fd, 1, &success, sizeof(bool));
@@ -327,7 +334,7 @@ void gd_handle_glBufferSubData(GLContext* context) {
 
     GLBuffer* buffer = GLBuffer_getBound(target);
     if (buffer && buffer->mappedData && GLES_isBufferTarget(target) && offset >= 0 && size > 0 && offset + size <= buffer->size) {
-        glBufferSubData(target, offset, size, buffer->mappedData + offset);
+        if (!GLES_uploadStreaming(buffer, offset, size)) glBufferSubData(target, offset, size, buffer->mappedData + offset);
     }
     if (!noReply) gl_send(context->clientRing, REQUEST_CODE_GL_BUFFER_SUB_DATA, NULL, 0);
 }
@@ -590,27 +597,36 @@ void gd_handle_glCopyBufferSubData(GLContext* context) {
 
     GLBuffer* readBuffer = GLBuffer_getBound(readTarget);
     GLBuffer* writeBuffer = GLBuffer_getBound(writeTarget);
+    bool inRange = readBuffer && writeBuffer && readBuffer->mappedData && writeBuffer->mappedData && size > 0 && readOffset >= 0 && writeOffset >= 0 &&
+                   readOffset + size <= readBuffer->size && writeOffset + size <= writeBuffer->size;
     if (GLES2) {
-        if (readBuffer && readBuffer->mappedData && writeBuffer) {
+        /* Quelle in der Reihenfolge der Anfragen: die Kopie eines Streaming-Puffers, sonst der geteilte Speicher */
+        const uint8_t* streamedSource = GLES_streamingData(readBuffer);
+        const uint8_t* src = streamedSource ? streamedSource : (readBuffer ? (const uint8_t*)readBuffer->mappedData : NULL);
+        if (src && writeBuffer && inRange) {
+            if (writeBuffer->streaming) {
+                memmove((uint8_t*)writeBuffer->mappedData + writeOffset, src + readOffset, size);
+                GLES_uploadStreaming(writeBuffer, writeOffset, size);
+                return;
+            }
             /* ES 2.0 kennt nur GL_ARRAY_BUFFER/GL_ELEMENT_ARRAY_BUFFER: das Ziel notfalls kurz dorthin binden */
             bool rebind = !GLES_isBufferTarget(writeTarget);
             if (rebind) glBindBuffer(GL_ARRAY_BUFFER, writeBuffer->id);
-            glBufferSubData(rebind ? GL_ARRAY_BUFFER : writeTarget, writeOffset, size, readBuffer->mappedData + readOffset);
+            glBufferSubData(rebind ? GL_ARRAY_BUFFER : writeTarget, writeOffset, size, src + readOffset);
             if (rebind) {
                 GLBuffer* arrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER);
                 glBindBuffer(GL_ARRAY_BUFFER, arrayBuffer ? arrayBuffer->id : 0);
             }
+            memmove((uint8_t*)writeBuffer->mappedData + writeOffset, src + readOffset, size);
         }
         else println("gladio:es2: glCopyBufferSubData ohne gemappte Quelle");
+        return;
     }
-    else glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
+    glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size);
 
     /* den geteilten Speicher des Ziels nachführen: der Server liest ihn für BGRA-Farben, der Client beim
      * Abbilden und glGetBufferSubData (der armv7-Client wartet dort auf ausstehende Kopien) */
-    if (readBuffer && writeBuffer && readBuffer->mappedData && writeBuffer->mappedData && size > 0 && readOffset >= 0 && writeOffset >= 0 &&
-        readOffset + size <= readBuffer->size && writeOffset + size <= writeBuffer->size) {
-        memmove((uint8_t*)writeBuffer->mappedData + writeOffset, (const uint8_t*)readBuffer->mappedData + readOffset, size);
-    }
+    if (inRange) memmove((uint8_t*)writeBuffer->mappedData + writeOffset, (const uint8_t*)readBuffer->mappedData + readOffset, size);
 }
 
 void gd_handle_glCopyPixels(GLContext* context) {
@@ -888,8 +904,10 @@ void gd_handle_glDrawArrays(GLContext* context) {
 
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArrays(first, count);
     glDrawArrays(mode, first, count);
+    GLES_finishStreamingArrays();
 }
 
 void gd_handle_glDrawArraysInstanced(GLContext* context) {
@@ -900,9 +918,11 @@ void gd_handle_glDrawArraysInstanced(GLContext* context) {
 
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArrays(first, count);
     if (GLES2) {
         glDrawArrays(mode, first, count);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawArraysInstanced(mode, first, count, instancecount);
@@ -930,9 +950,11 @@ void gd_handle_glDrawElements(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawElements(mode, count, type, indices);
@@ -948,9 +970,11 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawElementsBaseVertex(mode, count, type, indices, basevertex);
@@ -966,9 +990,11 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawElementsInstanced(mode, count, type, indices, instancecount);
@@ -985,9 +1011,11 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawElementsInstancedBaseVertex(mode, count, type, indices, instancecount, basevertex);
@@ -1017,9 +1045,11 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawRangeElements(mode, start, end, count, type, indices);
@@ -1037,9 +1067,11 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
+        GLES_finishStreamingArrays();
         return;
     }
     glDrawRangeElementsBaseVertex(mode, start, end, count, type, indices, basevertex);
@@ -1214,7 +1246,7 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
     if (buffer) {
         if (buffer->mappedData) {
             if (GLES2) {
-                if (GLES_isBufferTarget(target)) glBufferSubData(target, offset, length, buffer->mappedData + offset);
+                if (GLES_isBufferTarget(target) && !GLES_uploadStreaming(buffer, offset, length)) glBufferSubData(target, offset, length, buffer->mappedData + offset);
             }
             else {
                 void* dstData = glMapBufferRange(target, offset, length, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
@@ -3569,6 +3601,7 @@ void gd_handle_glVertexAttribPointer(GLContext* context) {
     if (index < VERTEX_ATTRIB_COUNT) {
         GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[index];
         GLBuffer* arrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER);
+        GLVertexArrayObject_setVboSource(clientState, index, 0, 0, 0, 0, false, 0, 0);
         if (bgraFromBuffer && size == GL_BGRA && arrayBuffer) {
             /* Farben liest der Server beim Zeichnen selbst aus dem geteilten Speicher des Puffers */
             vertexAttrib->type = type;
@@ -3600,7 +3633,10 @@ void gd_handle_glVertexAttribPointer(GLContext* context) {
         }
         else GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, true);
 
+        GLuint attribIndex = index;
         if (GLRenderer_useARBProgram(currentRenderer, false)) index = clientState->arbProgram[0]->material->location.attributes[index];
+        /* ES 2: Quelle merken (Streaming-Puffer zeichnet der Server aus seiner Kopie) */
+        if (GLES2) GLVertexArrayObject_setVboSource(clientState, attribIndex, arrayBuffer->id, index, size, GLES_vertexAttribType(type), normalized, stride, pointer);
     }
     else if (index >= INT32_MAX) {
         int arrayIdx = index - INT32_MAX;
@@ -3620,6 +3656,7 @@ void gd_handle_glVertexAttribPointer(GLContext* context) {
         vertexAttrib->stride = stride;
         vertexAttrib->pointer = (void*)pointer;
         vertexAttrib->boundArrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER)->id;
+        if (GLES2) GLVertexArrayObject_setVboSource(clientState, arrayIdx, vertexAttrib->boundArrayBuffer, index, size, GLES_vertexAttribType(type), normalized, stride, pointer);
     }
 
     glVertexAttribPointer(index, size, GLES_vertexAttribType(type), normalized, stride, (const void*)pointer);

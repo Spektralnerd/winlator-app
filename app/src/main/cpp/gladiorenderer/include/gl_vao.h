@@ -29,6 +29,14 @@ typedef struct GLVertexAttrib {
     int type;
     GLuint boundArrayBuffer;
     int size;
+    /* ES 2: an GL weitergereichtes Attribut aus einem Puffer (vboMask); ist der Puffer ein
+     * Streaming-Puffer, zeigt es beim Zeichnen auf die Kopie des Servers (GLES_prepareStreamingArrays) */
+    struct {
+        GLuint buffer;
+        int location, size, type, stride;
+        bool normalized;
+        uintptr_t offset;
+    } vbo;
 #endif
     void* pointer;
     short stride;
@@ -40,6 +48,10 @@ typedef struct GLVertexArrayObject {
     GLVertexAttrib attribs[VERTEX_ATTRIB_COUNT];
     GLBuffer* buffer[MAX_BUFFER_TARGETS];
     GLuint bgraBuffers[VERTEX_ATTRIB_COUNT]; /* je Attribut eigener Puffer für umgestellte BGRA-Farben */
+#ifdef GL_SERVER
+    uint32_t vboMask; /* Attribute mit gültigem vbo (ES 2) */
+    uint32_t streamMask; /* Attribute, die für den laufenden Zeichenaufruf auf eine Streaming-Kopie zeigen (ES 2) */
+#endif
 } GLVertexArrayObject;
 
 #define GL_SEND_VERTEX_ARRAY(requestCode, arrayIdx) \
@@ -83,6 +95,9 @@ typedef struct GLVertexArrayObject {
     while (0)
 
 extern void GLVertexArrayObject_setAttribState(GLClientState* clientState, GLuint index, uint8_t state, bool clear);
+#ifdef GL_SERVER
+extern void GLVertexArrayObject_setVboSource(GLClientState* clientState, GLuint index, GLuint buffer, int location, int size, int type, bool normalized, int stride, uintptr_t offset);
+#endif
 extern void GLVertexArrayObject_setBound(GLClientState* clientState, GLuint id);
 extern void GLVertexArrayObject_delete(GLClientState* clientState, GLuint id);
 

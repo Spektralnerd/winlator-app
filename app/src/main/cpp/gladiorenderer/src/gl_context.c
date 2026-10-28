@@ -19,6 +19,24 @@ static inline int64_t nowNs(void) {
     return gladio_nowNs();
 }
 
+/* Daten in Puffer oder Texturen (Zeitanteil „Hochladen“ in der Statistik) */
+static bool isUploadRequest(short requestCode) {
+    switch (requestCode) {
+        case REQUEST_CODE_GL_BUFFER_DATA:
+        case REQUEST_CODE_GL_BUFFER_SUB_DATA:
+        case REQUEST_CODE_GL_BUFFER_STORAGE:
+        case REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE:
+        case REQUEST_CODE_GL_COPY_BUFFER_SUB_DATA:
+        case REQUEST_CODE_GL_TEX_IMAGE2D:
+        case REQUEST_CODE_GL_TEX_SUB_IMAGE2D:
+        case REQUEST_CODE_GL_COMPRESSED_TEX_IMAGE2D:
+        case REQUEST_CODE_GL_COMPRESSED_TEX_SUB_IMAGE2D:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool isDrawRequest(short requestCode) {
     switch (requestCode) {
         case REQUEST_CODE_GL_DRAW_ARRAYS:
@@ -84,8 +102,8 @@ static void printStats(GLContext* context, int64_t now) {
             seconds, st->frames, st->frames / seconds, st->requests / frames, (uint32_t)((gladio_statsReplies - st->repliesAtStart) / frames),
             st->draws / frames, (uint32_t)(st->bytes / frames / 1024), (uint32_t)(st->drawBytes / frames / 1024),
             (uint32_t)((gladio_statsTexBytes - st->texBytesAtStart) / frames / 1024));
-    println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms (davon Zeichnen %.1f ms); Shader-Programme neu %u, gesamt %u",
-            st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames, st->drawNs / 1e6 / frames,
+    println("gladio: Zeit je Bild: Warten auf den Client %.1f ms, Bildausgabe %.1f ms, Ausführen %.1f ms (davon Zeichnen %.1f ms, Hochladen %.1f ms); Shader-Programme neu %u, gesamt %u",
+            st->waitNs / 1e6 / frames, st->swapNs / 1e6 / frames, execNs / 1e6 / frames, st->drawNs / 1e6 / frames, st->uploadNs / 1e6 / frames,
             (uint32_t)(gladio_statsPrograms - st->programsAtStart), (uint32_t)gladio_statsPrograms);
     GladioBatchStats* bs = &gladio_batchStats;
     GladioBatchStats* b0 = &st->batchAtStart;
@@ -638,7 +656,9 @@ static void* requestHandlerThread(void* param) {
 #endif
 
                 HandleRequestFunc handleRequestFunc = getHandleRequestFunc(requestCode);
+                int64_t uploadStart = isUploadRequest(requestCode) ? nowNs() : 0;
                 if (handleRequestFunc) handleRequestFunc(context);
+                if (uploadStart) context->stats.uploadNs += nowNs() - uploadStart;
                 break;
             }
         }

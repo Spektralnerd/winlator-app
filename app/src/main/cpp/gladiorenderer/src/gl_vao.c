@@ -32,6 +32,8 @@ void GLVertexArrayObject_setAttribState(GLClientState* clientState, GLuint index
 #ifdef GL_SERVER
             vertexAttrib->normalized = false;
             vertexAttrib->bgraBuffer = false;
+            vertexAttrib->vbo.buffer = 0;
+            clientState->vao->vboMask &= ~(1u << index);
             vertexAttrib->type = 0;
             vertexAttrib->size = 0;
             vertexAttrib->boundArrayBuffer = 0;
@@ -48,6 +50,20 @@ void GLVertexArrayObject_setAttribState(GLClientState* clientState, GLuint index
             for (int i = 0; i < VERTEX_ATTRIB_COUNT; i++) if (clientState->vao->attribs[i].state) clientState->vao->maxEnabledAttribs = i+1;
         }
     }
+}
+
+void GLVertexArrayObject_setVboSource(GLClientState* clientState, GLuint index, GLuint buffer, int location, int size, int type, bool normalized, int stride, uintptr_t offset) {
+    if (index >= VERTEX_ATTRIB_COUNT) return;
+    GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[index];
+    vertexAttrib->vbo.buffer = buffer;
+    vertexAttrib->vbo.location = location;
+    vertexAttrib->vbo.size = size;
+    vertexAttrib->vbo.type = type;
+    vertexAttrib->vbo.normalized = normalized;
+    vertexAttrib->vbo.stride = stride;
+    vertexAttrib->vbo.offset = offset;
+    if (buffer) clientState->vao->vboMask |= 1u << index;
+    else clientState->vao->vboMask &= ~(1u << index);
 }
 
 void GLVertexArrayObject_setBound(GLClientState* clientState, GLuint id) {

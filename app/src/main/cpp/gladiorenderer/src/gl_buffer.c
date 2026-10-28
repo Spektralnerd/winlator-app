@@ -45,6 +45,10 @@ static void unmapBuffer(GLBuffer* buffer) {
         buffer->mappedData = NULL;
         buffer->size = 0;
     }
+    if (buffer->shadow) {
+        free(buffer->shadow);
+        buffer->shadow = NULL;
+    }
 }
 
 int GLBuffer_allocateMemory(GLBuffer* buffer, int size) {
@@ -57,6 +61,9 @@ int GLBuffer_allocateMemory(GLBuffer* buffer, int size) {
 
     buffer->mappedData = mappedData;
     buffer->size = size;
+    /* neuer Speicher: Streaming-Zustand neu bestimmen (glBufferStorage mit GL_CLIENT_STORAGE_BIT oder Zählen) */
+    buffer->streaming = false;
+    buffer->uploadsInFrame = 0;
     return fd;
 }
 

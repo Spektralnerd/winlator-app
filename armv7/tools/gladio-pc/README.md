@@ -124,8 +124,17 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   Attribut ab- und ohne neuen Zeiger wieder angeschaltet, glMapBuffer(GL_WRITE_ONLY) über schon
   gezeichnete Daten, derselbe Bereich dreimal mit glBufferSubData beschrieben und gezeichnet,
   Eckpunkte nach dem Zeichnen überschrieben, aus einer Kopie (glCopyBufferSubData) gezeichnet und
-  zurückgelesen (`./bgratest out.ppm`, mit Mesa vergleichen). Bauen:
+  zurückgelesen; vorher ein Abbilden nur zum Lesen ab einer Farbe (`./bgratest out.ppm`, mit Mesa
+  vergleichen). `./bgratest --wow64 out.ppm` stellt dabei Wine im WoW64-Betrieb nach
+  (`dlls/opengl32/unix_wgl.c`: Abbilden über eine Kopie, deren Adresse in den ersten vier Byte des echten
+  Bereichs steht, Rückkopie erst in glUnmapBuffer) – das Bild muss dasselbe sein. Bauen:
   `gcc -O1 -o bgratest bgratest.c -lX11 -lGL -ldl`.
+* `streamtest.c` – Streaming-Puffer des Servers auf dem ES-2.0-Pfad, acht Fälle: GL_STREAM_DRAW mit
+  wachsendem Versatz, GL_STATIC_DRAW fünfmal im Bild neu beschrieben, Eckpunkte und Indizes aus
+  Streaming-Puffern, Puffer nach dem Zeichnen gelöscht und durch einen festen ersetzt, vergrößert,
+  mit glBufferData (GL_STREAM_DRAW) neu befüllt, Position aus Streaming- und Farbe aus festem Puffer,
+  glDrawElementsBaseVertex (`./streamtest out.ppm`, mit Mesa vergleichen). Bauen:
+  `gcc -O1 -o streamtest streamtest.c -lX11 -lGL -ldl`.
 
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
@@ -251,3 +260,27 @@ Kanal und Anteil abweichender Pixel).
   `matrixtest`, `readtest` und `glrender2` liefern dasselbe wie vorher. Nebenbefund: Pufferziele wie
   `GL_COPY_READ_BUFFER`/`GL_COPY_WRITE_BUFFER` kennen Client und Server nicht (`indexOfGLTarget`
   liefert 255, Zugriff hinter `vao->buffer`).
+* Mali-400 (Note 8.0, LEGO Racers im Rennen ~2,8 Bilder/s): Der Server brauchte 330–430 ms je Bild zum
+  Ausführen, davon 4–5 ms Zeichnen. wined3d lädt über ES 2.0 vor jedem Zeichenaufruf mit glBufferSubData
+  in seinen 512-KB-Streaming-Puffer (~140 Mal je Bild), aus dem im selben Bild schon gezeichnet wurde –
+  der Mali-400-Treiber kopiert dafür jedes Mal den ganzen Puffer. Jetzt führt der Server
+  Streaming-Puffer nur noch als eigene Kopie (in der Reihenfolge der Anfragen) und zeichnet daraus mit
+  Client-Arrays, die der Treiber nur im benutzten Bereich übernimmt (`gl_es2.c`). Streaming-Puffer sind
+  Puffer mit GL_STREAM_DRAW (wined3d: alle dynamischen Puffer; der Client meldet den Hinweis beim
+  Anlegen als GL_CLIENT_STORAGE_BIT) und andere Puffer, sobald sie in einem Bild viermal teilweise neu
+  beschrieben werden. Nach jedem Zeichenaufruf stellt der Server die Attribute wieder auf die
+  GL-Puffer, damit GL nie einen Zeiger in eine freigegebene Kopie behält. Die Statistik zeigt jetzt
+  auch die Zeit fürs Hochladen. Am PC (llvmpipe) zeichnet LEGO Racers so pixelgleich; die Mali-Kopien
+  selbst lassen sich hier nicht messen. `streamtest` ist auf beiden Pfaden pixelgleich mit Mesa.
+* WoW64 (64-Bit-Variante, 32-Bit-Programm): Liegt der geteilte Speicher über 4 GB, bildet Wine über
+  eine eigene Kopie ab, schreibt deren Adresse in die ersten vier Byte des Bereichs und kopiert erst in
+  glUnmapBuffer zurück. Box64 legt Abbildungen nativer Bibliotheken mit `BOX64_MMAP32=1` (Vorgabe)
+  unter 2 GB, dann entfällt das; sonst galt: Die Übertragungen ohne Rundreise lasen die Daten vor der
+  Rückkopie, glGetBufferPointerv lieferte den Pufferanfang statt des Bereichsanfangs, nach glMapBuffer
+  meldete der Client GL_BUFFER_MAP_LENGTH 0 und GL_BUFFER_ACCESS_FLAGS ohne Schreib-Bit (Wine kopierte
+  nichts zurück). Jetzt gehen ausdrückliche Übertragungen erst beim Freigeben hinaus, die Abfragen
+  stimmen, und der 64-Bit-Client wartet vor dem Abbilden, bis der Server die ersten vier Byte nicht mehr
+  lesen muss (LEGO Racers: 0,2 zusätzliche Rundreisen je Bild, eine je neuem Streaming-Puffer); nach
+  einem Abbilden nur zum Lesen stellt er sie wieder her. BGRA-Farben merkt sich der Client dafür genau
+  im gezeichneten Bereich vor statt im ganzen Puffer. `bgratest --wow64` ist auf beiden Pfaden
+  pixelgleich mit Mesa; der vorige Client verlor dort Fall 4 (Teilbereich) und Fall 7 (glMapBuffer).

@@ -66,6 +66,23 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
 - Pufferziele GL_COPY_READ_BUFFER und GL_COPY_WRITE_BUFFER (MAX_BUFFER_TARGETS 8): vorher schrieb
   GLBuffer_setBound für sie (indexOfGLTarget: 255) hinter das Feld vao->buffer; unbekannte Ziele
   werden jetzt übergangen
+- Wine im WoW64-Betrieb (64-Bit-Variante, 32-Bit-Programm), wenn der geteilte Speicher über 4 GB liegt (Box64
+  legt ihn mit BOX64_MMAP32=1, der Vorgabe, unter 2 GB, solange dort Platz ist): Wine bildet über eine eigene
+  Kopie ab, schreibt deren Adresse in die ersten vier Byte des Bereichs und kopiert erst in glUnmapBuffer
+  zurück. Deshalb
+  * gehen ausdrückliche Übertragungen (glFlushMappedBufferRange ohne GL_MAP_PERSISTENT_BIT) erst beim Freigeben
+    hinaus – vorher las der Server die alten Daten, sobald die Übertragung ohne Rundreise lief
+  * liefert glGetBufferPointerv den Anfang des abgebildeten Bereichs (vorher den Pufferanfang, auch ohne
+    Abbildung), GL_BUFFER_ACCESS_FLAGS nach glMapBuffer Bits und GL_BUFFER_MAP_LENGTH die Pufferlänge (Wine
+    kopierte nach glMapBuffer nichts zurück)
+  * wartet der 64-Bit-Client vor dem Abbilden, bis der Server die ersten vier Byte des Bereichs nicht mehr
+    lesen muss, und stellt sie nach einer Abbildung nur zum Lesen wieder her (dort kopiert Wine nicht zurück)
+- BGRA-Farben aus einem Puffer: vorgemerkt wird nur der Bereich der gezeichneten Eckpunkte und der Indizes
+  (vorher der ganze Puffer – das hätte jedes Abbilden des Streaming-Puffers warten lassen). Indizierte Aufrufe
+  mit Elementpuffer lesen die Indizes für persistente Puffer jetzt aus dessen geteiltem Speicher (vorher an der
+  Adresse "Versatz im Puffer")
+- glBufferData mit GL_STREAM_DRAW legt den Speicher mit GL_CLIENT_STORAGE_BIT an: der Server der armv7-App
+  zeichnet solche Puffer über ES 2.0 aus einer eigenen Kopie (Mali-400, gl_es2.c)
 """
 import pathlib
 import shutil
@@ -749,13 +766,23 @@ sub("src/gl_calls.c",
     "    if (target == GL_PIXEL_UNPACK_BUFFER || length == 0) return;\n")
 sub("src/gl_calls.c",
     "void glFlushMappedBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length) {\n",
-    "/* GL: der Versatz zählt ab dem Anfang des abgebildeten Bereichs */\n"
+    "/* GL: der Versatz zählt ab dem Anfang des abgebildeten Bereichs. Ohne GL_MAP_PERSISTENT_BIT darf GL den Puffer\n"
+    " * erst nach dem Freigeben wieder benutzen: die Bereiche gehen erst mit glUnmapBuffer hinaus. Wine im\n"
+    " * WoW64-Betrieb (32-Bit-Programm, Abbildung über 4 GB) schreibt seine Kopie der Abbildung erst beim Freigeben\n"
+    " * in den geteilten Speicher zurück – vorher las der Server dort noch die alten Daten. */\n"
     "void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) {\n"
     "    GL_CALL_LOCK();\n"
     "    GLBuffer* buffer = GLBuffer_getBound(target);\n"
-    "    GLintptr base = buffer && buffer->mapped ? buffer->mapOffset : 0;\n"
+    "    if (buffer && buffer->mapped) {\n"
+    "        offset += buffer->mapOffset;\n"
+    "        if (!(buffer->access & GL_MAP_PERSISTENT_BIT)) {\n"
+    "            gladio_recordFlush(buffer, offset, length);\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return;\n"
+    "        }\n"
+    "    }\n"
     "    GL_CALL_UNLOCK();\n"
-    "    gladio_flushBufferRange(target, base + offset, length);\n"
+    "    gladio_flushBufferRange(target, offset, length);\n"
     "}\n"
     "\n"
     "void glFlushMappedBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length) {\n")
@@ -766,19 +793,37 @@ sub("src/gl_calls.c",
     "    else if (buffer->mapLength > 0 && (buffer->access & GL_MAP_WRITE_BIT)) {\n"
     "        glFlushMappedBufferRange(target, buffer->mapOffset, buffer->mapLength);\n"
     "    }\n",
+    "    if (buffer->mapped) gladio_unmapHead(buffer);\n"
     "    if (buffer->mapLength == 0 && (buffer->access == GL_WRITE_ONLY || buffer->access == GL_READ_WRITE)) {\n"
     "        gladio_flushBufferRange(target, 0, buffer->size);\n"
     "    }\n"
     "    else if (buffer->mapLength > 0 && (buffer->access & GL_MAP_WRITE_BIT) && !(buffer->access & GL_MAP_FLUSH_EXPLICIT_BIT)) {\n"
     "        gladio_flushBufferRange(target, buffer->mapOffset, buffer->mapLength);\n"
-    "    }\n")
+    "    }\n"
+    "    /* vorgemerkte ausdrückliche Übertragungen (glFlushMappedBufferRange) */\n"
+    "    for (int i = 0; i < buffer->flushCount; i++) {\n"
+    "        gladio_flushBufferRange(target, buffer->flushRanges[i][0], buffer->flushRanges[i][1] - buffer->flushRanges[i][0]);\n"
+    "    }\n"
+    "    buffer->flushCount = 0;\n")
 sub("src/gl_buffer.c",
     "extern void getRangeIndices(const void* indices, GLsizei count, GLenum indexType, GLint basevertex, GLuint* range);\n",
     "extern void getRangeIndices(const void* indices, GLsizei count, GLenum indexType, GLint basevertex, GLuint* range);\n"
     "extern void gladio_flushBufferRange(GLenum target, GLintptr offset, GLsizeiptr length);\n")
-sub("src/gl_buffer.c",
-    "            glFlushMappedBufferRange(buffer->type, offset, length);\n",
-    "            gladio_flushBufferRange(buffer->type, offset, length);\n")
+sub("include/gl_buffer.h", "    bool mapped;\n} GLBuffer;",
+    "    bool mapped;\n"
+    "    /* patch-gladio-client.py: mit GL_MAP_FLUSH_EXPLICIT_BIT übertragene Bereiche (Versatz im Puffer, Ende\n"
+    "     * ausschließlich), gesendet erst beim Freigeben; mapHead: die ersten vier Byte des abgebildeten Bereichs\n"
+    "     * beim Abbilden (Wine im WoW64-Betrieb überschreibt sie) */\n"
+    "    int flushRanges[GLADIO_FLUSH_RANGES][2];\n"
+    "    uint8_t flushCount;\n"
+    "    uint32_t mapHead;\n"
+    "} GLBuffer;")
+sub("include/gl_buffer.h", "typedef struct GLBuffer {\n",
+    "#include <stdint.h>\n"
+    "\n"
+    "#define GLADIO_FLUSH_RANGES 4\n"
+    "\n"
+    "typedef struct GLBuffer {\n")
 
 # ---- Übertragungen ohne Rundreise ----
 # glFlushMappedBufferRange und glBufferSubData warten nicht auf den Server; er liest die Daten erst
@@ -792,8 +837,8 @@ sub("include/gl_context.h",
     "    int pendingSwaps; /* patch-gladio-client.py: Antworten auf glXSwapBuffers, die noch ausstehen */\n"
     "    unsigned syncEpoch; /* patch-gladio-client.py: zählt das Warten auf den Server (gladio_serverBarrier) */\n"
     "} GLContext;")
-sub("include/gl_buffer.h", "    bool mapped;\n} GLBuffer;",
-    "    bool mapped;\n"
+sub("include/gl_buffer.h", "    uint32_t mapHead;\n} GLBuffer;",
+    "    uint32_t mapHead;\n"
     "    /* patch-gladio-client.py: Bereich, den der Server noch aus dem geteilten Speicher liest; gilt,\n"
     "     * solange pendingEpoch dem syncEpoch von pendingContext entspricht */\n"
     "    int pendingStart, pendingEnd;\n"
@@ -828,6 +873,52 @@ sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER
     "    GLContext* context = currentGLContext;\n"
     "    if (!buffer || !context || buffer->pendingContext != context || buffer->pendingEpoch != context->syncEpoch) return;\n"
     "    if (offset < buffer->pendingEnd && offset + size > buffer->pendingStart) gladio_serverBarrier();\n"
+    "}\n"
+    "\n"
+    "/* ausdrücklich übertragenen Bereich bis glUnmapBuffer vormerken (überlappende und angrenzende Bereiche\n"
+    " * zusammenlegen; sind alle Plätze belegt, wächst der letzte) */\n"
+    "static void gladio_recordFlush(GLBuffer* buffer, GLintptr offset, GLsizeiptr length) {\n"
+    "    if (length <= 0 || offset >= buffer->size || offset + length <= 0) return;\n"
+    "    int start = (int)MAX(offset, 0), end = (int)MIN(offset + length, (GLintptr)buffer->size);\n"
+    "    for (int i = 0; i < buffer->flushCount; i++) {\n"
+    "        int* range = buffer->flushRanges[i];\n"
+    "        if (start <= range[1] && end >= range[0]) {\n"
+    "            range[0] = MIN(range[0], start);\n"
+    "            range[1] = MAX(range[1], end);\n"
+    "            return;\n"
+    "        }\n"
+    "    }\n"
+    "    if (buffer->flushCount < GLADIO_FLUSH_RANGES) {\n"
+    "        int* range = buffer->flushRanges[buffer->flushCount++];\n"
+    "        range[0] = start;\n"
+    "        range[1] = end;\n"
+    "        return;\n"
+    "    }\n"
+    "    int* range = buffer->flushRanges[GLADIO_FLUSH_RANGES - 1];\n"
+    "    range[0] = MIN(range[0], start);\n"
+    "    range[1] = MAX(range[1], end);\n"
+    "}\n"
+    "\n"
+    "/* Abbildung beginnt: Wine im WoW64-Betrieb (32-Bit-Programm, geteilter Speicher über 4 GB) legt eine Kopie an\n"
+    " * und schreibt deren Adresse in die ersten vier Byte des abgebildeten Bereichs; beim Freigeben zum Schreiben\n"
+    " * kopiert es die Kopie samt der alten vier Byte zurück, beim Freigeben nur zum Lesen nicht. Der Server darf sie\n"
+    " * vorher nicht mehr lesen müssen, und nach dem Lesen stellt der Client sie wieder her. 32-Bit-Bau: nichts zu tun. */\n"
+    "static void gladio_mapHead(GLBuffer* buffer, GLintptr offset) {\n"
+    "#if UINTPTR_MAX > 0xffffffff\n"
+    "    if (!buffer->mappedData || offset < 0 || offset + 4 > buffer->size) return;\n"
+    "    gladio_waitPending(buffer, offset, 4);\n"
+    "    memcpy(&buffer->mapHead, (char*)buffer->mappedData + offset, 4);\n"
+    "#endif\n"
+    "}\n"
+    "\n"
+    "static void gladio_unmapHead(GLBuffer* buffer) {\n"
+    "#if UINTPTR_MAX > 0xffffffff\n"
+    "    int access = buffer->access;\n"
+    "    bool legacyAccess = access == GL_READ_ONLY || access == GL_WRITE_ONLY || access == GL_READ_WRITE;\n"
+    "    bool writes = legacyAccess ? access != GL_READ_ONLY : (access & GL_MAP_WRITE_BIT) != 0;\n"
+    "    if (writes || !buffer->mappedData || buffer->mapOffset < 0 || buffer->mapOffset + 4 > buffer->size) return;\n"
+    "    memcpy((char*)buffer->mappedData + buffer->mapOffset, &buffer->mapHead, 4);\n"
+    "#endif\n"
     "}\n")
 sub("src/gl_calls.c",
     "    ArrayBuffer_rewind(&outputBuffer);\n"
@@ -871,6 +962,8 @@ sub("src/gl_calls.c",
     "        if (writes && synchronized && target != GL_PIXEL_PACK_BUFFER) gladio_serverBarrier();\n"
     "        bool reads = legacyAccess ? access != GL_WRITE_ONLY : (access & GL_MAP_READ_BIT) != 0;\n"
     "        if (reads) gladio_waitPending(buffer, offset, length > 0 ? length : buffer->size);\n"
+    "        buffer->flushCount = 0;\n"
+    "        gladio_mapHead(buffer, offset);\n"
     "    }\n")
 sub("src/gl_calls.c", "    if (data) memcpy(buffer->mappedData, data, size);\n",
     "    if (data) gladio_waitPending(buffer, 0, size);\n"
@@ -922,22 +1015,132 @@ sub("src/gl_buffer.c",
     "    uint8_t index = indexOfGLTarget(target);\n"
     "    if (index < MAX_BUFFER_TARGETS) clientState->vao->buffer[index] = buffer;\n")
 
-# BGRA-Farben liest der Server beim Zeichnen aus dem geteilten Speicher: Quellpuffer ganz vormerken
+# GL_BUFFER_MAP_POINTER: Anfang des abgebildeten Bereichs, NULL ohne Abbildung (vorher immer der Pufferanfang;
+# Wine im WoW64-Betrieb findet darüber seine Kopie der Abbildung und schreibt sie beim Freigeben dorthin zurück)
+sub("src/gl_calls.c",
+    "    *params = buffer ? buffer->mappedData : NULL;\n",
+    "    *params = buffer && buffer->mapped && buffer->mappedData ? (char*)buffer->mappedData + buffer->mapOffset : NULL;\n")
+# GL_BUFFER_ACCESS_FLAGS als Bits und GL_BUFFER_MAP_LENGTH auch nach glMapBuffer (Wine im WoW64-Betrieb kopiert
+# beim Freigeben nur mit GL_MAP_WRITE_BIT und nur GL_BUFFER_MAP_LENGTH Byte zurück: nach glMapBuffer vorher nichts)
+sub("src/gl_buffer.c",
+    "        case GL_BUFFER_ACCESS:\n"
+    "        case GL_BUFFER_ACCESS_FLAGS:\n"
+    "            *params = buffer->access;\n"
+    "            break;\n",
+    "        case GL_BUFFER_ACCESS:\n"
+    "            if (buffer->access == GL_READ_ONLY || buffer->access == GL_WRITE_ONLY || buffer->access == GL_READ_WRITE) *params = buffer->access;\n"
+    "            else if ((buffer->access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == GL_MAP_READ_BIT) *params = GL_READ_ONLY;\n"
+    "            else if ((buffer->access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)) == GL_MAP_WRITE_BIT) *params = GL_WRITE_ONLY;\n"
+    "            else *params = GL_READ_WRITE;\n"
+    "            break;\n"
+    "        case GL_BUFFER_ACCESS_FLAGS:\n"
+    "            if (buffer->access == GL_READ_ONLY) *params = GL_MAP_READ_BIT;\n"
+    "            else if (buffer->access == GL_WRITE_ONLY) *params = GL_MAP_WRITE_BIT;\n"
+    "            else if (buffer->access == GL_READ_WRITE) *params = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;\n"
+    "            else *params = buffer->access;\n"
+    "            break;\n")
+sub("src/gl_buffer.c",
+    "        case GL_BUFFER_MAP_LENGTH:\n"
+    "            *params = buffer->mapLength;\n",
+    "        case GL_BUFFER_MAP_LENGTH:\n"
+    "            *params = buffer->mapped && buffer->mapLength == 0 ? buffer->size - buffer->mapOffset : buffer->mapLength;\n")
+
+# BGRA-Farben liest der Server beim Zeichnen aus dem geteilten Speicher: genau die gezeichneten Eckpunkte vormerken
+# (Versatz und Schrittweite je Attribut; Indizes aus dem Elementpuffer – die liest der Server auch dort)
 sub("include/gl_vao.h", "    GLuint bgraBuffer;\n} GLVertexArrayObject;",
     "    GLuint bgraBuffer;\n"
-    "    uint32_t bgraMask; /* patch-gladio-client.py: Attribute mit GL_BGRA aus einem Puffer */\n"
+    "    /* patch-gladio-client.py: Attribute mit GL_BGRA aus einem Puffer (Quelle, Versatz, Schrittweite) und\n"
+    "     * eingeschaltete Attribute */\n"
+    "    uint32_t bgraMask;\n"
+    "    uint32_t attribEnabled;\n"
     "    GLuint bgraSource[VERTEX_ATTRIB_COUNT];\n"
+    "    int bgraOffset[VERTEX_ATTRIB_COUNT];\n"
+    "    short bgraStride[VERTEX_ATTRIB_COUNT];\n"
     "} GLVertexArrayObject;")
+sub("src/gl_calls.c",
+    "    if (index < VERTEX_ATTRIB_COUNT) GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, false);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DISABLE_VERTEX_ATTRIB_ARRAY, &index, sizeof(GLuint));\n",
+    "    if (index < VERTEX_ATTRIB_COUNT) GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, false);\n"
+    "    if (index < 32) clientState->vao->attribEnabled &= ~(1u << index);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DISABLE_VERTEX_ATTRIB_ARRAY, &index, sizeof(GLuint));\n")
+sub("src/gl_calls.c",
+    "    if (currentGLContext->clientState->arbProgram[0]) index += GENERIC_VERTEX_ARRAY_INDEX;\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ENABLE_VERTEX_ATTRIB_ARRAY, &index, sizeof(GLuint));\n",
+    "    if (currentGLContext->clientState->arbProgram[0]) index += GENERIC_VERTEX_ARRAY_INDEX;\n"
+    "    if (index < 32) currentGLContext->clientState->vao->attribEnabled |= 1u << index;\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_ENABLE_VERTEX_ATTRIB_ARRAY, &index, sizeof(GLuint));\n")
+# vorher wurden bei indizierten Aufrufen mit Elementpuffer die Indizes an der Adresse "Versatz im Puffer" gelesen
 sub("src/gl_buffer.c",
-    "void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {\n",
     "void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {\n"
-    "    {\n"
-    "        GLClientState* clientState = currentGLContext->clientState;\n"
-    "        for (uint32_t mask = clientState->vao->bgraMask; mask; mask &= mask - 1) {\n"
-    "            GLBuffer* source = SparseArray_get(clientState->buffers, clientState->vao->bgraSource[__builtin_ctz(mask)]);\n"
-    "            if (source) gladio_markPending(source, 0, source->size);\n"
+    "    if (currentGLContext->clientState->persistentBuffers.size == 0) return;\n"
+    "    \n"
+    "    if (indexType != GL_NONE) {\n"
+    "        GLuint range[2];\n"
+    "        getRangeIndices(indices, count, indexType, basevertex, range);\n"
+    "        first = range[0];\n"
+    "        count = (range[1] - range[0]) + 1;\n"
+    "    }\n"
+    "    \n"
+    "    GLClientState* clientState = currentGLContext->clientState;\n"
+    "    for (int i = 0; i < clientState->persistentBuffers.size; i++) {\n"
+    "        GLBuffer* buffer = clientState->persistentBuffers.elements[i];\n"
+    "        if (buffer->mapped) {\n"
+    "            int offset = first * buffer->drawStride + buffer->mapOffset;\n"
+    "            int length = count * buffer->drawStride;\n"
+    "            \n"
+    "            glFlushMappedBufferRange(buffer->type, offset, length);\n"
     "        }\n"
-    "    }\n")
+    "    }\n"
+    "}",
+    "void flushMappedPersistentBuffers(GLint first, GLsizei count, const void* indices, GLenum indexType, GLint basevertex) {\n"
+    "    GLClientState* clientState = currentGLContext->clientState;\n"
+    "    GLVertexArrayObject* vao = clientState->vao;\n"
+    "    uint32_t bgraMask = vao->bgraMask & vao->attribEnabled;\n"
+    "    if (count <= 0 || (!bgraMask && clientState->persistentBuffers.size == 0)) return;\n"
+    "\n"
+    "    /* gezeichnete Eckpunkte; Indizes aus einem Elementpuffer stehen in dessen geteiltem Speicher */\n"
+    "    GLBuffer* elementBuffer = NULL;\n"
+    "    if (indexType != GL_NONE) {\n"
+    "        elementBuffer = vao->buffer[indexOfGLTarget(GL_ELEMENT_ARRAY_BUFFER)];\n"
+    "        if (elementBuffer) {\n"
+    "            uint64_t indexOffset = (uint64_t)(uintptr_t)indices, indexBytes = (uint64_t)count * sizeofGLType(indexType);\n"
+    "            indices = elementBuffer->mappedData && indexOffset + indexBytes <= (uint64_t)elementBuffer->size ? (const char*)elementBuffer->mappedData + indexOffset : NULL;\n"
+    "        }\n"
+    "    }\n"
+    "    GLuint range[2] = {(GLuint)first, (GLuint)first + count - 1};\n"
+    "    bool haveRange = indexType == GL_NONE;\n"
+    "    if (indexType != GL_NONE && indices) {\n"
+    "        getRangeIndices(indices, count, indexType, basevertex, range);\n"
+    "        haveRange = range[0] <= range[1];\n"
+    "    }\n"
+    "\n"
+    "    /* GL_BGRA aus einem Puffer: der Server liest Farben und Indizes beim Abarbeiten aus dem geteilten Speicher */\n"
+    "    if (bgraMask) {\n"
+    "        if (elementBuffer && indices) gladio_markPending(elementBuffer, (const char*)indices - (const char*)elementBuffer->mappedData, count * sizeofGLType(indexType));\n"
+    "        for (uint32_t mask = bgraMask; mask; mask &= mask - 1) {\n"
+    "            int i = __builtin_ctz(mask);\n"
+    "            GLBuffer* source = SparseArray_get(clientState->buffers, vao->bgraSource[i]);\n"
+    "            if (!source) continue;\n"
+    "            int64_t start = 0, end = source->size;\n"
+    "            if (haveRange) {\n"
+    "                start = MAX((int64_t)vao->bgraOffset[i] + (int64_t)range[0] * vao->bgraStride[i], 0);\n"
+    "                end = MIN((int64_t)vao->bgraOffset[i] + (int64_t)range[1] * vao->bgraStride[i] + 4, (int64_t)source->size);\n"
+    "            }\n"
+    "            if (start < end) gladio_markPending(source, (GLintptr)start, (GLsizeiptr)(end - start));\n"
+    "        }\n"
+    "    }\n"
+    "\n"
+    "    for (int i = 0; i < clientState->persistentBuffers.size; i++) {\n"
+    "        GLBuffer* buffer = clientState->persistentBuffers.elements[i];\n"
+    "        if (!buffer->mapped) continue;\n"
+    "        if (haveRange) {\n"
+    "            int offset = range[0] * buffer->drawStride + buffer->mapOffset;\n"
+    "            int length = (range[1] - range[0] + 1) * buffer->drawStride;\n"
+    "            gladio_flushBufferRange(buffer->type, offset, length);\n"
+    "        }\n"
+    "        else gladio_flushBufferRange(buffer->type, buffer->mapOffset, buffer->mapLength > 0 ? buffer->mapLength : buffer->size - buffer->mapOffset);\n"
+    "    }\n"
+    "}")
 
 # ---- GL_BGRA aus einem Puffer: der Server stellt die Farben selbst um ----
 sub("src/gl_calls.c",
@@ -963,9 +1166,26 @@ sub("src/gl_calls.c",
     "                if (index < VERTEX_ATTRIB_COUNT && index < 32) {\n"
     "                    clientState->vao->bgraMask |= 1u << index;\n"
     "                    clientState->vao->bgraSource[index] = arrayBuffer->id;\n"
+    "                    clientState->vao->bgraOffset[index] = (int)(uintptr_t)pointer;\n"
+    "                    clientState->vao->bgraStride[index] = stride > 0 ? stride : 4;\n"
     "                }\n"
     "            }\n"
     "        }\n")
+
+# GL_STREAM_DRAW beim Anlegen als GL_CLIENT_STORAGE_BIT melden: der Server der armv7-App zeichnet solche
+# Puffer über ES 2.0 von Anfang an aus einer eigenen Kopie (Mali-400: glBufferSubData in einen Puffer, aus dem
+# im selben Bild schon gezeichnet wurde, kopiert den ganzen Puffer). GL_BUFFER_USAGE bleibt der Wert des Programms.
+sub("src/gl_calls.c",
+    "        GLbitfield flags = usage == GL_DYNAMIC_DRAW ? GL_DYNAMIC_STORAGE_BIT : 0;\n"
+    "        glBufferStorage(target, size, data, flags);\n"
+    "        return;\n",
+    "        GLbitfield flags = usage == GL_DYNAMIC_DRAW ? GL_DYNAMIC_STORAGE_BIT : 0;\n"
+    "        if (usage == GL_STREAM_DRAW) flags |= GL_CLIENT_STORAGE_BIT;\n"
+    "        glBufferStorage(target, size, data, flags);\n"
+    "        GL_CALL_LOCK();\n"
+    "        buffer->usage = usage;\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n")
 
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",

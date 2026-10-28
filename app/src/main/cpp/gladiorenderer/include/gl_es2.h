@@ -104,4 +104,12 @@ extern void GLES_applyMinFilter(GLenum target, struct GLTexture* texture);
 /* glDrawElements mit Basisvertex und 32-Bit-Indizes ohne OES_element_index_uint. */
 extern void GLES_drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex);
 
+/* Streaming-Puffer (ES 2.0): Hochladen nur in die Kopie des Servers, Zeichnen als Client-Arrays daraus */
+struct GLBuffer;
+extern bool GLES_uploadStreaming(struct GLBuffer* buffer, int offset, int size);
+extern const uint8_t* GLES_streamingData(struct GLBuffer* buffer);
+extern bool GLES_beginStreaming(struct GLBuffer* buffer);
+extern void GLES_prepareStreamingArrays(void);
+extern void GLES_finishStreamingArrays(void);
+
 #endif

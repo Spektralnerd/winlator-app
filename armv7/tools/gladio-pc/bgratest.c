@@ -24,8 +24,17 @@
  *  11  über GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER kopiert, mit glGetBufferSubData zurückgelesen,
  *      daraus mit glBufferData einen neuen Puffer gefüllt und gezeichnet
  *
+ * Vor Feld 0 wird der feste Puffer ab der Diffusfarbe des ersten Eckpunkts nur zum Lesen abgebildet.
+ *
+ * --wow64: Wine im WoW64-Betrieb nachgestellt (dlls/opengl32/unix_wgl.c, wow64_map_buffer und
+ * wow64_unmap_buffer; dort für 32-Bit-Programme, wenn die Abbildung über 4 GB liegt): abgebildet wird über
+ * eine Kopie (ohne GL_MAP_INVALIDATE_*-Bits mit dem alten Inhalt), deren Adresse Wine in die ersten vier Byte
+ * des echten Bereichs schreibt (glGetBufferPointerv); glFlushMappedBufferRange geht unverändert durch, erst
+ * glUnmapBuffer kopiert GL_BUFFER_MAP_LENGTH Byte zurück – nur mit GL_MAP_WRITE_BIT in GL_BUFFER_ACCESS_FLAGS.
+ * Das Bild muss dasselbe sein wie ohne.
+ *
  *   gcc -O1 -o bgratest bgratest.c -lX11 -lGL -ldl
- *   ./bgratest out.ppm          (mit Mesa direkt vergleichen: ppmdiff.py)
+ *   ./bgratest [--wow64] out.ppm   (mit Mesa direkt vergleichen: ppmdiff.py)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +56,69 @@ typedef struct Vertex {
     uint8_t specular[4]; /* B G R A */
     float pad[2];
 } Vertex;
+
+/* ---- Wine im WoW64-Betrieb (--wow64) ---- */
+static int wow64;
+static struct { void* real; void* copy; } wowMaps[4];
+
+static void* wowMap(GLenum target, void* ptr, size_t size, GLbitfield access) {
+    if (!wow64 || !ptr) return ptr;
+    void* real = NULL;
+    glGetBufferPointerv(target, GL_BUFFER_MAP_POINTER, &real); /* zweiter Aufruf: get_buffer_pointer() */
+    if (!real) { fputs("wow64: kein GL_BUFFER_MAP_POINTER\n", stderr); exit(7); }
+    if (!size) {
+        GLint s = 0;
+        glGetBufferParameteriv(target, GL_BUFFER_SIZE, &s);
+        size = s;
+    }
+    void* copy = aligned_alloc(16, (size + 15) & ~(size_t)15);
+    memset(copy, 0x5a, size);
+    if (!(access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT))) memcpy(copy, real, size);
+    uint32_t tag = 0x12f00dff; /* Wine: die 32-Bit-Adresse der Kopie */
+    memcpy(real, &tag, 4);
+    for (int i = 0; i < 4; i++) {
+        if (!wowMaps[i].real) {
+            wowMaps[i].real = real;
+            wowMaps[i].copy = copy;
+            break;
+        }
+    }
+    return copy;
+}
+
+static void* mapRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
+    static PFNGLMAPBUFFERRANGEPROC realMapBufferRange;
+    if (!realMapBufferRange) realMapBufferRange = (PFNGLMAPBUFFERRANGEPROC)glXGetProcAddressARB((const GLubyte*)"glMapBufferRange");
+    return wowMap(target, realMapBufferRange(target, offset, length, access), length, access);
+}
+
+static void* mapBuffer(GLenum target, GLenum access) {
+    GLbitfield flags = access == GL_READ_ONLY ? GL_MAP_READ_BIT : access == GL_WRITE_ONLY ? GL_MAP_WRITE_BIT : GL_MAP_READ_BIT | GL_MAP_WRITE_BIT;
+    return wowMap(target, glMapBuffer(target, access), 0, flags);
+}
+
+static GLboolean unmapBuffer(GLenum target) {
+    if (wow64) {
+        void* real = NULL;
+        glGetBufferPointerv(target, GL_BUFFER_MAP_POINTER, &real);
+        if (real) {
+            GLint length = 0, flags = 0;
+            glGetBufferParameteriv(target, GL_BUFFER_MAP_LENGTH, &length);
+            glGetBufferParameteriv(target, GL_BUFFER_ACCESS_FLAGS, &flags);
+            int found = 0;
+            for (int i = 0; i < 4; i++) {
+                if (wowMaps[i].real != real) continue;
+                if (flags & GL_MAP_WRITE_BIT) memcpy(real, wowMaps[i].copy, length);
+                free(wowMaps[i].copy);
+                wowMaps[i].real = NULL;
+                found = 1;
+                break;
+            }
+            if (!found) { fputs("wow64: Kopie zur Abbildung nicht gefunden\n", stderr); exit(8); }
+        }
+    }
+    return glUnmapBuffer(target);
+}
 
 static void* proc(const char* name) {
     void* p = (void*)glXGetProcAddressARB((const GLubyte*)name);
@@ -115,7 +187,11 @@ static void pointers(GLintptr base) {
 }
 
 int main(int argc, char** argv) {
-    const char* out = argc > 1 ? argv[1] : "out.ppm";
+    const char* out = "out.ppm";
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--wow64")) wow64 = 1;
+        else out = argv[i];
+    }
     Display* dpy = XOpenDisplay(NULL);
     if (!dpy) return 1;
     int screen = DefaultScreen(dpy);
@@ -130,7 +206,6 @@ int main(int argc, char** argv) {
     printf("%s / GL %s\n", glGetString(GL_RENDERER), glGetString(GL_VERSION));
 
     PFNGLDRAWELEMENTSBASEVERTEXPROC pDrawElementsBaseVertex = proc("glDrawElementsBaseVertex");
-    PFNGLMAPBUFFERRANGEPROC pMapBufferRange = proc("glMapBufferRange");
     PFNGLFLUSHMAPPEDBUFFERRANGEPROC pFlushMappedBufferRange = proc("glFlushMappedBufferRange");
 
     GLuint program = glCreateProgram();
@@ -167,6 +242,11 @@ int main(int argc, char** argv) {
     glEnableVertexAttribArray(6);
     pointers(0);
 
+    /* nur zum Lesen abbilden, ab der Diffusfarbe von Eckpunkt 4 (Wine schreibt dorthin, kopiert aber nicht zurück) */
+    uint8_t* readMap = mapRange(GL_ARRAY_BUFFER, 4 * sizeof(Vertex) + 16, 64, GL_MAP_READ_BIT);
+    if (!readMap || memcmp(readMap, fixed[4].diffuse, 4)) { puts("Lesen aus der Abbildung falsch"); return 9; }
+    unmapBuffer(GL_ARRAY_BUFFER);
+
     /* 0: glDrawArrays, first 4 */
     glDrawArrays(GL_TRIANGLE_STRIP, 4, 4);
 
@@ -197,11 +277,11 @@ int main(int argc, char** argv) {
     /* 4: Teilbereich ab 1024 abbilden, Quadrat bei +128 schreiben, nur diese 128 Byte übertragen */
     Vertex v4[4];
     quad(v4, 4, colors[4][0], colors[4][1]);
-    uint8_t* map = pMapBufferRange(GL_ARRAY_BUFFER, 1024, 512, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+    uint8_t* map = mapRange(GL_ARRAY_BUFFER, 1024, 512, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
     if (!map) { puts("glMapBufferRange fehlgeschlagen"); return 6; }
     memcpy(map + 128, v4, sizeof(v4));
     pFlushMappedBufferRange(GL_ARRAY_BUFFER, 128, sizeof(v4));
-    glUnmapBuffer(GL_ARRAY_BUFFER);
+    unmapBuffer(GL_ARRAY_BUFFER);
     glDrawArrays(GL_TRIANGLE_STRIP, (1024 + 128) / sizeof(Vertex), 4);
 
     /* 5: zwei Aufrufe hintereinander, wachsender Versatz (unsynchronisiert, wie wined3d) */
@@ -211,10 +291,10 @@ int main(int argc, char** argv) {
         quad(v5, 5, d, colors[5][1]);
         if (k == 0) for (int i = 0; i < 4; i++) v5[i].pos[0] -= 0.1f; /* links halb verdeckt */
         GLintptr offset = 4096 + k * sizeof(v5);
-        map = pMapBufferRange(GL_ARRAY_BUFFER, 0, 65536, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+        map = mapRange(GL_ARRAY_BUFFER, 0, 65536, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
         memcpy(map + offset, v5, sizeof(v5));
         pFlushMappedBufferRange(GL_ARRAY_BUFFER, offset, sizeof(v5));
-        glUnmapBuffer(GL_ARRAY_BUFFER);
+        unmapBuffer(GL_ARRAY_BUFFER);
         glDrawArrays(GL_TRIANGLE_STRIP, offset / sizeof(Vertex), 4);
     }
 
@@ -224,10 +304,10 @@ int main(int argc, char** argv) {
     quad(v6 + 4, 6, colors[6][1], colors[6][0]);
     v6[4].pos[0] += 0.2f; /* zweites Quadrat nur in der rechten Hälfte des Felds */
     v6[6].pos[0] += 0.2f;
-    map = pMapBufferRange(GL_ARRAY_BUFFER, 0, 65536, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+    map = mapRange(GL_ARRAY_BUFFER, 0, 65536, GL_MAP_WRITE_BIT | GL_MAP_FLUSH_EXPLICIT_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
     memcpy(map + 8192, v6, sizeof(v6));
     pFlushMappedBufferRange(GL_ARRAY_BUFFER, 8192, sizeof(v6));
-    glUnmapBuffer(GL_ARRAY_BUFFER);
+    unmapBuffer(GL_ARRAY_BUFFER);
     glDisableVertexAttribArray(5);
     glVertexAttrib4f(5, 0.0f, 1.0f, 0.5f, 1.0f);
     glDrawArrays(GL_TRIANGLE_STRIP, 8192 / sizeof(Vertex), 4);
@@ -237,10 +317,10 @@ int main(int argc, char** argv) {
     /* 7: glMapBuffer(GL_WRITE_ONLY), ganzer Puffer neu */
     Vertex v7[4];
     quad(v7, 7, colors[7][0], colors[7][1]);
-    map = glMapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
+    map = mapBuffer(GL_ARRAY_BUFFER, GL_WRITE_ONLY);
     memset(map, 0, 65536);
     memcpy(map + 2048, v7, sizeof(v7));
-    glUnmapBuffer(GL_ARRAY_BUFFER);
+    unmapBuffer(GL_ARRAY_BUFFER);
     glDrawArrays(GL_TRIANGLE_STRIP, 2048 / sizeof(Vertex), 4);
 
     /* 8: kleiner Puffer, dreimal derselbe Bereich mit glBufferSubData, je ein Streifen */

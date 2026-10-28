@@ -720,19 +720,141 @@ void GLES_applyMinFilter(GLenum target, GLTexture* texture) {
     glTexParameteri(target, GL_TEXTURE_MIN_FILTER, filter);
 }
 
+/* ------------------------------------------------------------------ Streaming-Puffer */
+
+/* wined3d lädt über ES 2.0 vor jedem Zeichenaufruf die Eckpunkte und Indizes mit glBufferSubData in
+ * einen Streaming-Puffer (512 KB), aus dem im selben Bild schon gezeichnet wurde. Die Mali-400 kopiert
+ * dafür jedes Mal den ganzen Puffer (LEGO Racers: ~140 Mal je Bild, ~350 ms). Streaming-Puffer gehen
+ * deshalb nur noch in eine Kopie des Servers (in der Reihenfolge der Anfragen nachgeführt wie sonst der
+ * GL-Puffer); gezeichnet wird daraus mit Client-Arrays, die der Treiber je Zeichenaufruf nur im
+ * benutzten Bereich übernimmt. Streaming-Puffer sind
+ *  - Puffer mit GL_STREAM_DRAW (wined3d: alle dynamischen Puffer, auch der Streaming-Puffer): von Anfang
+ *    an – der Client meldet den Hinweis beim Anlegen (GL_CLIENT_STORAGE_BIT in glBufferStorage)
+ *  - andere Puffer, sobald sie in einem Bild mehrfach teilweise neu beschrieben werden. Die Kopie
+ *    entsteht dann aus dem geteilten Speicher, in den der Client schon weitergeschrieben haben kann;
+ *    das geht gut, solange er Bereiche, aus denen noch gezeichnet wird, nicht ohne Warten überschreibt
+ *    (wined3d: Hochladen nur in neue Bereiche oder nach glBufferData).
+ * Nach jedem Zeichenaufruf zeigen die Attribute wieder auf die GL-Puffer (GLES_finishStreamingArrays):
+ * so hält GL nie einen Zeiger in eine Kopie, die mit dem Puffer freigegeben wird (auch nicht, wenn ein
+ * anderer Kontext den geteilten Puffer löscht). */
+#define GLES_STREAMING_UPLOADS 4
+
+static uint8_t* streamingShadow(GLBuffer* buffer) {
+    if (!buffer->shadow && buffer->mappedData && buffer->size > 0) {
+        buffer->shadow = malloc(buffer->size);
+        if (buffer->shadow) memcpy(buffer->shadow, buffer->mappedData, buffer->size);
+    }
+    return buffer->shadow;
+}
+
+const uint8_t* GLES_streamingData(GLBuffer* buffer) {
+    return GLES2 && buffer && buffer->streaming ? streamingShadow(buffer) : NULL;
+}
+
+/* ab jetzt Streaming-Puffer; die Kopie entsteht aus dem geteilten Speicher (Aufruf beim Anlegen des
+ * Speichers oder bei einer Anfrage, auf deren Antwort der Client wartet: dort steht der Stand der
+ * GL-Reihenfolge) */
+bool GLES_beginStreaming(GLBuffer* buffer) {
+    if (!GLES2 || !buffer || !buffer->mappedData) return false;
+    if (buffer->streaming) return true;
+    if (buffer->shadow) {
+        free(buffer->shadow);
+        buffer->shadow = NULL;
+    }
+    if (!streamingShadow(buffer)) return false;
+    buffer->streaming = true;
+    return true;
+}
+
+bool GLES_uploadStreaming(GLBuffer* buffer, int offset, int size) {
+    if (!GLES2 || !buffer || !buffer->mappedData) return false;
+    if (!buffer->streaming) {
+        uint32_t frame = currentRenderer ? currentRenderer->frameCount : 0;
+        if (buffer->uploadFrame != frame) {
+            buffer->uploadFrame = frame;
+            buffer->uploadsInFrame = 0;
+        }
+        if (++buffer->uploadsInFrame < GLES_STREAMING_UPLOADS) return false;
+        /* die Kopie entsteht mit dem ganzen Inhalt, dieses Hochladen eingeschlossen */
+        if (buffer->shadow) {
+            free(buffer->shadow);
+            buffer->shadow = NULL;
+        }
+        if (!streamingShadow(buffer)) return false;
+        buffer->streaming = true;
+        static int reports = 0;
+        if (reports++ < 8) println("gladio:es2: Puffer %u (%d KB) wird je Bild mehrfach neu beschrieben, ab jetzt als Client-Array gezeichnet", buffer->id, buffer->size / 1024);
+        return true;
+    }
+    uint8_t* shadow = streamingShadow(buffer);
+    if (!shadow) return false;
+    if (offset >= 0 && size > 0 && offset + size <= buffer->size) memcpy(shadow + offset, (const uint8_t*)buffer->mappedData + offset, size);
+    return true;
+}
+
+void GLES_prepareStreamingArrays(void) {
+    if (!GLES2 || !currentRenderer) return;
+    GLClientState* clientState = &currentRenderer->clientState;
+    GLVertexArrayObject* vao = clientState->vao;
+    vao->streamMask = 0;
+    for (uint32_t mask = vao->vboMask; mask; mask &= mask - 1) {
+        int index = __builtin_ctz(mask);
+        GLVertexAttrib* attrib = &vao->attribs[index];
+        GLX_CONTEXT_LOCK();
+        GLBuffer* buffer = SparseArray_get(clientState->buffers, attrib->vbo.buffer);
+        GLX_CONTEXT_UNLOCK();
+        const uint8_t* data = GLES_streamingData(buffer);
+        if (!data || attrib->vbo.location < 0) continue;
+        if (!vao->streamMask) glBindBuffer(GL_ARRAY_BUFFER, 0);
+        vao->streamMask |= 1u << index;
+        glVertexAttribPointer(attrib->vbo.location, attrib->vbo.size, attrib->vbo.type, attrib->vbo.normalized, attrib->vbo.stride, data + attrib->vbo.offset);
+    }
+    if (vao->streamMask) {
+        GLBuffer* bound = GLBuffer_getBound(GL_ARRAY_BUFFER);
+        glBindBuffer(GL_ARRAY_BUFFER, bound ? bound->id : 0);
+    }
+}
+
+/* nach dem Zeichenaufruf: Attribute wieder auf ihre GL-Puffer stellen */
+void GLES_finishStreamingArrays(void) {
+    if (!GLES2 || !currentRenderer) return;
+    GLClientState* clientState = &currentRenderer->clientState;
+    GLVertexArrayObject* vao = clientState->vao;
+    if (!vao->streamMask) return;
+    GLuint bound = (GLuint)-1;
+    for (uint32_t mask = vao->streamMask; mask; mask &= mask - 1) {
+        GLVertexAttrib* attrib = &vao->attribs[__builtin_ctz(mask)];
+        if (attrib->vbo.buffer != bound) {
+            bound = attrib->vbo.buffer;
+            glBindBuffer(GL_ARRAY_BUFFER, bound);
+        }
+        glVertexAttribPointer(attrib->vbo.location, attrib->vbo.size, attrib->vbo.type, attrib->vbo.normalized, attrib->vbo.stride, (const void*)attrib->vbo.offset);
+    }
+    vao->streamMask = 0;
+    GLBuffer* appBound = GLBuffer_getBound(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, appBound ? appBound->id : 0);
+}
+
 /* ------------------------------------------------------------------ Zeichnen */
 
 void GLES_drawElements(GLenum mode, GLsizei count, GLenum type, const void* indices, GLint basevertex) {
     bool needsConversion = basevertex != 0 || (type == GL_UNSIGNED_INT && !gles.elementIndexUint);
+    GLBuffer* elementBuffer = GLBuffer_getBound(GL_ELEMENT_ARRAY_BUFFER);
+    const uint8_t* streamed = GLES_streamingData(elementBuffer);
     if (!needsConversion) {
-        glDrawElements(mode, count, type, indices);
+        if (streamed) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+            glDrawElements(mode, count, type, streamed + (uintptr_t)indices);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elementBuffer->id);
+        }
+        else glDrawElements(mode, count, type, indices);
         return;
     }
 
-    GLBuffer* elementBuffer = GLBuffer_getBound(GL_ELEMENT_ARRAY_BUFFER);
     const uint8_t* src = NULL;
     if (elementBuffer) {
-        if (elementBuffer->mappedData) src = (const uint8_t*)elementBuffer->mappedData + (uintptr_t)indices;
+        if (streamed) src = streamed + (uintptr_t)indices;
+        else if (elementBuffer->mappedData) src = (const uint8_t*)elementBuffer->mappedData + (uintptr_t)indices;
     }
     else src = indices;
 
