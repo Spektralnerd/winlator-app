@@ -239,7 +239,12 @@ void GLFramebuffer_bind(GLenum target, GLuint id) {
     if (target == GL_FRAMEBUFFER) {
         ARRAYS_FILL(slots, MAX_FRAMEBUFFER_TARGETS, id);
     }
-    else slots[indexOfGLTarget(target)] = id;
+    else if (target == GL_DRAW_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) slots[indexOfGLTarget(target)] = id;
+    else {
+        /* unbekanntes Ziel: indexOfGLTarget liefert 255 (vorher Schreibzugriff hinter clientState.framebuffer) */
+        GLX_CONTEXT_UNLOCK();
+        return;
+    }
 
     if (currentRenderer->contextId != framebuffer->ownerId) {
         recreateFramebuffer(target, framebuffer);
@@ -277,6 +282,7 @@ GLenum GLFramebuffer_checkStatus(GLenum target) {
 }
 
 GLFramebuffer* GLFramebuffer_getBound(GLenum target) {
+    if (target != GL_FRAMEBUFFER && target != GL_DRAW_FRAMEBUFFER && target != GL_READ_FRAMEBUFFER) return NULL;
     GLX_CONTEXT_LOCK();
     GLuint id = currentRenderer->clientState.framebuffer[indexOfGLTarget(target)];
     GLFramebuffer* framebuffer = SparseArray_get(currentRenderer->clientState.framebuffers, id);
@@ -286,6 +292,7 @@ GLFramebuffer* GLFramebuffer_getBound(GLenum target) {
 
 void GLFramebuffer_setAttachment(GLenum target, GLenum attachment, GLenum objectType, GLuint objectId, uint8_t level, struct GLTexture* texture) {
     GLFramebuffer* framebuffer = GLFramebuffer_getBound(target);
+    if (!framebuffer) return;
     bool rebound = beginTargetAccess(target);
 
     if (attachment >= GL_COLOR_ATTACHMENT0 && attachment <= GL_COLOR_ATTACHMENT31) {

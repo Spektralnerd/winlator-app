@@ -404,6 +404,30 @@ static inline uint32_t parseTexTarget(uint32_t target) {
     }
 }
 
+#ifndef GL_PROXY_TEXTURE_CUBE_MAP_ARRAY
+#define GL_PROXY_TEXTURE_CUBE_MAP_ARRAY 0x900B
+#endif
+
+/* Proxy-Ziele prüfen nur, ob eine Textur angelegt werden könnte (GLU: closestFit vor gluBuild2DMipmaps).
+ * Sie haben keinen Platz in clientState.texture und gehen nicht an den Treiber. */
+static inline bool isProxyTexTarget(uint32_t target) {
+    switch (target) {
+        case GL_PROXY_TEXTURE_1D:
+        case GL_PROXY_TEXTURE_2D:
+        case GL_PROXY_TEXTURE_3D:
+        case GL_PROXY_TEXTURE_RECTANGLE:
+        case GL_PROXY_TEXTURE_CUBE_MAP:
+        case GL_PROXY_TEXTURE_1D_ARRAY:
+        case GL_PROXY_TEXTURE_2D_ARRAY:
+        case GL_PROXY_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE:
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static inline uint32_t getTexTargetAt(int index) {
     switch (index) {
         case 0: return GL_TEXTURE_2D;
@@ -421,7 +445,7 @@ static inline uint32_t getTexTargetForBinding(uint32_t binding) {
         case GL_TEXTURE_BINDING_RECTANGLE:
             return GL_TEXTURE_2D;
         case GL_TEXTURE_BINDING_3D:
-            return GL_TEXTURE_2D;
+            return GL_TEXTURE_3D;
         case GL_TEXTURE_BINDING_CUBE_MAP:
             return GL_TEXTURE_CUBE_MAP;
         case GL_TEXTURE_BINDING_2D_ARRAY:

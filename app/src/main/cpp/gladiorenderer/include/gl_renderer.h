@@ -168,6 +168,17 @@ typedef struct GLRenderer {
     uint32_t frameCount;
 
     PixelReadCache* pixelReadCache;
+
+    /* letzte Anfrage an ein Proxy-Ziel (glTexImage* mit GL_PROXY_TEXTURE_*): glGetTexLevelParameter liefert
+     * deren Maße, wenn die Textur angelegt werden könnte, sonst 0 */
+    struct {
+        GLenum target;
+        GLint level;
+        GLint internalFormat;
+        GLsizei width;
+        GLsizei height;
+        GLsizei depth;
+    } proxy;
 } GLRenderer;
 
 extern void GLRenderer_initOnEGLContext(GLRenderer* renderer);

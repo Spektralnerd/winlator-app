@@ -592,13 +592,25 @@ GLenum GLES_renderbufferFormat(GLenum internalformat) {
     }
 }
 
-void* GLES_repackRows(const void* pixels, int width, int height, int bytesPerPixel) {
-    if (!pixels || gles.unpackRowLength <= 0 || gles.unpackRowLength == width) return NULL;
-    int srcStride = gles.unpackRowLength * bytesPerPixel;
-    int dstStride = width * bytesPerPixel;
-    uint8_t* dst = malloc((size_t)dstStride * height);
-    const uint8_t* src = (const uint8_t*)pixels + gles.unpackSkipRows * srcStride + gles.unpackSkipPixels * bytesPerPixel;
-    for (int y = 0; y < height; y++) memcpy(dst + y * dstStride, src + y * srcStride, dstStride);
+/* liest nie über die empfangenen Daten hinaus (dataSize): Der Client schickt rowLength * height Bildpunkte
+ * ab dem Zeiger des Programms, ohne den mit SKIP_ROWS übersprungenen Bereich – passt der Versatz nicht
+ * mehr hinein, bleibt er unberücksichtigt, und fehlende Bytes bleiben 0 */
+void* GLES_repackRows(const void* pixels, int dataSize, int width, int height, int bytesPerPixel) {
+    if (!pixels || dataSize <= 0 || gles.unpackRowLength <= 0 || gles.unpackRowLength == width) return NULL;
+    if (width <= 0 || height <= 0 || bytesPerPixel <= 0) return NULL;
+    size_t srcStride = (size_t)gles.unpackRowLength * bytesPerPixel;
+    size_t dstStride = (size_t)width * bytesPerPixel;
+    size_t skip = (size_t)gles.unpackSkipRows * srcStride + (size_t)gles.unpackSkipPixels * bytesPerPixel;
+    if (skip + (size_t)(height - 1) * srcStride + dstStride > (size_t)dataSize) skip = 0;
+    uint8_t* dst = calloc(height, dstStride);
+    if (!dst) return NULL;
+    const uint8_t* src = (const uint8_t*)pixels;
+    for (int y = 0; y < height; y++) {
+        size_t offset = skip + (size_t)y * srcStride;
+        if (offset >= (size_t)dataSize) break;
+        size_t n = MIN(dstStride, (size_t)dataSize - offset);
+        memcpy(dst + (size_t)y * dstStride, src + offset, n);
+    }
     return dst;
 }
 
@@ -640,7 +652,7 @@ static void* prepareUpload(int width, int height, GLenum format, GLenum type, vo
     *owns = false;
     if (!tight && data && gles.unpackRowLength > 0 && gles.unpackRowLength != width) {
         int bpp = computeTexImageDataSize(format, type, 1, 1, 1);
-        void* packed = GLES_repackRows(data, width, height, bpp);
+        void* packed = GLES_repackRows(data, *dataSize, width, height, bpp);
         if (packed) {
             *owns = true;
             *dataSize = width * height * bpp;

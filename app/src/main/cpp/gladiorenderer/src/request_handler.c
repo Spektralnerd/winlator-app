@@ -8,6 +8,81 @@
 
 #define MSG_DEBUG_UNIMPLEMENTED_FUNC "%s not implemented yet"
 
+/* glTexImage* mit GL_PROXY_TEXTURE_*: nur prüfen, ob die Textur angelegt werden könnte (Grenzen wie an das
+ * Programm gemeldet); der Treiber bekommt nichts. GLU fragt so in closestFit vor gluBuild2DMipmaps nach. */
+static void recordProxyTexImage(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border) {
+    GLRenderer* renderer = currentRenderer;
+    bool supported = level >= 0 && level < 16 && border == 0 && width >= 0 && height >= 0 && depth >= 0;
+    if (supported) {
+        int maxSize = 4096 >> level; /* GL_MAX_TEXTURE_SIZE, wie GLRenderer_getParamsv ihn meldet */
+        switch (target) {
+            case GL_PROXY_TEXTURE_1D:
+                supported = width <= maxSize && height <= 1 && depth <= 1;
+                break;
+            case GL_PROXY_TEXTURE_2D:
+            case GL_PROXY_TEXTURE_RECTANGLE:
+                supported = width <= maxSize && height <= maxSize && depth <= 1;
+                break;
+            case GL_PROXY_TEXTURE_CUBE_MAP: {
+                GLint maxCube = gles.maxCubeMapSize;
+                if (!GLES2) glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &maxCube);
+                supported = width == height && width <= (maxCube >> level) && depth <= 1;
+                break;
+            }
+            case GL_PROXY_TEXTURE_3D:
+            case GL_PROXY_TEXTURE_2D_ARRAY: {
+                GLint max3D = 0, maxLayers = 0;
+                if (!GLES2) {
+                    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max3D);
+                    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &maxLayers);
+                }
+                if (target == GL_PROXY_TEXTURE_3D) supported = width <= (max3D >> level) && height <= (max3D >> level) && depth <= (max3D >> level);
+                else supported = width <= maxSize && height <= maxSize && depth <= maxLayers;
+                break;
+            }
+            default:
+                supported = false;
+                break;
+        }
+    }
+    renderer->proxy.target = target;
+    renderer->proxy.level = level;
+    renderer->proxy.internalFormat = supported ? internalformat : 0;
+    renderer->proxy.width = supported ? width : 0;
+    renderer->proxy.height = supported ? height : 0;
+    renderer->proxy.depth = supported ? depth : 0;
+}
+
+static float getProxyTexLevelParameter(GLenum target, GLint level, GLenum pname) {
+    GLRenderer* renderer = currentRenderer;
+    if (renderer->proxy.target != target || renderer->proxy.level != level || renderer->proxy.width == 0) return 0.0f;
+    switch (pname) {
+        case GL_TEXTURE_WIDTH: return renderer->proxy.width;
+        case GL_TEXTURE_HEIGHT: return renderer->proxy.height;
+        case GL_TEXTURE_DEPTH: return renderer->proxy.depth;
+        case GL_TEXTURE_INTERNAL_FORMAT: return renderer->proxy.internalFormat;
+        default: return 0.0f;
+    }
+}
+
+/* Bytes, die das Hochladen unter ES 2.0 aus einem Pixelpuffer liest: mit UNPACK_ROW_LENGTH die Zeilen samt
+ * Versatz (GLES_repackRows), sonst das dichte Bild; 0, wenn das nicht mehr im Puffer liegt (dann gehen
+ * keine Daten an den Treiber). Vorher galt für glTexImage2D immer das dichte Bild, und das Umpacken las mit
+ * der Zeilenlänge darüber hinaus. */
+static int pixelBufferUploadSize(GLBuffer* buffer, uint64_t pointer, GLenum format, GLenum type, GLsizei width, GLsizei height) {
+    if (!buffer || !buffer->mappedData || pointer >= (uint64_t)buffer->size || width <= 0 || height <= 0) return 0;
+    int64_t available = (int64_t)buffer->size - (int64_t)pointer;
+    int64_t bpp = computeTexImageDataSize(format, type, 1, 1, 1);
+    int64_t size;
+    if (gles.unpackRowLength > 0 && gles.unpackRowLength != width) {
+        int64_t stride = (int64_t)gles.unpackRowLength * bpp;
+        size = ((int64_t)gles.unpackSkipRows + height - 1) * stride + ((int64_t)gles.unpackSkipPixels + width) * bpp;
+    }
+    else size = (int64_t)width * height * bpp;
+    if (size <= 0 || size > available) return 0;
+    return (int)size;
+}
+
 void gd_handle_glAccum(GLContext* context) {
     GLenum op = ArrayBuffer_getInt(&context->inputBuffer);
     GLfloat value = ArrayBuffer_getFloat(&context->inputBuffer);
@@ -522,24 +597,29 @@ void gd_handle_glCompressedTexImage2D(GLContext* context) {
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
     GLint border = ArrayBuffer_getInt(&context->inputBuffer);
     GLint imageSize = ArrayBuffer_getInt(&context->inputBuffer);
+    bool proxy = isProxyTexTarget(parseTexTarget(target));
 
     void* decompressedData = NULL;
     if (imageSize > 0) {
         GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
         if (pixelUnpackBuffer) {
             uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-            decompressedData = decompressTexImage2D(internalformat, width, height, pixelUnpackBuffer->mappedData + pointer, context->threadPool);
+            if (!proxy) decompressedData = decompressTexImage2D(internalformat, width, height, pixelUnpackBuffer->mappedData + pointer, context->threadPool);
             gl_send(context->clientRing, REQUEST_CODE_GL_COMPRESSED_TEX_IMAGE2D, NULL, 0);
         }
         else {
             void* imageData = NULL;
             RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-            decompressedData = decompressTexImage2D(internalformat, width, height, imageData, context->threadPool);
+            if (!proxy) decompressedData = decompressTexImage2D(internalformat, width, height, imageData, context->threadPool);
             RING_READ_END(context->serverRing);
         }
     }
 
     target = parseTexTarget(target);
+    if (proxy) {
+        recordProxyTexImage(target, level, internalformat, width, height, 1, border);
+        return;
+    }
     if (GLES2) {
         GLES_texImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData, width * height * 4, true);
     }
@@ -1516,11 +1596,15 @@ void gd_handle_glGetBooleani_v(GLContext* context) {
     println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glGetBooleani_v");
 }
 
+/* glGetBooleanv/Floatv/Integerv: Der Antwortpuffer lag uninitialisiert auf dem Stack, und was der Treiber
+ * nicht kennt (GL_UNPACK_ROW_LENGTH unter ES 2.0, GL_UNPACK_SWAP_BYTES unter ES), ließ er unverändert –
+ * das Programm bekam, was zufällig dort stand. */
 void gd_handle_glGetBooleanv(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
     int paramSize = GLRenderer_getParamsv(currentRenderer, pname, GL_BOOL, NULL);
-    char params[paramSize];
+    char params[paramSize > 0 ? paramSize : 1];
+    memset(params, 0, sizeof(params));
     GLRenderer_getParamsv(currentRenderer, pname, GL_BOOL, params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_BOOLEANV, params, paramSize);
 }
@@ -1553,7 +1637,8 @@ void gd_handle_glGetFloatv(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
     int paramSize = GLRenderer_getParamsv(currentRenderer, pname, GL_FLOAT, NULL);
-    char params[paramSize];
+    char params[paramSize > 0 ? paramSize : 1];
+    memset(params, 0, sizeof(params));
     GLRenderer_getParamsv(currentRenderer, pname, GL_FLOAT, params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_FLOATV, params, paramSize);
 }
@@ -1571,7 +1656,7 @@ void gd_handle_glGetFramebufferAttachmentParameteriv(GLContext* context) {
     GLenum attachment = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLint params;
+    GLint params = 0;
     GLFramebuffer_getParamsv(target, attachment, pname, &params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_FRAMEBUFFER_ATTACHMENT_PARAMETERIV, &params, sizeof(GLint));
 }
@@ -1602,7 +1687,8 @@ void gd_handle_glGetIntegerv(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
     int paramSize = GLRenderer_getParamsv(currentRenderer, pname, GL_INT, NULL);
-    char params[paramSize];
+    char params[paramSize > 0 ? paramSize : 1];
+    memset(params, 0, sizeof(params));
     GLRenderer_getParamsv(currentRenderer, pname, GL_INT, params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_INTEGERV, params, paramSize);
 }
@@ -1726,7 +1812,7 @@ void gd_handle_glGetProgramiv(GLContext* context) {
     GLuint program = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLint params;
+    GLint params = 0;
     ShaderConverter_getProgramiv(program, pname, &params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_PROGRAMIV, &params, sizeof(GLint));
 }
@@ -1753,7 +1839,7 @@ void gd_handle_glGetRenderbufferParameteriv(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLint param;
+    GLint param = 0;
     glGetRenderbufferParameteriv(target, pname, &param);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_RENDERBUFFER_PARAMETERIV, &param, sizeof(GLint));
 }
@@ -1763,7 +1849,8 @@ void gd_handle_glGetSamplerParameterfv(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
     int paramCount = getGLCallParamsCount(pname, NULL);
-    GLfloat params[paramCount];
+    GLfloat params[paramCount > 0 ? paramCount : 1];
+    memset(params, 0, sizeof(params));
     GLRenderer_getSamplerParameter(currentRenderer, sampler, pname, params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_SAMPLER_PARAMETERFV, params, paramCount * sizeof(GLfloat));
 }
@@ -1796,7 +1883,7 @@ void gd_handle_glGetShaderiv(GLContext* context) {
     GLuint shader = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLint params;
+    GLint params = 0;
     ShaderConverter_getShaderiv(shader, pname, &params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_SHADERIV, &params, sizeof(GLint));
 }
@@ -1882,8 +1969,10 @@ void gd_handle_glGetTexLevelParameterfv(GLContext* context) {
     GLint level = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLfloat result;
-    GLRenderer_getTexParameter(currentRenderer, target, level, pname, &result);
+    GLfloat result = 0.0f;
+    target = parseTexTarget(target);
+    if (isProxyTexTarget(target)) result = getProxyTexLevelParameter(target, level, pname);
+    else GLRenderer_getTexParameter(currentRenderer, target, level, pname, &result);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_TEX_LEVEL_PARAMETERFV, &result, sizeof(GLfloat));
 }
 
@@ -1892,7 +1981,8 @@ void gd_handle_glGetTexParameterfv(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
     int paramCount = getGLCallParamsCount(pname, NULL);
-    GLfloat params[paramCount];
+    GLfloat params[paramCount > 0 ? paramCount : 1];
+    memset(params, 0, sizeof(params));
     GLRenderer_getTexParameter(currentRenderer, target, 0, pname, params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_TEX_PARAMETERFV, params, paramCount * sizeof(GLfloat));
 }
@@ -2000,7 +2090,7 @@ void gd_handle_glIsBuffer(GLContext* context) {
 void gd_handle_glIsEnabled(GLContext* context) {
     GLenum cap = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLboolean result;
+    GLboolean result = GL_FALSE;
     GLRenderer_getParamsv(currentRenderer, cap, GL_BOOL, &result);
     gl_send(context->clientRing, REQUEST_CODE_GL_IS_ENABLED, &result, sizeof(GLboolean));
 }
@@ -2378,7 +2468,9 @@ void gd_handle_glPixelStorei(GLContext* context) {
     GLint param = ArrayBuffer_getInt(&context->inputBuffer);
 
     if (GLES2) {
-        /* ES 2.0 kennt nur die Ausrichtung; Zeilenlänge und Versatz werden beim Hochladen selbst umgepackt */
+        /* ES 2.0 kennt nur die Ausrichtung; Zeilenlänge und Versatz werden beim Hochladen selbst umgepackt.
+         * Negative Werte sind ungültig (GL_INVALID_VALUE) und bleiben unberücksichtigt. */
+        if (param < 0) return;
         switch (pname) {
             case GL_UNPACK_ROW_LENGTH: gles.unpackRowLength = param; break;
             case GL_UNPACK_SKIP_PIXELS: gles.unpackSkipPixels = param; break;
@@ -2869,11 +2961,14 @@ void gd_handle_glTexImage2D(GLContext* context) {
 
     target = parseTexTarget(target);
     int originFormat = internalformat;
+    bool proxy = isProxyTexTarget(target);
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        if (GLES2) {
-            GLES_texImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, width, height, 1), false);
+        if (proxy) {}
+        else if (GLES2) {
+            int uploadSize = pixelBufferUploadSize(pixelUnpackBuffer, pointer, format, type, width, height);
+            GLES_texImage2D(target, level, internalformat, width, height, border, format, type, uploadSize > 0 ? pixelUnpackBuffer->mappedData + pointer : NULL, uploadSize, false);
         }
         else {
             gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);
@@ -2885,7 +2980,8 @@ void gd_handle_glTexImage2D(GLContext* context) {
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        if (GLES2) {
+        if (proxy) {}
+        else if (GLES2) {
             GLES_texImage2D(target, level, internalformat, width, height, border, format, type, imageData, imageSize, false);
         }
         else {
@@ -2894,6 +2990,11 @@ void gd_handle_glTexImage2D(GLContext* context) {
             glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
         }
         RING_READ_END(context->serverRing);
+    }
+
+    if (proxy) {
+        recordProxyTexImage(target, level, originFormat, width, height, 1, border);
+        return;
     }
 
     GLTexture* texture = GLTexture_getBound(target);
@@ -2930,10 +3031,12 @@ void gd_handle_glTexImage3D(GLContext* context) {
     GLint imageSize = ArrayBuffer_getInt(&context->inputBuffer);
 
     target = parseTexTarget(target);
+    bool proxy = isProxyTexTarget(target);
+    GLint originFormat = internalformat;
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
-        if (!GLES2) {
+        if (!GLES2 && !proxy) {
             convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
             glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixelUnpackBuffer->mappedData + pointer);
         }
@@ -2942,12 +3045,13 @@ void gd_handle_glTexImage3D(GLContext* context) {
     else {
         void* imageData = NULL;
         RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-        if (!GLES2) {
+        if (!GLES2 && !proxy) {
             convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
             glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, imageData);
         }
         RING_READ_END(context->serverRing);
     }
+    if (proxy) recordProxyTexImage(target, level, originFormat, width, height, depth, border);
 }
 
 void gd_handle_glTexImage3DMultisample(GLContext* context) {
@@ -2996,7 +3100,8 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
         if (GLES2) {
-            GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer, computeTexImageDataSize(format, type, gles.unpackRowLength > 0 ? gles.unpackRowLength : width, height, 1), false);
+            int uploadSize = pixelBufferUploadSize(pixelUnpackBuffer, pointer, format, type, width, height);
+            if (uploadSize > 0) GLES_texSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer, uploadSize, false);
         }
         else {
             gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);

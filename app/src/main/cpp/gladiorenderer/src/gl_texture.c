@@ -23,17 +23,43 @@ GLuint GLTexture_create() {
     return id;
 }
 
+/* Platz der Bindung in clientState.texture oder NULL: Für Ziele ohne eigenen Platz (GL_PROXY_TEXTURE_2D aus
+ * GLU, GL_TEXTURE_BUFFER, Multisample-Texturen) liefert indexOfGLTarget 255 oder einen Wert über
+ * MAX_TEXTURE_TARGETS. Vorher wurde dort trotzdem gelesen und geschrieben – hinter dem Renderer im Heap,
+ * auf armv7 148 Byte nach seinem Ende (der dort gefundene Wert galt als gebundene Textur). */
+static GLTexture** boundSlot(GLClientState* clientState, GLenum target) {
+    if (isProxyTexTarget(target)) return NULL;
+    uint8_t index = indexOfGLTarget(target);
+    if (index >= MAX_TEXTURE_TARGETS) return NULL;
+    return &clientState->texture[clientState->activeTexture][index];
+}
+
 GLTexture* GLTexture_getBound(GLenum target) {
-    uint8_t activeTexture = currentRenderer->clientState.activeTexture;
-    return currentRenderer->clientState.texture[activeTexture][indexOfGLTarget(target)];
+    GLTexture** slot = boundSlot(&currentRenderer->clientState, target);
+    return slot ? *slot : NULL;
 }
 
 void GLTexture_bind(GLenum target, GLuint id) {
     bool isTextureRect = target == GL_TEXTURE_RECTANGLE;
     target = parseTexTarget(target);
-    uint8_t activeTexture = currentRenderer->clientState.activeTexture;
+    GLTexture** slot = boundSlot(&currentRenderer->clientState, target);
+    if (!slot) {
+        /* Ziel ohne Platz (Multisample-Texturen): nur an den Treiber, den ES 2.0 ohnehin nicht kennt */
+        if (GLES2 || isProxyTexTarget(target)) return;
+        GLuint textureId = 0;
+        if (id != 0) {
+            GLX_CONTEXT_LOCK();
+            GLTexture* texture = SparseArray_get(currentRenderer->clientState.textures, id);
+            if (!texture) texture = createNamedTexture(id);
+            texture->type = target;
+            textureId = texture->id;
+            GLX_CONTEXT_UNLOCK();
+        }
+        glBindTexture(target, textureId);
+        return;
+    }
     if (id == 0) {
-        currentRenderer->clientState.texture[activeTexture][indexOfGLTarget(target)] = NULL;
+        *slot = NULL;
         if (!GLES2 || target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP) glBindTexture(target, 0);
         return;
     }
@@ -43,7 +69,7 @@ void GLTexture_bind(GLenum target, GLuint id) {
     texture->type = target;
     texture->normalizeCoords = isTextureRect;
     GLX_CONTEXT_UNLOCK();
-    currentRenderer->clientState.texture[activeTexture][indexOfGLTarget(target)] = texture;
+    *slot = texture;
     if (GLES2 && target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) return;
     glBindTexture(target, texture->id);
 }
@@ -82,7 +108,8 @@ GLuint GLTexture_getBindingId(GLenum target) {
     GLX_CONTEXT_LOCK();
     GLuint bindingId = 0;
     GLClientState* clientState = &currentRenderer->clientState;
-    GLTexture* texture = clientState->texture[clientState->activeTexture][indexOfGLTarget(target)];
+    GLTexture** slot = boundSlot(clientState, target);
+    GLTexture* texture = slot ? *slot : NULL;
     if (texture) {
         for (int i = 0; i < clientState->textures->size; i++) {
             if (clientState->textures->entries[i].value == texture) {

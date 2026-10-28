@@ -93,8 +93,9 @@ extern const char* GLES_clientExtensions(int* outNumExtensions);
 /* Texturformate für ES 2.0 (unsized); liefert false, wenn das Format nicht abgebildet werden kann. */
 extern bool GLES_convertTexImageFormat(uint32_t target, int* internalformat, uint32_t* format, uint32_t* type, void** imageData, int* imageSize, bool* ownsData);
 extern GLenum GLES_renderbufferFormat(GLenum internalformat);
-/* Packt Zeilen mit UNPACK_ROW_LENGTH eng zusammen; liefert einen neuen Puffer oder NULL. */
-extern void* GLES_repackRows(const void* pixels, int width, int height, int bytesPerPixel);
+/* Packt Zeilen mit UNPACK_ROW_LENGTH eng zusammen (liest höchstens dataSize Bytes); liefert einen neuen
+ * Puffer oder NULL. */
+extern void* GLES_repackRows(const void* pixels, int dataSize, int width, int height, int bytesPerPixel);
 /* glTexImage2D/glTexSubImage2D mit Formatumsetzung und Umpacken; tight = Daten ohne UNPACK_ROW_LENGTH. */
 extern void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, void* data, int dataSize, bool tight);
 extern void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, void* data, int dataSize, bool tight);

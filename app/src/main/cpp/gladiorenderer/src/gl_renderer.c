@@ -960,168 +960,271 @@ void GLRenderer_destroy(GLRenderer* renderer) {
     }
 }
 
+/* Zustandsabfragen schreiben im angefragten Typ: glGetBooleanv, glGetIntegerv und glGetFloatv teilen sich
+ * GLRenderer_getParamsv. Vorher wurde oft ohne Rücksicht auf den Typ geschrieben – 4 Byte in die 1 Byte
+ * große Antwort von glGetBooleanv, die Bits eines float als Ganzzahl bei glGetIntegerv(GL_FOG_DENSITY) –,
+ * und die Größe der Antwort passte nicht zur Zahl der Werte (glGetIntegerv(GL_LIGHTING) lieferte 1 Byte,
+ * glGetIntegerv(GL_MAX_VIEWPORT_DIMS) schrieb 8 Byte in einen 4 Byte großen Puffer). */
+static inline int paramElementSize(GLenum type) {
+    return type == GL_BOOL ? sizeof(GLboolean) : sizeof(GLint);
+}
+
+static void putParami(void* params, GLenum type, int index, GLint value) {
+    if (!params) return;
+    if (type == GL_FLOAT) ((GLfloat*)params)[index] = (GLfloat)value;
+    else if (type == GL_BOOL) ((GLboolean*)params)[index] = value != 0 ? GL_TRUE : GL_FALSE;
+    else ((GLint*)params)[index] = value;
+}
+
+/* isColor: Farben und Normalen bildet glGetIntegerv linear von [-1, 1] auf den ganzen Ganzzahlbereich ab,
+ * alle anderen Werte werden gerundet */
+static void putParamsf(void* params, GLenum type, const float* values, int count, bool isColor) {
+    if (!params) return;
+    for (int i = 0; i < count; i++) {
+        float value = values[i];
+        if (type == GL_FLOAT) ((GLfloat*)params)[i] = value;
+        else if (type == GL_BOOL) ((GLboolean*)params)[i] = value != 0.0f ? GL_TRUE : GL_FALSE;
+        else {
+            double v = isColor ? CLAMP((double)value, -1.0, 1.0) * 2147483647.0 : (double)value;
+            GLint result;
+            if (v != v) result = 0;
+            else if (v >= 2147483647.0) result = INT32_MAX;
+            else if (v <= -2147483648.0) result = INT32_MIN;
+            else result = (GLint)(v < 0.0 ? v - 0.5 : v + 0.5);
+            ((GLint*)params)[i] = result;
+        }
+    }
+}
+
+/* Die Aufrufer legen den Antwortpuffer mit der Größe aus einem ersten Aufruf ohne params an (Rückgabe in
+ * Byte) und füllen ihn mit 0 vor: Was der Treiber nicht kennt, beantwortet er nicht. */
 int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void* params) {
-    int paramSize = type == GL_BOOL ? sizeof(GLboolean) : sizeof(GLint);
+    int count = 1;
 
     switch (pname) {
         case GL_PROJECTION_MATRIX:
-            if (params) memcpy(params, GLRenderer_getMatrixFromStack(renderer, PROJECTION_MATRIX_INDEX), MAT4_SIZE);
-            paramSize = MAT4_SIZE;
-            break;
         case GL_MODELVIEW_MATRIX:
-            if (params) memcpy(params, GLRenderer_getMatrixFromStack(renderer, MODEL_VIEW_MATRIX_INDEX), MAT4_SIZE);
-            paramSize = MAT4_SIZE;
-            break;
-        case GL_TEXTURE_MATRIX:
-            if (params) memcpy(params, GLRenderer_getMatrixFromStack(renderer, TEXTURE_MATRIX_INDEX), MAT4_SIZE);
-            paramSize = MAT4_SIZE;
-            break;
-        case GL_MATRIX_MODE: {
-            /* kennt OpenGL ES nicht: der Treiber meldete GL_INVALID_ENUM, die Antwort war unbestimmt */
-            GLenum mode = GL_MODELVIEW + renderer->matrixIndex;
-            if (params) {
-                if (type == GL_FLOAT) *(GLfloat*)params = (GLfloat)mode;
-                else if (type == GL_BOOL) *(GLboolean*)params = GL_TRUE;
-                else *(GLint*)params = (GLint)mode;
-            }
+        case GL_TEXTURE_MATRIX: {
+            int index = pname == GL_MODELVIEW_MATRIX ? MODEL_VIEW_MATRIX_INDEX :
+                        pname == GL_PROJECTION_MATRIX ? PROJECTION_MATRIX_INDEX : TEXTURE_MATRIX_INDEX;
+            count = 16;
+            putParamsf(params, type, GLRenderer_getMatrixFromStack(renderer, index), count, false);
             break;
         }
+        case GL_MODELVIEW_STACK_DEPTH:
+        case GL_PROJECTION_STACK_DEPTH:
+        case GL_TEXTURE_STACK_DEPTH: {
+            int index = pname == GL_MODELVIEW_STACK_DEPTH ? MODEL_VIEW_MATRIX_INDEX :
+                        pname == GL_PROJECTION_STACK_DEPTH ? PROJECTION_MATRIX_INDEX : TEXTURE_MATRIX_INDEX;
+            int depth = renderer->matrixStack[index].size;
+            putParami(params, type, 0, depth > 0 ? depth : 1);
+            break;
+        }
+        case GL_MATRIX_MODE:
+            /* kennt OpenGL ES nicht: der Treiber meldete GL_INVALID_ENUM, die Antwort war unbestimmt */
+            putParami(params, type, 0, GL_MODELVIEW + renderer->matrixIndex);
+            break;
         case GL_MAX_PROJECTION_STACK_DEPTH:
         case GL_MAX_TEXTURE_STACK_DEPTH:
-            if (params) *(GLint*)params = 2;
+            putParami(params, type, 0, 2);
             break;
         case GL_MAX_MODELVIEW_STACK_DEPTH:
-            if (params) *(GLint*)params = 32;
+            putParami(params, type, 0, 32);
             break;
         case GL_MAX_LIGHTS:
-            if (params) *(GLint*)params = MAX_LIGHTS;
+            putParami(params, type, 0, MAX_LIGHTS);
             break;
         case GL_MAX_CLIP_PLANES:
-            if (params) *(GLint*)params = GLES2 ? 0 : 6;
+            putParami(params, type, 0, GLES2 ? 0 : 6);
             break;
         case GL_NUM_EXTENSIONS:
-            if (params) getGLExtensions(params);
+            if (params) {
+                int numExtensions = 0;
+                getGLExtensions(&numExtensions);
+                putParami(params, type, 0, numExtensions);
+            }
             break;
         case GL_STEREO:
-            if (params) *(GLboolean*)params = 0;
-            paramSize = sizeof(GLboolean);
-            break;
         case GL_AUX_BUFFERS:
-            if (params) *(GLint*)params = 0;
+            putParami(params, type, 0, 0);
             break;
         case GL_MAX_TEXTURE_UNITS:
         case GL_MAX_TEXTURE_COORDS:
         case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
         case GL_MAX_TEXTURE_IMAGE_UNITS:
-            if (params) *(GLint*)params = MAX_TEXTURES;
+            putParami(params, type, 0, MAX_TEXTURES);
             break;
         case GL_MAX_RECTANGLE_TEXTURE_SIZE:
         case GL_MAX_TEXTURE_SIZE:
-            if (params) *(GLint*)params = 4096;
+            putParami(params, type, 0, 4096);
             break;
         case GL_FOG:
-            if (params) *(GLboolean*)params = renderer->state.fog.enabled;
-            paramSize = sizeof(GLboolean);
+            putParami(params, type, 0, renderer->state.fog.enabled);
             break;
         case GL_FOG_COLOR:
-            if (params) memcpy(params, renderer->state.fog.color, sizeof(renderer->state.fog.color));
-            paramSize = sizeof(renderer->state.fog.color);
+            count = 4;
+            putParamsf(params, type, renderer->state.fog.color, count, true);
             break;
         case GL_FOG_DENSITY:
-            if (params) *(GLfloat*)params = renderer->state.fog.density;
+            putParamsf(params, type, &renderer->state.fog.density, 1, false);
             break;
         case GL_FOG_START:
-            if (params) *(GLfloat*)params = renderer->state.fog.start;
+            putParamsf(params, type, &renderer->state.fog.start, 1, false);
             break;
         case GL_FOG_END:
-            if (params) *(GLfloat*)params = renderer->state.fog.end;
+            putParamsf(params, type, &renderer->state.fog.end, 1, false);
             break;
         case GL_FOG_MODE:
-            if (params) *(GLfloat*)params = renderer->state.fog.mode;
+            putParami(params, type, 0, renderer->state.fog.mode);
             break;
         case GL_CONTEXT_PROFILE_MASK:
-            if (params) *(GLint*)params = (GL_CONTEXT_CORE_PROFILE_BIT | GL_CONTEXT_COMPATIBILITY_PROFILE_BIT);
+            putParami(params, type, 0, GL_CONTEXT_CORE_PROFILE_BIT | GL_CONTEXT_COMPATIBILITY_PROFILE_BIT);
             break;
         case GL_SHADE_MODEL:
-            if (params) *(GLint*)params = renderer->state.shadeModel;
+            putParami(params, type, 0, renderer->state.shadeModel);
             break;
         case GL_LIGHTING:
-            if (params) *(GLboolean*)params = renderer->state.lighting;
-            paramSize = sizeof(GLboolean);
+            putParami(params, type, 0, renderer->state.lighting);
+            break;
+        case GL_LIGHT_MODEL_AMBIENT:
+            count = 4;
+            putParamsf(params, type, renderer->state.lightModelAmbient, count, true);
+            break;
+        case GL_LIGHT_MODEL_TWO_SIDE:
+            putParami(params, type, 0, renderer->state.lightModelTwoSide);
             break;
         case GL_COLOR_MATERIAL:
-            if (params) *(GLboolean*)params = renderer->state.colorMaterial.enabled;
-            paramSize = sizeof(GLboolean);
+            putParami(params, type, 0, renderer->state.colorMaterial.enabled);
+            break;
+        case GL_COLOR_MATERIAL_FACE:
+            putParami(params, type, 0, renderer->state.colorMaterial.face);
+            break;
+        case GL_COLOR_MATERIAL_PARAMETER:
+            putParami(params, type, 0, renderer->state.colorMaterial.mode);
+            break;
+        case GL_POLYGON_MODE:
+            count = 2;
+            putParami(params, type, 0, renderer->state.polygonMode);
+            putParami(params, type, 1, renderer->state.polygonMode);
+            break;
+        case GL_POINT_SIZE:
+            putParamsf(params, type, &renderer->state.point.size, 1, false);
+            break;
+        case GL_POINT_SPRITE:
+            putParami(params, type, 0, renderer->state.point.sprite);
+            break;
+        case GL_POINT_SMOOTH:
+            putParami(params, type, 0, renderer->state.point.smooth);
             break;
         case GL_MAJOR_VERSION:
         case GL_MINOR_VERSION:
-            if (params) *(GLint*)params = pname == GL_MAJOR_VERSION ? GLES_majorVersion() : GLES_minorVersion();
+            putParami(params, type, 0, pname == GL_MAJOR_VERSION ? GLES_majorVersion() : GLES_minorVersion());
             break;
         case GL_LINE_SMOOTH:
         case GL_LINE_STIPPLE:
         case GL_POLYGON_STIPPLE:
         case GL_POLYGON_OFFSET_LINE:
-        case GL_POINT_SPRITE:
-        case GL_POINT_SMOOTH:
         case GL_VERTEX_PROGRAM_POINT_SIZE:
         case GL_NORMALIZE:
         case GL_DOUBLEBUFFER:
-            if (params) *(GLboolean*)params = 0;
-            paramSize = sizeof(GLboolean);
+            putParami(params, type, 0, 0);
             break;
         case GL_ALPHA_TEST:
-            if (params) *(GLboolean*)params = renderer->state.alphaTest.enabled;
-            paramSize = sizeof(GLboolean);
+            putParami(params, type, 0, renderer->state.alphaTest.enabled);
             break;
         case GL_ALPHA_TEST_REF:
-            if (params) *(GLfloat*)params = renderer->state.alphaTest.ref;
+            putParamsf(params, type, &renderer->state.alphaTest.ref, 1, true);
             break;
         case GL_ALPHA_TEST_FUNC:
-            if (params) *(GLint*)params = renderer->state.alphaTest.func;
+            putParami(params, type, 0, renderer->state.alphaTest.func);
             break;
         case GL_CURRENT_COLOR:
-            if (params) memcpy(params, renderer->state.color, sizeof(renderer->state.color));
-            paramSize = sizeof(renderer->state.color);
+            count = 4;
+            putParamsf(params, type, renderer->state.color, count, true);
             break;
         case GL_CURRENT_NORMAL:
-            if (params) memcpy(params, renderer->state.normal, sizeof(renderer->state.normal));
-            paramSize = sizeof(renderer->state.normal);
+            count = 3;
+            putParamsf(params, type, renderer->state.normal, count, true);
             break;
         case GL_CURRENT_TEXTURE_COORDS:
-            if (params) {
-                uint8_t activeTexCoord = renderer->clientState.activeTexCoord;
-                memcpy(params, renderer->state.texCoords[activeTexCoord], sizeof(renderer->state.texCoords[0]));
-            }
-            paramSize = sizeof(renderer->state.texCoords[0]);
+            count = 4;
+            putParamsf(params, type, renderer->state.texCoords[renderer->clientState.activeTexCoord], count, false);
             break;
         case GL_CLAMP_READ_COLOR:
-            if (params) *(GLint*)params = renderer->state.clampReadColor ? GL_TRUE : GL_FALSE;
+            putParami(params, type, 0, renderer->state.clampReadColor ? GL_TRUE : GL_FALSE);
             break;
         case GL_PROGRAM_ERROR_POSITION_ARB:
-            if (params) *(GLint*)params = -1;
+            putParami(params, type, 0, -1);
+            break;
+        case GL_VERTEX_PROGRAM_ARB:
+        case GL_FRAGMENT_PROGRAM_ARB:
+            putParami(params, type, 0, renderer->state.enabledARBPrograms[pname == GL_FRAGMENT_PROGRAM_ARB ? 1 : 0]);
             break;
         case GL_TEXTURE_BINDING_1D:
         case GL_TEXTURE_BINDING_2D:
         case GL_TEXTURE_BINDING_3D:
         case GL_TEXTURE_BINDING_CUBE_MAP:
-            if (params) *(GLuint*)params = GLTexture_getBindingId(getTexTargetForBinding(pname));
+        case GL_TEXTURE_BINDING_RECTANGLE:
+        case GL_TEXTURE_BINDING_2D_ARRAY:
+            /* Namen des Programms, nicht die des Treibers */
+            if (params) putParami(params, type, 0, GLTexture_getBindingId(getTexTargetForBinding(pname)));
             break;
         case GL_TEXTURE_1D:
         case GL_TEXTURE_2D:
         case GL_TEXTURE_3D:
         case GL_TEXTURE_CUBE_MAP:
         case GL_TEXTURE_RECTANGLE: {
-            uint8_t activeTexture = renderer->clientState.activeTexture;
-            uint8_t flags = renderer->state.enabledTextures[activeTexture];
-            if (params) *(GLboolean*)params = (flags & getTexTargetFlag(pname)) ? GL_TRUE : GL_FALSE;
-            paramSize = sizeof(GLboolean);
+            uint8_t flags = renderer->state.enabledTextures[renderer->clientState.activeTexture];
+            putParami(params, type, 0, (flags & getTexTargetFlag(pname)) ? GL_TRUE : GL_FALSE);
             break;
         }
         case GL_ACTIVE_TEXTURE:
-            if (params) *(GLenum*)params = GL_TEXTURE0 + renderer->clientState.activeTexture;
+            putParami(params, type, 0, GL_TEXTURE0 + renderer->clientState.activeTexture);
             break;
-        default:
+        case GL_CLIENT_ACTIVE_TEXTURE:
+            putParami(params, type, 0, GL_TEXTURE0 + renderer->clientState.activeTexCoord);
+            break;
+        /* Pixelspeicher: GLU liest vor jedem gluBuild2DMipmaps den ganzen Zustand und stellt ihn danach
+         * wieder her. Was ES nicht kennt, ließ der Treiber unbeantwortet, und zurück ging der
+         * uninitialisierte Antwortpuffer – auf dem Mali-400 (ES 2.0) unbestimmte Zeilenlängen und
+         * Versätze, mit denen GLU hinter die Bilddaten las (SKIDROW-Intro: schwarzes Bild, dann Ende). */
+        case GL_UNPACK_SWAP_BYTES:
+        case GL_UNPACK_LSB_FIRST:
+        case GL_PACK_SWAP_BYTES:
+        case GL_PACK_LSB_FIRST:
+        case GL_PACK_IMAGE_HEIGHT:
+        case GL_PACK_SKIP_IMAGES:
+            putParami(params, type, 0, 0);
+            break;
+        case GL_UNPACK_ROW_LENGTH:
+        case GL_UNPACK_SKIP_ROWS:
+        case GL_UNPACK_SKIP_PIXELS:
+        case GL_UNPACK_IMAGE_HEIGHT:
+        case GL_UNPACK_SKIP_IMAGES:
+        case GL_PACK_ROW_LENGTH:
+        case GL_PACK_SKIP_ROWS:
+        case GL_PACK_SKIP_PIXELS:
+            if (GLES2) {
+                /* ES 2.0: die Werte führt der Server selbst (gd_handle_glPixelStorei) */
+                int value = 0;
+                if (pname == GL_UNPACK_ROW_LENGTH) value = gles.unpackRowLength;
+                else if (pname == GL_UNPACK_SKIP_ROWS) value = gles.unpackSkipRows;
+                else if (pname == GL_UNPACK_SKIP_PIXELS) value = gles.unpackSkipPixels;
+                putParami(params, type, 0, value);
+            }
+            else if (params) {
+                GLint value = 0;
+                glGetIntegerv(pname, &value);
+                putParami(params, type, 0, value);
+            }
+            break;
+        default: {
             if (pname == GL_POINT_SIZE_RANGE) pname = GL_ALIASED_POINT_SIZE_RANGE;
+            else if (pname == GL_LINE_WIDTH_RANGE) pname = GL_ALIASED_LINE_WIDTH_RANGE;
+            /* ES kennt nur die getrennten Faktoren (GL_BLEND_SRC war ungültig: glPopAttrib stellte GL_ZERO her) */
+            else if (pname == GL_BLEND_SRC) pname = GL_BLEND_SRC_RGB;
+            else if (pname == GL_BLEND_DST) pname = GL_BLEND_DST_RGB;
+
             if (GLES2) {
                 /* Grenzen, die ES 2.0 anders oder gar nicht kennt */
                 int value = -1;
@@ -1159,6 +1262,10 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
                     case GL_NUM_SHADER_BINARY_FORMATS:
                         value = 0;
                         break;
+                    case GL_PROGRAM_BINARY_FORMATS:
+                    case GL_SHADER_BINARY_FORMATS:
+                        /* passend zur gemeldeten Anzahl 0: keine Werte */
+                        return 0;
                     case GL_MAX_TEXTURE_MAX_ANISOTROPY:
                         value = gles.anisotropic ? -1 : 1;
                         break;
@@ -1176,62 +1283,80 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
                         break;
                 }
                 if (value != -1) {
-                    if (params) {
-                        if (type == GL_FLOAT) *(GLfloat*)params = (GLfloat)value;
-                        else if (type == GL_BOOL) *(GLboolean*)params = value != 0;
-                        else *(GLint*)params = value;
-                    }
+                    putParami(params, type, 0, value);
                     break;
                 }
             }
             if (pname >= GL_LIGHT0 && pname <= GL_LIGHT7) {
                 int index = pname - GL_LIGHT0;
-                if (params) *(GLboolean*)params = index < MAX_LIGHTS ? renderer->lights[index].enabled : 0;
-                paramSize = sizeof(GLboolean);
+                putParami(params, type, 0, index < MAX_LIGHTS ? renderer->lights[index].enabled : 0);
                 break;
             }
 
             switch (pname) {
                 case GL_COLOR_WRITEMASK:
-                    paramSize = 4 * sizeof(GLboolean);
-                    break;
-                case GL_DEPTH_RANGE:
-                case GL_ALIASED_POINT_SIZE_RANGE:
-                case GL_ALIASED_LINE_WIDTH_RANGE:
-                    paramSize = 2 * sizeof(GLfloat);
-                    break;
                 case GL_SCISSOR_BOX:
                 case GL_VIEWPORT:
                 case GL_BLEND_COLOR:
                 case GL_COLOR_CLEAR_VALUE:
-                    paramSize = 4 * sizeof(GLint);
+                    count = 4;
                     break;
+                case GL_DEPTH_RANGE:
+                case GL_ALIASED_POINT_SIZE_RANGE:
+                case GL_ALIASED_LINE_WIDTH_RANGE:
+                case GL_MAX_VIEWPORT_DIMS:
+                    count = 2;
+                    break;
+                case GL_PRIMITIVE_BOUNDING_BOX:
+                    count = 8;
+                    break;
+                case GL_COMPRESSED_TEXTURE_FORMATS:
+                case GL_PROGRAM_BINARY_FORMATS:
+                case GL_SHADER_BINARY_FORMATS: {
+                    /* Felder in der Länge, die der Treiber für die zugehörige Anzahl meldet */
+                    GLenum numPname = pname == GL_COMPRESSED_TEXTURE_FORMATS ? GL_NUM_COMPRESSED_TEXTURE_FORMATS :
+                                      pname == GL_PROGRAM_BINARY_FORMATS ? GL_NUM_PROGRAM_BINARY_FORMATS : GL_NUM_SHADER_BINARY_FORMATS;
+                    GLint numValues = 0;
+                    glGetIntegerv(numPname, &numValues);
+                    if (numValues <= 0 || numValues > 256) return 0;
+                    count = numValues;
+                    if (params) {
+                        GLint values[256];
+                        glGetIntegerv(pname, values);
+                        for (int i = 0; i < count; i++) putParami(params, type, i, values[i]);
+                    }
+                    return count * paramElementSize(type);
+                }
             }
 
-            switch (type) {
-                case GL_FLOAT:
-                    if (params) glGetFloatv(pname, params);
-                    break;
-                case GL_BOOL:
-                    if (params) glGetBooleanv(pname, params);
-                    break;
-                case GL_INT:
-                    if (params) glGetIntegerv(pname, params);
-                    break;
-            }
+            if (params) {
+                /* über einen großzügigen Zwischenpuffer: Abfragen, deren Wertezahl der Server nicht kennt,
+                 * schreiben nicht über die Antwort hinaus */
+                union {
+                    GLfloat f[16];
+                    GLint i[16];
+                    GLboolean b[16];
+                } values;
+                memset(&values, 0, sizeof(values));
+                switch (type) {
+                    case GL_FLOAT: glGetFloatv(pname, values.f); break;
+                    case GL_BOOL: glGetBooleanv(pname, values.b); break;
+                    default: glGetIntegerv(pname, values.i); break;
+                }
+                memcpy(params, &values, count * paramElementSize(type));
 
-            if (params && (pname == GL_FRAMEBUFFER_BINDING ||
-                           pname == GL_DRAW_FRAMEBUFFER_BINDING ||
-                           pname == GL_READ_FRAMEBUFFER_BINDING)) {
-                int framebuffer = *(GLint*)params;
-                if (framebuffer == renderer->displayBuffer) {
-                    *(GLint*)params = 0;
+                if (pname == GL_FRAMEBUFFER_BINDING ||
+                    pname == GL_DRAW_FRAMEBUFFER_BINDING ||
+                    pname == GL_READ_FRAMEBUFFER_BINDING) {
+                    GLint framebuffer = type == GL_FLOAT ? (GLint)values.f[0] : type == GL_BOOL ? values.b[0] : values.i[0];
+                    if (framebuffer == (GLint)renderer->displayBuffer) putParami(params, type, 0, 0);
                 }
             }
             break;
+        }
     }
 
-    return paramSize;
+    return count * paramElementSize(type);
 }
 
 void GLRenderer_setPixelZoom(GLRenderer* renderer, GLfloat xfactor, GLfloat yfactor) {
@@ -1290,8 +1415,8 @@ void GLRenderer_drawPixels(GLRenderer* renderer, GLsizei width, GLsizei height, 
     GLRenderer_getParamsv(renderer, GL_TEXTURE_2D, GL_BOOL, &oldEnabled);
     GLRenderer_setCapabilityState(renderer, GL_TEXTURE_2D, true, -1);
 
-    GLenum oldActiveTexture;
-    GLRenderer_getParamsv(renderer, GL_ACTIVE_TEXTURE, GL_BOOL, &oldActiveTexture);
+    GLint oldActiveTexture = GL_TEXTURE0;
+    GLRenderer_getParamsv(renderer, GL_ACTIVE_TEXTURE, GL_INT, &oldActiveTexture);
     GLTexture_setActiveUnit(GL_TEXTURE0);
 
     GLRaster* raster = renderer->raster;

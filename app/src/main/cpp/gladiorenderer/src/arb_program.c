@@ -717,11 +717,19 @@ ARBProgram* ARBProgram_get(GLuint programId) {
     return program;
 }
 
+/* nur GL_VERTEX_PROGRAM_ARB (0) und GL_FRAGMENT_PROGRAM_ARB (1) haben einen Platz; für andere Ziele lag
+ * der Zugriff hinter clientState.arbProgram (indexOfGLTarget liefert dann 255) */
+static inline bool hasARBProgramSlot(GLenum target) {
+    return target == GL_VERTEX_PROGRAM_ARB || target == GL_FRAGMENT_PROGRAM_ARB;
+}
+
 ARBProgram* ARBProgram_getBound(GLenum target) {
+    if (!hasARBProgramSlot(target)) return NULL;
     return currentRenderer->clientState.arbProgram[indexOfGLTarget(target)];
 }
 
 void ARBProgram_bind(GLenum target, GLuint programId) {
+    if (!hasARBProgramSlot(target)) return;
     GLX_CONTEXT_LOCK();
     ARBProgram* program = SparseArray_get(currentRenderer->clientState.arbPrograms, programId);
     GLX_CONTEXT_UNLOCK();
@@ -847,6 +855,7 @@ void ARBProgram_onDestroy(GLClientState* clientState) {
 }
 
 bool ARBProgram_isActive(GLenum target) {
+    if (!hasARBProgramSlot(target)) return false;
     uint8_t index = indexOfGLTarget(target);
     return currentRenderer->state.enabledARBPrograms[index] && currentRenderer->clientState.arbProgram[index];
 }

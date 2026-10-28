@@ -136,6 +136,12 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   glDrawElementsBaseVertex (`./streamtest out.ppm`, mit Mesa vergleichen). Bauen:
   `gcc -O1 -o streamtest streamtest.c -lX11 -lGL -ldl`.
 
+* `gettest.c` – Zustandsabfragen: Werte, Typen und Antwortgrößen von glGetIntegerv/Floatv/Booleanv
+  (jede Antwort landet in einem vorbelegten Feld, danach die belegten Bytes), der Pixelspeicher in der
+  Reihenfolge von GLU (`retrieveStoreModes` vor `gluBuild2DMipmaps`), Proxy-Texturen wie in GLUs
+  `closestFit`, glIsEnabled für Fähigkeiten, die ES nicht kennt; gibt Text aus, mit Mesa vergleichen
+  (`./gettest > ref.txt`). Bauen: `gcc -O1 -o gettest gettest.c -lX11 -lGL`.
+
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
   Rücklesen als PPM). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9test.exe d3d9test.c -ld3d9
@@ -284,3 +290,25 @@ Kanal und Anteil abweichender Pixel).
   einem Abbilden nur zum Lesen stellt er sie wieder her. BGRA-Farben merkt sich der Client dafür genau
   im gezeichneten Bereich vor statt im ganzen Puffer. `bgratest --wow64` ist auf beiden Pfaden
   pixelgleich mit Mesa; der vorige Client verlor dort Fall 4 (Teilbereich) und Fall 7 (glMapBuffer).
+* Zustandsabfragen (SKIDROW-Intro, festes Funktionsmodell mit GLU): Auf dem Note 8.0 blieb das Bild
+  schwarz, der Anfang der Musik lief, dann war Schluss; auf dem CMF Phone 1 (ES 3) lief es. Zwei Fehler
+  des Servers, beide über `gluBuild2DMipmaps`: GLU fragt dort mit einer Proxy-Textur nach, ob die Textur
+  passt (`glTexImage2D(GL_PROXY_TEXTURE_2D, …)`, dann `glGetTexLevelParameteriv`). Für Proxy-Ziele
+  liefert `indexOfGLTarget` 255, und der Server nahm den Wert aus `clientState.texture[einheit][255]`
+  als gebundene Textur – das liegt hinter dem Renderer im Heap (auf armv7 148 Byte nach seinem Ende,
+  auf 64 Bit 848 Byte). Mit `gettest` stürzte der unveränderte Server auf dem ES-2.0-Pfad genau dort
+  ab (SIGSEGV, gelesen wurde ein Stück Text aus dem Heap); jetzt haben Ziele ohne Platz keine Bindung,
+  und Proxy-Anfragen beantwortet der Server selbst (die Maße, wenn sie in die gemeldeten Grenzen
+  passen, sonst 0). Außerdem liest GLU vorher den ganzen Pixelspeicher (`retrieveStoreModes`), auch
+  GL_UNPACK_ROW_LENGTH und die Versätze, die ES 2.0 nicht kennt, und GL_UNPACK_SWAP_BYTES/LSB_FIRST,
+  die ES gar nicht kennt. Der Treiber ließ diese Abfragen unbeantwortet, und der Server schickte den
+  uninitialisierten Antwortpuffer vom Stack zurück (unter ES 3 kamen 3313 und 3312 an – die Kennung
+  der Abfrage selbst, die dort noch lag). Mit unbestimmter Zeilenlänge und unbestimmten Versätzen liest GLU
+  hinter die Bilddaten. Jetzt beantwortet der Server den Pixelspeicher selbst (unter ES 2.0 aus dem
+  eigenen Zustand), belegt alle Antworten vor und schreibt im angefragten Typ: vorher kamen bei
+  glGetIntegerv auf Licht, Nebel oder GL_STEREO 1 Byte (der Rest des Programmfelds blieb, wie er war),
+  Gleitkommawerte als Bitmuster (GL_FOG_DENSITY, GL_CURRENT_COLOR), glGetBooleanv auf Matrizen 64 statt
+  16 Byte (Überlauf beim Programm), GL_MAX_VIEWPORT_DIMS und GL_COLOR_WRITEMASK als Ganzzahl nur der
+  erste Wert, GL_BLEND_SRC/GL_BLEND_DST blieben unbeantwortet (glPopAttrib stellte GL_ZERO/GL_ZERO her). `gettest`
+  stimmt auf beiden Pfaden mit Mesa überein (bis auf die Grenzen des Servers); das Intro läuft über
+  ES 2.0 mit den Mali-400-Grenzen und über ES 3, mit Vollbild und im Fenster.
