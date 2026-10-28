@@ -25,7 +25,7 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Diagnose für die 32-Bit-Builds, ohne adb und ohne vorher etwas einzuschalten:
+ * Diagnose ohne adb und ohne vorher etwas einzuschalten (32- und 64-Bit-Variante):
  * <ul>
  *   <li>Documents/Winlator/start.txt wird bei jedem Containerstart neu geschrieben: Gerät,
  *       Container-Einstellungen, OpenGL-ES-Kontext, Befehl des Gastprogramms, dessen Ausgabe
@@ -36,10 +36,11 @@ import java.util.Locale;
  *       eines Containers abgestürzt ist (z. B. ein Absturz im nativen Code, den crash.txt nicht sieht)</li>
  * </ul>
  * Jede Zeile wird sofort geschrieben, damit nach einem Absturz sichtbar ist, wie weit der Start kam.
- * Im Original (arm64) ist alles abgeschaltet.
+ * Im Original (arm64) gibt es das nicht; die 64-Bit-Variante hat es seit sie die Gladio-Korrekturen
+ * enthält (logcat.txt zeigt die Statistik des Gladio-Servers: Bilder/s, Zeit je Bild).
  */
 public final class StartLog {
-    public static final boolean ENABLED = !Arch.APP_IS_64BIT;
+    public static final boolean ENABLED = true;
     private static final int HEAD_LINES = 600;
     private static final int TAIL_LINES = 600;
     private static final int LOGCAT_LINES = 5000;
