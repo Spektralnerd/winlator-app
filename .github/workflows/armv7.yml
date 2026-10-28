@@ -299,6 +299,18 @@ jobs:
             echo "::warning::Kein llvmpipe-Paket: die 64-Bit-APKs haben keinen Software-Treiber"
           fi
 
+      - name: wfm.exe (x86-64) mit den Korrekturen für die 64-Bit-Root-FS
+        run: |
+          # ersetzt Brunos wfm.exe in rootfs_patches.tzst (armv7hybrid und arm64; das armv7-APK
+          # bringt seine eigene rootfs_patches.tzst aus dem Release armv7-rootfs mit)
+          mkdir -p out
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zstd > /dev/null
+          bash armv7/scripts/wfm-x64.sh app/src/main/assets/rootfs_patches.tzst 2>&1 | tee out/wfm-x64.log
+          # Kennung: bestehende Container entpacken eine geänderte rootfs_patches.tzst auch ohne
+          # neue Versionsnummer (XServerDisplayActivity.setupWineSystemFiles)
+          sha256sum app/src/main/assets/rootfs_patches.tzst | cut -c1-16 > app/src/main/assets/rootfs_patches.id
+          echo "rootfs_patches.id: $(cat app/src/main/assets/rootfs_patches.id)"
+
       - name: APK armv7hybrid
         run: |
           mkdir -p out
@@ -320,6 +332,10 @@ jobs:
             rm -f /tmp/armv7-assets.tar
             # Kennung des armhf-Clients (überdeckt die des 64-Bit-Clients aus src/main/assets)
             sha256sum app/src/armv7/assets/graphics_driver/gladio-1.1.tzst | cut -c1-16 > app/src/armv7/assets/graphics_driver/gladio-1.1.id
+            # eigene Kennung der 32-Bit-rootfs_patches.tzst (überdeckt die der 64-Bit-Fassung)
+            if [ -f app/src/armv7/assets/rootfs_patches.tzst ]; then
+              sha256sum app/src/armv7/assets/rootfs_patches.tzst | cut -c1-16 > app/src/armv7/assets/rootfs_patches.id
+            fi
             find app/src/armv7/assets -type f | sort | xargs ls -la
             echo "ok=1" >> "$GITHUB_OUTPUT"
           else
@@ -364,6 +380,10 @@ jobs:
             ! unzip -l out/Winlator-11.2-armv7.apk | grep -E 'assets/box64/|turnip-26\.2\.0|llvmpipe-|lib/arm64-v8a/' \
               || { echo "::error::64-Bit-Teile im armv7-APK"; exit 1; }
           fi
+          for apk in out/Winlator-11.2-arm64.apk out/Winlator-11.2-armv7hybrid.apk; do
+            unzip -l "$apk" | grep -q 'assets/rootfs_patches.id' \
+              || { echo "::error::rootfs_patches.id (neue wfm.exe) fehlt in $apk"; exit 1; }
+          done
           if [ -f app/src/main/assets/graphics_driver/llvmpipe-23.1.9.tzst ]; then
             for apk in out/Winlator-11.2-arm64.apk out/Winlator-11.2-armv7hybrid.apk; do
               unzip -l "$apk" | grep -q 'assets/graphics_driver/llvmpipe-23.1.9.tzst' \

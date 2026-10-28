@@ -110,7 +110,13 @@ Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
   und Dateinamen leer (NULL) und kopiert sie dann mit `wcscpy` (Absturz in ucrtbase, aufgerufen
   aus `do_copy`). `wfm/0001-paste-into-drive-root.patch` gibt `C:\` weiter;
   `wine/0003-shell32-drive-root-target.patch` nimmt ein bloßes `C:` als Wurzel und lässt die
-  beiden Felder nie mehr leer. Gilt genauso im Original (gleiche wfm- und Wine-Quellen).
+  beiden Felder nie mehr leer. Gilt genauso im Original (gleiche wfm- und Wine-Quellen): für
+  armv7hybrid und arm64 baut `scripts/wfm-x64.sh` im CI wfm.exe mit `patches/wfm` als
+  x86-64-Programm (gegen die libcdio.dll des Originals) und tauscht es in
+  `rootfs_patches.tzst` aus. `rootfs_patches.id` (Prüfsumme) lässt bestehende Container die
+  geänderte Datei auch ohne neue Versionsnummer entpacken. Brunos x86-64-wfm.exe übergibt
+  `wcstok` außerdem einen Nullzeiger als drittes Argument (neuere MinGW-Laufzeit): eingetippte
+  Pfade im Adressfeld landeten dort immer bei „Computer“; der Neubau hat das nicht.
 
 Schlägt ein Schritt fehl, stehen die letzten Protokollzeilen als Annotation am Lauf und die
 vollständigen Protokolle im Release `armv7-ci-logs`.

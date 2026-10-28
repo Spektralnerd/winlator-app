@@ -504,6 +504,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private void setupWineSystemFiles() {
         String appVersion = String.valueOf(AppUtils.getVersionCode(this));
         String rfsVersion = String.valueOf(rootFS.getVersion());
+        // Selbst gebaute rootfs_patches.tzst (CI) haben daneben eine Kennung mit ihrer Prüfsumme
+        // (rootfs_patches.id): eine neue wfm.exe & Co. kommt so auch ohne neue Versionsnummer
+        // in bestehende Container
+        byte[] patchesIdData = FileUtils.read(this, "rootfs_patches.id");
+        String patchesId = patchesIdData != null ? new String(patchesIdData, java.nio.charset.StandardCharsets.UTF_8).trim() : "";
         boolean containerDataChanged = false;
 
         boolean wineprefixWasUpdated = WineUtils.isWineprefixWasUpdated(container);
@@ -511,6 +516,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             applyGeneralPatches(container);
             container.putExtra("appVersion", appVersion);
             container.putExtra("rfsVersion", rfsVersion);
+            container.putExtra("patchesId", patchesId.isEmpty() ? null : patchesId);
+            containerDataChanged = true;
+        }
+        else if (!patchesId.isEmpty() && !patchesId.equals(container.getExtra("patchesId"))) {
+            extractRootFSPatches();
+            container.putExtra("patchesId", patchesId);
             containerDataChanged = true;
         }
 
@@ -1173,10 +1184,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
     }
 
-    private void applyGeneralPatches(Container container) {
+    private void extractRootFSPatches() {
         File rootDir = rootFS.getRootDir();
         FileUtils.delete(new File(rootDir, "/opt/apps"));
         TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "rootfs_patches.tzst", rootDir);
+    }
+
+    private void applyGeneralPatches(Container container) {
+        extractRootFSPatches();
         TarCompressorUtils.extract(TarCompressorUtils.Type.ZSTD, this, "pulseaudio.tzst", new File(getFilesDir(), "pulseaudio"));
         WineUtils.applySystemTweaks(this, wineInfo);
         container.putExtra("dxwrapper", null);
