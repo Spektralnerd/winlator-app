@@ -203,9 +203,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             if (shortcutPath != null && !shortcutPath.isEmpty()) shortcut = new Shortcut(container, new File(shortcutPath));
 
             StartLog.begin(this, "Containerstart: "+container.getName()+(shortcut != null ? ", Verknüpfung "+shortcutPath : ""));
-            StartLog.add("Einstellungen: Grafik "+container.getGraphicsDriver()+", DX "+container.getDXWrapper()+
-                ", Box-Preset "+container.getBox64Preset()+", Bildschirm "+container.getScreenSize()+
-                ", Audio "+container.getAudioDriver()+", Wine "+container.getWineVersion());
 
             String graphicsDriver = container.getGraphicsDriver();
             audioDriver = container.getAudioDriver();
@@ -235,6 +232,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 Intent intent = getIntent();
                 if (intent.hasExtra("exec_path")) win32AppWorkarounds.applyStartupWorkarounds(FileUtils.getName(intent.getStringExtra("exec_path")));
             }
+
+            // wirksame Werte (die Verknüpfung geht dem Container vor)
+            StartLog.add("Einstellungen"+(shortcut != null ? " (Container und Verknüpfung)" : "")+": Grafik "+graphicsDriver+", DX "+dxwrapper+
+                ", Box-Preset "+container.getBox64Preset()+", Bildschirm "+(shortcut != null ? shortcut.getExtra("screenSize", container.getScreenSize()) : container.getScreenSize())+
+                ", Audio "+audioDriver+", Wine "+container.getWineVersion());
 
             this.graphicsDriver = GraphicsDrivers.parseIdentifiers(graphicsDriver);
             this.graphicsDriverConfig = GraphicsDrivers.parseConfigs(graphicsDriver, graphicsDriverConfig);

@@ -43,7 +43,8 @@ public final class StartLog {
     public static final boolean ENABLED = true;
     private static final int HEAD_LINES = 600;
     private static final int TAIL_LINES = 600;
-    private static final int LOGCAT_LINES = 5000;
+    /* so viele der letzten Einträge der App liest logcat; Zeilen der Filter unten fallen danach weg */
+    private static final int LOGCAT_LINES = 30000;
     private static final String MARKER_NAME = "startlog-running";
     private static final ArrayDeque<String> tail = new ArrayDeque<>();
     private static File logDir;
@@ -301,8 +302,10 @@ public final class StartLog {
         try (Writer writer = new FileWriter(file, false)) {
             writer.write("==== " + new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).format(new Date()) +
                 " " + reason + "\n" + deviceInfo() + "\n");
+            // BLASTBufferQueue: auf Android 14+ (CMF Phone 1) bis zu ~60 Fehlerzeilen je Sekunde ("Failed to
+            // acquire a buffer"), die sonst alles andere aus dem Protokoll verdrängen
             process = new ProcessBuilder("logcat", "-v", "threadtime", "-b", "main", "-b", "system", "-b", "crash",
-                "-t", String.valueOf(LOGCAT_LINES)).redirectErrorStream(true).start();
+                "-t", String.valueOf(LOGCAT_LINES), "BLASTBufferQueue:S").redirectErrorStream(true).start();
             process.getOutputStream().close();
             InputStream in = process.getInputStream();
             char[] buffer = new char[8192];

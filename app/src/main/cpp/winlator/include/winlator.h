@@ -52,7 +52,9 @@ static inline pid_t currentThreadId() {
 
 #ifdef __ANDROID__
 #include <android/log.h>
-#define println(...) __android_log_print(ANDROID_LOG_DEBUG, "System.out", __VA_ARGS__)
+/* Info statt Debug: manche Hersteller-Androids (Nothing OS) verwerfen Debug-Einträge, dann fehlte z. B.
+ * die Statistik des Gladio-Servers im Protokoll */
+#define println(...) __android_log_print(ANDROID_LOG_INFO, "System.out", __VA_ARGS__)
 #else
 
 #define println(fmt, ...) \
