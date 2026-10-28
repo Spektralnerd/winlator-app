@@ -1544,10 +1544,17 @@ void gd_handle_glGetInternalformativ(GLContext* context) {
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei count = ArrayBuffer_getInt(&context->inputBuffer);
 
-    GLint params[count];
-    GLFormats_queryInternalformat(parseTexTarget(target), internalformat, pname, count, params);
+    /* count darf 0 sein: wined3d fragt GL_SAMPLES mit der Anzahl aus GL_NUM_SAMPLE_COUNTS ab (hier 0),
+     * dann wird nichts geschrieben. Vorher schrieb der Server den Wert trotzdem in ein Feld der Länge 0
+     * auf dem Stack – auf armv7 genau über den gemerkten Zeiger der Stack-Schutzprüfung, die beim
+     * Rücksprung dann Adresse 0 las (LEGO Racers, Absturz der App bei der Formaterkennung von wined3d). */
+    if (count < 0) count = 0;
+    GLint result = 0;
+    GLFormats_queryInternalformat(parseTexTarget(target), internalformat, pname, count, count > 0 ? &result : NULL);
 
-    gl_send(context->clientRing, REQUEST_CODE_GL_GET_INTERNALFORMATIV, params, count * sizeof(GLint));
+    ArrayBuffer_rewind(&context->outputBuffer);
+    for (int i = 0; i < count; i++) ArrayBuffer_putInt(&context->outputBuffer, i == 0 ? result : 0);
+    gl_send(context->clientRing, REQUEST_CODE_GL_GET_INTERNALFORMATIV, context->outputBuffer.buffer, count * sizeof(GLint));
 }
 
 void gd_handle_glGetLightfv(GLContext* context) {
@@ -1621,10 +1628,12 @@ void gd_handle_glGetProgramEnvParameterfvARB(GLContext* context) {
 void gd_handle_glGetProgramInfoLog(GLContext* context) {
     GLuint program = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei bufSize = ArrayBuffer_getInt(&context->inputBuffer);
+    if (bufSize < 0) bufSize = 0;
 
-    GLchar infoLog[bufSize];
+    GLchar infoLog[bufSize + 1];
     GLsizei length = 0;
     glGetProgramInfoLog(program, bufSize, &length, infoLog);
+    if (length < 0 || length > bufSize) length = 0;
 
     ArrayBuffer_rewind(&context->outputBuffer);
     ArrayBuffer_putInt(&context->outputBuffer, length);
@@ -1693,10 +1702,12 @@ void gd_handle_glGetSamplerParameterfv(GLContext* context) {
 void gd_handle_glGetShaderInfoLog(GLContext* context) {
     GLuint shader = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei bufSize = ArrayBuffer_getInt(&context->inputBuffer);
+    if (bufSize < 0) bufSize = 0;
 
-    GLchar infoLog[bufSize];
+    GLchar infoLog[bufSize + 1];
     GLsizei length = 0;
     glGetShaderInfoLog(shader, bufSize, &length, infoLog);
+    if (length < 0 || length > bufSize) length = 0;
 
     ArrayBuffer_rewind(&context->outputBuffer);
     ArrayBuffer_putInt(&context->outputBuffer, length);

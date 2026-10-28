@@ -201,3 +201,14 @@ Kanal und Anteil abweichender Pixel).
   `gl_framebuffer.c`/`gl_renderer.c`/`shader_converter.c` nachgebildet; Ergebnis pixelgenau
   bis auf den Alphatest, den wined3d 10.10 auf alten Kontexten nie einschaltet
   (`armv7/patches/wine/0002-wined3d-legacy-alpha-test.patch`).
+* wined3d auf armv7 (LEGO Racers, DirectDraw/Direct3D 6): Die App stürzte bei der Formaterkennung
+  von wined3d ab (SIGSEGV an Adresse 0 im Thread der Verbindung). wined3d fragt
+  `glGetInternalformativ(…, GL_SAMPLES, count, …)` mit der Anzahl aus `GL_NUM_SAMPLE_COUNTS` ab, hier
+  0. Der Server schrieb den Wert trotzdem in ein Feld der Länge 0 auf dem Stack; im armv7-Build liegt
+  dort der gemerkte Zeiger der Stack-Schutzprüfung (`__stack_chk_guard`), die beim Rücksprung dann
+  Adresse 0 liest. Auf x86-64 traf der Wert nur Füllbytes, darum lief das Spiel auf dem PC. Gefunden
+  mit einem AddressSanitizer-Bau des Servers (`-fsanitize=address -fsanitize-recover=address`,
+  `DEBUG_MODE=0` wie auf dem Gerät, `ASAN_OPTIONS=detect_leaks=0:halt_on_error=0`), der außerdem
+  einen 4-Byte-Überlauf beim Vorgabelicht (`initLight`) meldete; danach ist der Start von LEGO Racers
+  ohne Befund. Die Info-Logs (`glGetShaderInfoLog`/`glGetProgramInfoLog`) bekommen jetzt mindestens
+  ein Byte Platz.

@@ -60,7 +60,7 @@ static void initLight(GLLight* light, int index) {
     memcpy(light->diffuse, index == 0 ? diffuse : black, sizeof(diffuse));
     memcpy(light->specular, index == 0 ? diffuse : black, sizeof(diffuse));
     memcpy(light->position, position, sizeof(position));
-    memcpy(light->attenuation, attenuation, sizeof(position));
+    memcpy(light->attenuation, attenuation, sizeof(attenuation));
     memcpy(light->spotDirection, spotDirection, sizeof(spotDirection));
     light->spotCutoffExponent[0] = TO_RADIANS(180);
 }
