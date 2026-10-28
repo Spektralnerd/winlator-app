@@ -31,6 +31,7 @@ void GLVertexArrayObject_setAttribState(GLClientState* clientState, GLuint index
             GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[index];
 #ifdef GL_SERVER
             vertexAttrib->normalized = false;
+            vertexAttrib->bgraBuffer = false;
             vertexAttrib->type = 0;
             vertexAttrib->size = 0;
             vertexAttrib->boundArrayBuffer = 0;

@@ -117,6 +117,14 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   glXSwapBuffers; gibt je Fall das erste Pixel aus, mit Mesa vergleichen (`./readtest`).
   Bauen: `gcc -O1 -o readtest readtest.c -lX11 -lGL`.
 
+* `bgratest.c` – GL_BGRA-Eckpunktfarben aus Puffern (`ARB_vertex_array_bgra`, wie wined3d ab GL 3.2
+  D3DCOLOR angibt) und Hochladen über abgebildete Puffer, acht Fälle: glDrawArrays mit first > 0,
+  Indexpuffer, Basis-Eckpunkt, Indizes im Client-Speicher, Teilbereich abgebildet mit
+  GL_MAP_FLUSH_EXPLICIT_BIT (Versatz ab Bereichsanfang), zwei Aufrufe aus einem Streaming-Puffer,
+  Attribut ab- und ohne neuen Zeiger wieder angeschaltet, glMapBuffer(GL_WRITE_ONLY) über schon
+  gezeichnete Daten (`./bgratest out.ppm`, mit Mesa vergleichen). Bauen:
+  `gcc -O1 -o bgratest bgratest.c -lX11 -lGL -ldl`.
+
 * `d3d9test.c` – Direct3D 9 über wined3d (Texturformate A8R8G8B8/R5G6B5/A1R5G5B5/A4R4G4B4/L8/
   DXT1 mit Mipmaps, festes Licht, Nebel, Alphatest, Blending, vs_2_0/ps_2_0, Render-to-Texture,
   Rücklesen als PPM). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9test.exe d3d9test.c -ld3d9
@@ -214,3 +222,23 @@ Kanal und Anteil abweichender Pixel).
   einen 4-Byte-Überlauf beim Vorgabelicht (`initLight`) meldete; danach ist der Start von LEGO Racers
   ohne Befund. Die Info-Logs (`glGetShaderInfoLog`/`glGetProgramInfoLog`) bekommen jetzt mindestens
   ein Byte Platz.
+* ES-3.0-Pfad mit wined3d (LEGO Racers, Direct3D 6): Der Server meldet GL 3.3, damit gilt
+  `ARB_vertex_array_bgra` für wined3d als Kern, und D3DCOLOR-Farben kommen als
+  `glVertexAttribPointer(…, GL_BGRA, …)` aus dem Streaming-Puffer. Der Client schickte dafür bei jedem
+  Zeichenaufruf den Puffer vom Anfang bis zum letzten Eckpunkt mit (wined3d zeichnet mit wachsendem
+  Basis-Eckpunkt) – bis 140 MB je Bild, 1–3 Bilder/s. Jetzt kennzeichnet der Client das Attribut nur
+  (0x80 im normalized-Byte); der Server liest die Farben beim Zeichnen aus dem geteilten Speicher,
+  stellt nur die gezeichneten Eckpunkte auf RGBA um und hängt sie an einen Ringpuffer an
+  (`GLContext_prepareBgraArrays`). Danach blieben je Zeichenaufruf vier Rundreisen: wined3d bildet
+  ohne `ARB_buffer_storage` bei jedem Hochladen den ganzen 512-KB-Puffer mit
+  GL_MAP_FLUSH_EXPLICIT_BIT ab, und glUnmapBuffer übertrug trotzdem den ganzen Bereich noch einmal;
+  glFlushMappedBufferRange wartete auf den Server. Jetzt überträgt glUnmapBuffer mit dem Bit nichts
+  mehr, glFlushMappedBufferRange zählt den Versatz wie GL ab dem Bereichsanfang und wartet nicht
+  mehr (der Server liest beim Abarbeiten aus dem geteilten Speicher; dafür wartet der Client vor
+  jedem synchronisierten Abbilden zum Schreiben). Im Rennen am PC (2 Kerne, llvmpipe,
+  `WINEDEBUG=-all`): ES 3 mit CSMT von 2 auf ~20 Bilder/s, ohne CSMT ~55 (ES 2 mit CSMT ~45).
+  Was mit CSMT fehlt, kostet wined3d selbst: ohne `ARB_buffer_storage` wartet der Anwendungsthread
+  bei jedem Abbilden auf den CSMT-Thread. `bgratest` ist auf beiden Pfaden pixelgleich mit Mesa
+  (mit dem alten Client bekam das in Fall 6 ab- und ohne neuen Zeiger wieder angeschaltete
+  BGRA-Attribut keine Daten mehr, Fall 7 wurde schwarz); `d3d9test`, `glsltest`, `batchtest`, `fftest`, `matrixtest`, `readtest` und
+  `glrender2` liefern dasselbe wie vorher.

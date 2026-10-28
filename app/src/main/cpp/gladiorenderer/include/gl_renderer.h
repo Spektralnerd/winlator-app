@@ -130,11 +130,19 @@ typedef struct GLState {
     bool clampReadColor;
 } GLState;
 
+/* umgestellte GL_BGRA-Eckpunktfarben (GLContext_prepareBgraArrays): Ringpuffer, nur angehängt */
+typedef struct GLBgraStream {
+    GLuint buffer;
+    int64_t capacity;
+    int64_t cursor;
+} GLBgraStream;
+
 typedef struct GLRenderer {
     int contextId;
     short displaySize[2];
     GLuint displayBuffer;
     GLuint bufferIds[VERTEX_ATTRIB_COUNT+1];
+    GLBgraStream bgraStream;
 
     GLState state;
     GLClientState clientState;

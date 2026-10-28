@@ -619,34 +619,20 @@ static bool isOpaqueInternalFormat(GLint internalformat) {
     }
 }
 
-/* setzt den Alphakanal umgesetzter Daten auf 1; fremde Daten (Ringpuffer, PBO) werden vorher kopiert */
-static void* forceOpaqueAlpha(GLenum format, GLenum type, void* pixels, int dataSize, bool owned) {
-    bool shorts = type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_4_4_4_4;
-    bool bytes = type == GL_UNSIGNED_BYTE && (format == GL_RGBA || format == GL_BGRA_EXT);
-    if (!pixels || dataSize <= 0 || (!shorts && !bytes)) return pixels;
-    if (!owned) {
-        void* copy = malloc(dataSize);
-        memcpy(copy, pixels, dataSize);
-        pixels = copy;
-    }
-    if (shorts) {
+/* setzt den Alphakanal umgesetzter Daten auf 1 – an Ort und Stelle wie die Formatumsetzung selbst:
+ * die Daten liegen im Ringpuffer, in einer eigenen Kopie oder in einem Pixelpuffer des Programms,
+ * dessen X-Bits ohnehin undefiniert sind (keine zusätzliche Kopie bei Bildern, die jedes Bild neu
+ * hochgeladen werden) */
+static void forceOpaqueAlpha(GLenum format, GLenum type, void* pixels, int dataSize) {
+    if (!pixels || dataSize <= 0) return;
+    if (type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_4_4_4_4) {
         GLushort mask = type == GL_UNSIGNED_SHORT_5_5_5_1 ? 0x0001 : 0x000f;
         GLushort* values = pixels;
         for (int i = 0; i < dataSize / (int)sizeof(GLushort); i++) values[i] |= mask;
     }
-    else {
+    else if (type == GL_UNSIGNED_BYTE && (format == GL_RGBA || format == GL_BGRA_EXT)) {
         uint8_t* values = pixels;
         for (int i = 3; i < dataSize; i += 4) values[i] = 0xff;
-    }
-    return pixels;
-}
-
-static void makeOpaque(GLenum format, GLenum type, void** pixels, int dataSize, bool* ownsConverted, bool ownsPacked, void* packed) {
-    bool owned = *ownsConverted || (ownsPacked && *pixels == packed);
-    void* opaque = forceOpaqueAlpha(format, type, *pixels, dataSize, owned);
-    if (opaque != *pixels) {
-        *pixels = opaque;
-        *ownsConverted = true;
     }
 }
 
@@ -673,7 +659,7 @@ void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei w
     GLenum fmt = format, typ = type;
 
     if (GLES_convertTexImageFormat(target, &ifmt, &fmt, &typ, &pixels, &dataSize, &ownsConverted)) {
-        if (pixels && isOpaqueInternalFormat(internalformat)) makeOpaque(fmt, typ, &pixels, dataSize, &ownsConverted, ownsPacked, packed);
+        if (isOpaqueInternalFormat(internalformat)) forceOpaqueAlpha(fmt, typ, pixels, dataSize);
 #if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
         println("gladio:es2:texImage2D %s Stufe %d %dx%d %s/%s/%s -> %s/%s/%s %s", glEnumToString(target), level, width, height,
                 glEnumToString(internalformat), glEnumToString(format), glEnumToString(type), glEnumToString(ifmt), glEnumToString(fmt), glEnumToString(typ), pixels ? "mit Daten" : "ohne Daten");
@@ -710,7 +696,7 @@ void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
             if (pixels) swapRedBlue(pixels, dataSize / 4, 4);
             fmt = texture->es2Format;
         }
-        if (pixels && texture && isOpaqueInternalFormat(texture->originFormat)) makeOpaque(fmt, typ, &pixels, dataSize, &ownsConverted, ownsPacked, packed);
+        if (texture && isOpaqueInternalFormat(texture->originFormat)) forceOpaqueAlpha(fmt, typ, pixels, dataSize);
 #if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
         println("gladio:es2:texSubImage2D %s Stufe %d %d,%d %dx%d %s/%s -> %s/%s (Textur %s)", glEnumToString(target), level, xoffset, yoffset, width, height,
                 glEnumToString(format), glEnumToString(type), glEnumToString(fmt), glEnumToString(typ), texture ? glEnumToString(texture->es2Format) : "?");

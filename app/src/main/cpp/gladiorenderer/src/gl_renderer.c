@@ -916,6 +916,10 @@ void GLRenderer_setPointParams(GLRenderer* renderer, GLenum pname, void* params)
 void GLRenderer_destroy(GLRenderer* renderer) {
     if (!renderer) return;
     glDeleteBuffers(ARRAY_SIZE(renderer->bufferIds), renderer->bufferIds);
+    if (renderer->bgraStream.buffer > 0) {
+        glDeleteBuffers(1, &renderer->bgraStream.buffer);
+        renderer->bgraStream.buffer = 0;
+    }
 
     GLVertexArrayObject_delete(&renderer->clientState, 0);
     GLRenderer_resetFrameCount(renderer);

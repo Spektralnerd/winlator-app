@@ -932,7 +932,7 @@ void readCommandBuffer(GLContext* context) {
     clientState->indexStart = indexStart;
     if (indexCount > 0) {
         for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
-            if (clientState->vao->attribs[i].state) {
+            if (clientState->vao->attribs[i].state && clientState->vao->attribs[i].state != VERTEX_ATTRIB_BGRA_BUFFER) {
                 clientState->vao->attribs[i].pointer = context->inputBuffer.buffer + context->inputBuffer.position;
                 context->inputBuffer.position += indexCount * clientState->vao->attribs[i].stride;
             }
@@ -956,7 +956,7 @@ void readCommandBuffer(GLContext* context) {
     GLRenderer_endImmediate(currentRenderer);
 
     for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
-        if (clientState->vao->attribs[i].state) clientState->vao->attribs[i].pointer = NULL;
+        if (clientState->vao->attribs[i].state && clientState->vao->attribs[i].state != VERTEX_ATTRIB_BGRA_BUFFER) clientState->vao->attribs[i].pointer = NULL;
     }
     clientState->indexStart = 0;
 }
@@ -1169,6 +1169,202 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
     }
     if (meshCreated) GLRenderer_endImmediate(currentRenderer);
     return meshCreated;
+}
+
+/* ---- GL_BGRA-Farben aus einem Puffer -------------------------------------------------------------
+ * wined3d gibt D3DCOLOR-Eckpunktfarben bei GL >= 3.2 als GL_BGRA an (ARB_vertex_array_bgra ist dort
+ * Kern). ES kennt GL_BGRA nicht als Attributgröße. Früher schickte der Client dafür bei jedem
+ * Zeichenaufruf den Puffer vom Anfang bis zum letzten Eckpunkt mit – wined3d zeichnet aus einem großen
+ * Streaming-Puffer mit wachsendem Startpunkt: bis über 100 MB je Bild (LEGO Racers im ES-3.0-Pfad
+ * 1–3 Bilder/s). Jetzt liest der Server die Farben selbst aus dem geteilten Speicher des Puffers und
+ * stellt nur die Eckpunkte des Zeichenaufrufs auf RGBA um (4 Byte je Eckpunkt).
+ *
+ * Ziel ist ein Ringpuffer, der nur angehängt wird (unsynchronisiert abgebildet, kein Warten auf die
+ * GPU, keine Kopie des Puffers im Treiber). Der Attributzeiger muss für Eckpunkt v auf seine Farbe
+ * zeigen: Zeiger = Platz - erster Eckpunkt * 4, also liegt der Platz mindestens bei erster Eckpunkt * 4
+ * (bei wachsendem Startpunkt deckt sich das mit dem Anhängen). Ist der Ring voll, wird er neu angelegt
+ * (ältere Zeichenaufrufe behalten den alten Speicher). */
+
+#define BGRA_STREAM_MIN_SIZE (1024 * 1024)
+#define BGRA_STREAM_MAX_SIZE (256 * 1024 * 1024)
+
+typedef struct BgraJob {
+    int location;
+    bool normalized;
+    int stride;
+    const uint8_t* src;
+    int64_t first;
+    int count;
+} BgraJob;
+
+static int bgraAttribLocation(GLClientState* clientState, int index) {
+    if (clientState->arbProgram[0]) {
+        if (clientState->program) return clientState->program->location.attributes[index];
+        return clientState->arbProgram[0]->material->location.attributes[index];
+    }
+    return index;
+}
+
+static void restoreArrayBufferBinding(void) {
+    GLBuffer* bound = GLBuffer_getBound(GL_ARRAY_BUFFER);
+    glBindBuffer(GL_ARRAY_BUFFER, bound ? bound->id : 0);
+}
+
+static bool hasBgraBufferArrays(GLClientState* clientState) {
+    for (int i = 0; i < clientState->vao->maxEnabledAttribs; i++) {
+        if (clientState->vao->attribs[i].state == VERTEX_ATTRIB_BGRA_BUFFER) return true;
+    }
+    return false;
+}
+
+static void convertBgraColors(uint8_t* dst, const uint8_t* src, int stride, int count) {
+    /* B G R A -> R G B A (little endian); memcpy wird zu einfachen Lade- und Speicherbefehlen */
+    for (int v = 0; v < count; v++, src += stride, dst += 4) {
+        uint32_t c;
+        memcpy(&c, src, 4);
+        c = (c & 0xff00ff00) | ((c >> 16) & 0xff) | ((c & 0xff) << 16);
+        memcpy(dst, &c, 4);
+    }
+}
+
+static void prepareBgraArrays(GLClientState* clientState, int64_t first, int64_t last) {
+    static bool warned = false;
+    GLRenderer* renderer = currentRenderer;
+    GLVertexArrayObject* vao = clientState->vao;
+    BgraJob jobs[VERTEX_ATTRIB_COUNT];
+    int numJobs = 0;
+
+    for (int i = 0; i < vao->maxEnabledAttribs; i++) {
+        GLVertexAttrib* attrib = &vao->attribs[i];
+        if (attrib->state != VERTEX_ATTRIB_BGRA_BUFFER) continue;
+
+        int location = bgraAttribLocation(clientState, i);
+        if (location < 0) continue;
+        if (clientState->arbProgram[0]) GLRenderer_enableVertexAttribute(renderer, location);
+
+        GLX_CONTEXT_LOCK();
+        GLBuffer* source = SparseArray_get(clientState->buffers, attrib->boundArrayBuffer);
+        GLX_CONTEXT_UNLOCK();
+        if (!source) continue;
+
+        int stride = attrib->stride > 0 ? attrib->stride : 4;
+        uint64_t offset = (uint64_t)attrib->pointer;
+        /* Bereich auf den Puffer begrenzen (Neustart-Index, falsche Bereiche) */
+        int64_t maxVertex = ((int64_t)source->size - (int64_t)offset - 4) / stride;
+        int64_t lo = MAX(first, 0), hi = MIN(last, maxVertex);
+
+        if (!source->mappedData || attrib->type != GL_UNSIGNED_BYTE || hi < lo || (hi + 1) * 4 > BGRA_STREAM_MAX_SIZE / 2) {
+            /* Notbehelf: Puffer unverändert (Rot und Blau vertauscht) */
+            if (!warned) {
+                println("gladio: GL_BGRA-Attribut %d nicht umstellbar (Puffer %u, Typ %s, Eckpunkte %lld-%lld) – Farben unverändert",
+                        i, attrib->boundArrayBuffer, glEnumToString(attrib->type), (long long)first, (long long)last);
+                warned = true;
+            }
+            glBindBuffer(GL_ARRAY_BUFFER, source->id);
+            glVertexAttribPointer(location, 4, GLES_vertexAttribType(attrib->type), attrib->normalized, stride, (const void*)offset);
+            restoreArrayBufferBinding();
+            continue;
+        }
+
+        BgraJob* job = &jobs[numJobs++];
+        job->location = location;
+        job->normalized = attrib->normalized;
+        job->stride = stride;
+        job->src = (const uint8_t*)source->mappedData + offset + (size_t)lo * stride;
+        job->first = lo;
+        job->count = (int)(hi - lo + 1);
+    }
+    if (numJobs == 0) return;
+
+    GLBgraStream* stream = &renderer->bgraStream;
+    if (stream->buffer == 0) glGenBuffers(1, &stream->buffer);
+    glBindBuffer(GL_ARRAY_BUFFER, stream->buffer);
+
+    /* alle Attribute eines Zeichenaufrufs im selben Speicher (Neuanlegen verwirft den alten) */
+    int64_t end = stream->cursor, needed = 0;
+    for (int j = 0; j < numJobs; j++) {
+        end = MAX(end, jobs[j].first * 4) + jobs[j].count * 4;
+        needed = MAX(needed, jobs[j].first * 4) + jobs[j].count * 4;
+    }
+    if (end > stream->capacity) {
+        int64_t size = MAX(BGRA_STREAM_MIN_SIZE, stream->capacity);
+        while (size < needed) size *= 2;
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)size, NULL, GL_STREAM_DRAW);
+        stream->capacity = size;
+        stream->cursor = 0;
+    }
+
+    for (int j = 0; j < numJobs; j++) {
+        BgraJob* job = &jobs[j];
+        int64_t position = MAX(stream->cursor, job->first * 4);
+        int bytes = job->count * 4;
+
+        uint8_t* dst = NULL;
+        if (!GLES2) dst = glMapBufferRange(GL_ARRAY_BUFFER, (GLintptr)position, bytes, GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT | GL_MAP_INVALIDATE_RANGE_BIT);
+        if (dst) {
+            convertBgraColors(dst, job->src, job->stride, job->count);
+            glUnmapBuffer(GL_ARRAY_BUFFER);
+        }
+        else {
+            dst = malloc(bytes);
+            if (!dst) continue;
+            convertBgraColors(dst, job->src, job->stride, job->count);
+            glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)position, bytes, dst);
+            free(dst);
+        }
+        stream->cursor = position + bytes;
+        glVertexAttribPointer(job->location, 4, GL_UNSIGNED_BYTE, job->normalized, 4, (const void*)(uintptr_t)(position - job->first * 4));
+    }
+    restoreArrayBufferBinding();
+}
+
+void GLContext_prepareBgraArrays(GLint first, GLsizei count) {
+    GLClientState* clientState = &currentRenderer->clientState;
+    if (count <= 0 || !hasBgraBufferArrays(clientState)) return;
+    prepareBgraArrays(clientState, first, (int64_t)first + count - 1);
+}
+
+void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex) {
+    GLClientState* clientState = &currentRenderer->clientState;
+    if (count <= 0 || !hasBgraBufferArrays(clientState)) return;
+
+    int indexSize = type == GL_UNSIGNED_BYTE ? 1 : (type == GL_UNSIGNED_SHORT ? 2 : 4);
+    const uint8_t* src = indices;
+    GLBuffer* elementBuffer = GLBuffer_getBound(GL_ELEMENT_ARRAY_BUFFER);
+    if (elementBuffer) {
+        uint64_t offset = (uint64_t)indices;
+        if (!elementBuffer->mappedData || offset + (uint64_t)count * indexSize > (uint64_t)elementBuffer->size) return;
+        src = (const uint8_t*)elementBuffer->mappedData + offset;
+    }
+    if (!src) return;
+
+    uint32_t minIndex = UINT32_MAX, maxIndex = 0;
+    #define SCAN_INDICES(T, skip) \
+        for (int i = 0; i < count; i++) { \
+            uint32_t index = ((const T*)src)[i]; \
+            if (skip) continue; \
+            if (index < minIndex) minIndex = index; \
+            if (index > maxIndex) maxIndex = index; \
+        }
+    uint32_t restart = type == GL_UNSIGNED_BYTE ? 0xff : (type == GL_UNSIGNED_SHORT ? 0xffff : 0xffffffff);
+    switch (type) {
+        case GL_UNSIGNED_BYTE: SCAN_INDICES(uint8_t, false); break;
+        case GL_UNSIGNED_SHORT: SCAN_INDICES(uint16_t, false); break;
+        default: SCAN_INDICES(uint32_t, false); break;
+    }
+    /* der feste Neustart-Index zählt nicht (GL_PRIMITIVE_RESTART wird zu GL_PRIMITIVE_RESTART_FIXED_INDEX) */
+    if (maxIndex == restart && !GLES2 && glIsEnabled(GL_PRIMITIVE_RESTART_FIXED_INDEX)) {
+        minIndex = UINT32_MAX;
+        maxIndex = 0;
+        switch (type) {
+            case GL_UNSIGNED_BYTE: SCAN_INDICES(uint8_t, index == restart); break;
+            case GL_UNSIGNED_SHORT: SCAN_INDICES(uint16_t, index == restart); break;
+            default: SCAN_INDICES(uint32_t, index == restart); break;
+        }
+    }
+    #undef SCAN_INDICES
+    if (minIndex > maxIndex) return;
+    prepareBgraArrays(clientState, (int64_t)minIndex + basevertex, (int64_t)maxIndex + basevertex);
 }
 
 const char* getGLExtensions(int* outNumExtensions) {

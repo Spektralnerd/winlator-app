@@ -32,6 +32,11 @@
  * je Index aufgerollt; dahinter Indexversatz und Vertexzahl. Siehe readUnboundVertexArrays. */
 #define GLADIO_DRAW_RANGED 0x40000000
 
+/* Kennung im Ziel von glFlushMappedBufferRange (armv7-Client): ohne Antwort. Der Server liest die
+ * Daten beim Abarbeiten aus dem geteilten Speicher; der Client wartet dafür vor jedem Abbilden zum
+ * Schreiben, das nicht GL_MAP_UNSYNCHRONIZED_BIT ist (Anfrage mit Länge 0: nur Antwort). */
+#define GLADIO_FLUSH_NO_REPLY 0x40000000
+
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
 #define MAX_TEXTURE_TARGETS 4

@@ -84,6 +84,9 @@ extern void destroyGLXContext(GLXContext* glxContext);
 extern void readCommandBuffer(GLContext* context);
 extern void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx);
 extern bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount, void** outIndices, GLenum indexType);
+/* GL_BGRA-Attribute aus Puffern vor dem Zeichnen umstellen (Eckpunkte [first, first + count) bzw. die Indizes) */
+extern void GLContext_prepareBgraArrays(GLint first, GLsizei count);
+extern void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex);
 extern const char* getGLExtensions(int* numExtensions);
 
 extern pthread_mutex_t glx_context_mutex;

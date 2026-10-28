@@ -15,10 +15,17 @@
 #define VERTEX_ATTRIB_DISABLED 0
 #define VERTEX_ATTRIB_LEGACY_ENABLED 1
 #define VERTEX_ATTRIB_ENABLED 2
+/* nur Server: GL_BGRA-Attribut aus einem Puffer; der Client schickt die Daten nicht mit, der Server
+ * stellt die Farben vor jedem Zeichenaufruf selbst um (GLContext_prepareBgraArrays) */
+#define VERTEX_ATTRIB_BGRA_BUFFER 3
+/* Kennung im normalized-Byte von glVertexAttribPointer: GL_BGRA aus dem gebundenen Puffer, ohne Daten
+ * beim Zeichnen (Client mit armv7/scripts/patch-gladio-client.py; ältere Clients setzen sie nie) */
+#define GLADIO_VERTEX_ATTRIB_BGRA_BUFFER 0x80
 
 typedef struct GLVertexAttrib {
 #ifdef GL_SERVER
     bool normalized;
+    bool bgraBuffer; /* GL_BGRA aus boundArrayBuffer (VERTEX_ATTRIB_BGRA_BUFFER), auch während abgeschaltet */
     int type;
     GLuint boundArrayBuffer;
     int size;

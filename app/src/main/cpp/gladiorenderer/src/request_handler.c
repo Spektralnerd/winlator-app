@@ -872,6 +872,7 @@ void gd_handle_glDrawArrays(GLContext* context) {
 
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
+    GLContext_prepareBgraArrays(first, count);
     glDrawArrays(mode, first, count);
 }
 
@@ -883,6 +884,7 @@ void gd_handle_glDrawArraysInstanced(GLContext* context) {
 
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
+    GLContext_prepareBgraArrays(first, count);
     if (GLES2) {
         glDrawArrays(mode, first, count);
         return;
@@ -912,6 +914,7 @@ void gd_handle_glDrawElements(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -929,6 +932,7 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;
@@ -946,6 +950,7 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -964,6 +969,7 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;
@@ -995,6 +1001,7 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         return;
@@ -1014,6 +1021,7 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     void* indices = NULL;
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         return;
@@ -1065,6 +1073,14 @@ void gd_handle_glEnableVertexAttribArray(GLContext* context) {
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
 
     GLClientState* clientState = &currentRenderer->clientState;
+    if (index < VERTEX_ATTRIB_COUNT) {
+        /* GL_BGRA aus einem Puffer: glDisableVertexAttribArray setzt den Zustand zurück, Zeiger und
+         * Puffer bleiben (wie bei GL) bis zum nächsten glVertexAttribPointer gültig */
+        GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[index];
+        if (vertexAttrib->state == VERTEX_ATTRIB_DISABLED && vertexAttrib->bgraBuffer) {
+            GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_BGRA_BUFFER, false);
+        }
+    }
     if (GLRenderer_useARBProgram(currentRenderer, false)) index = clientState->arbProgram[0]->material->location.attributes[index];
     glEnableVertexAttribArray(index);
 }
@@ -1172,8 +1188,13 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
     GLenum target = ArrayBuffer_getInt(&context->inputBuffer);
     GLintptr offset = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizeiptr length = ArrayBuffer_getInt(&context->inputBuffer);
+    bool noReply = (target & GLADIO_FLUSH_NO_REPLY) != 0;
+    target &= ~GLADIO_FLUSH_NO_REPLY;
 
-    GLBuffer* buffer = GLBuffer_getBound(target);
+    /* Länge 0: nur Antwort (der Client wartet, bis alles davor abgearbeitet ist) */
+    GLBuffer* buffer = length > 0 ? GLBuffer_getBound(target) : NULL;
+    if (buffer && (offset < 0 || offset >= buffer->size)) buffer = NULL;
+    if (buffer) length = MIN(length, buffer->size - offset);
     if (buffer) {
         if (buffer->mappedData) {
             if (GLES2) {
@@ -1189,7 +1210,7 @@ void gd_handle_glFlushMappedBufferRange(GLContext* context) {
         }
     }
 
-    gl_send(context->clientRing, REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE, NULL, 0);
+    if (!noReply) gl_send(context->clientRing, REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE, NULL, 0);
 }
 
 void gd_handle_glFogCoordPointer(GLContext* context) {
@@ -3525,11 +3546,33 @@ void gd_handle_glVertexAttribPointer(GLContext* context) {
     GLboolean normalized = ArrayBuffer_get(&context->inputBuffer);
     GLsizei stride = ArrayBuffer_getInt(&context->inputBuffer);
     uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
+    bool bgraFromBuffer = (normalized & GLADIO_VERTEX_ATTRIB_BGRA_BUFFER) != 0;
+    normalized = (normalized & ~GLADIO_VERTEX_ATTRIB_BGRA_BUFFER) != 0;
 
     GLClientState* clientState = &currentRenderer->clientState;
     if (index < VERTEX_ATTRIB_COUNT) {
         GLVertexAttrib* vertexAttrib = &clientState->vao->attribs[index];
-        if (!GLBuffer_getBound(GL_ARRAY_BUFFER) || size == GL_BGRA) {
+        GLBuffer* arrayBuffer = GLBuffer_getBound(GL_ARRAY_BUFFER);
+        if (bgraFromBuffer && size == GL_BGRA && arrayBuffer) {
+            /* Farben liest der Server beim Zeichnen selbst aus dem geteilten Speicher des Puffers */
+            vertexAttrib->type = type;
+            vertexAttrib->size = size;
+            vertexAttrib->normalized = normalized;
+            vertexAttrib->stride = stride > 0 ? stride : 4;
+            vertexAttrib->pointer = (void*)pointer;
+            vertexAttrib->boundArrayBuffer = arrayBuffer->id;
+            vertexAttrib->bgraBuffer = true;
+            GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_BGRA_BUFFER, false);
+            return;
+        }
+        if (bgraFromBuffer) {
+            /* Kennung, aber hier kein Puffer gebunden (sollte nicht vorkommen): der Client schickt beim
+             * Zeichnen nichts mit, also weder auf Daten warten noch den Versatz als Adresse nehmen */
+            GLVertexArrayObject_setAttribState(clientState, index, VERTEX_ATTRIB_DISABLED, true);
+            return;
+        }
+        if (!arrayBuffer || size == GL_BGRA) {
+            vertexAttrib->bgraBuffer = false;
             vertexAttrib->type = type;
             vertexAttrib->size = size;
             vertexAttrib->normalized = normalized;
