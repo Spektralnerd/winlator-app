@@ -1,5 +1,6 @@
 #include "gl_formats.h"
 #include "texture_utils.h"
+#include "gl_es2.h"
 
 static GLFormatInfo textureFormats[] = {
     {GL_R8, GL_RED, GL_UNSIGNED_NORMALIZED, 8, 0, 0, 0, 0, true, true},
@@ -94,6 +95,13 @@ static GLFormatInfo renderbufferFormats[] = {
     {GL_RGBA16I, GL_RGBA_INTEGER, GL_INT, 16, 16, 16, 16, 0, true, true},
     {GL_RGBA32I, GL_RGBA_INTEGER, GL_INT, 32, 32, 32, 32, 0, true, true},
     {GL_RGBA32UI, GL_RGBA_INTEGER, GL_UNSIGNED_INT, 32, 32, 32, 32, 0, true, true},
+    {GL_R16F, GL_RED, GL_FLOAT, 16, 0, 0, 0, 0, false, false},
+    {GL_RG16F, GL_RG, GL_FLOAT, 16, 16, 0, 0, 0, false, false},
+    {GL_RGBA16F, GL_RGBA, GL_FLOAT, 16, 16, 16, 16, 0, false, false},
+    {GL_R32F, GL_RED, GL_FLOAT, 32, 0, 0, 0, 0, false, false},
+    {GL_RG32F, GL_RG, GL_FLOAT, 32, 32, 0, 0, 0, false, false},
+    {GL_RGBA32F, GL_RGBA, GL_FLOAT, 32, 32, 32, 32, 0, false, false},
+    {GL_R11F_G11F_B10F, GL_RGB, GL_FLOAT, 11, 11, 10, 0, 0, false, false},
     {GL_DEPTH_COMPONENT16, GL_DEPTH_COMPONENT, GL_UNSIGNED_NORMALIZED, 16, 0, 0, 0, 0, false, false},
     {GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT, GL_UNSIGNED_NORMALIZED, 24, 0, 0, 0, 0, false, false},
     {GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, 32, 0, 0, 0, 0, false, false},
@@ -101,6 +109,74 @@ static GLFormatInfo renderbufferFormats[] = {
     {GL_DEPTH32F_STENCIL8, GL_DEPTH_STENCIL, GL_FLOAT, 32, 8, 0, 0, 0, false, false},
     {GL_STENCIL_INDEX8, GL_STENCIL, GL_UNSIGNED_NORMALIZED, 0, 8, 0, 0, 0, false, false},
 };
+
+/* Farbpuffer mit Gleitkommaformaten: ES 3.0 kennt sie nicht als Renderziel (daher false in den Tabellen),
+ * ES 3.2 und ES 3.0 mit GL_EXT_color_buffer_float schon (16 und 32 Bit, R11F_G11F_B10F),
+ * GL_EXT_color_buffer_half_float nur die 16-Bit-Formate (dort auch RGB16F). Mischen in 32-Bit-Gleitkomma
+ * braucht zusätzlich GL_EXT_float_blend. wined3d fragt das über ARB_internalformat_query2 ab; vorher
+ * galten alle Gleitkommaformate als nicht renderbar, und D3DFMT_A16B16G16R16F war kein Renderziel –
+ * Spiele mit der Unreal Engine 3 (Outlast) brechen dann mit „does not support alpha blending with
+ * floating point render targets“ ab. ES 2.0 (Mali-400) hat keine Gleitkomma-Renderziele. */
+static struct {
+    bool detected;
+    bool colorBufferFloat;
+    bool colorBufferHalfFloat;
+    bool floatBlend;
+} floatCaps;
+
+static bool hasExtension(const char* extensions, const char* name) {
+    if (!extensions) return false;
+    size_t len = strlen(name);
+    for (const char* ptr = extensions; (ptr = strstr(ptr, name)); ptr += len) {
+        if ((ptr == extensions || ptr[-1] == ' ') && (ptr[len] == '\0' || ptr[len] == ' ')) return true;
+    }
+    return false;
+}
+
+static void detectFloatCaps(void) {
+    if (floatCaps.detected) return;
+    floatCaps.detected = true;
+    if (GLES2) return;
+
+    const char* extensions = getenv("GLADIO_GLES_EXTENSIONS");
+    if (!extensions) extensions = (const char*)glGetString(GL_EXTENSIONS);
+    GLint major = 0, minor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &major);
+    glGetIntegerv(GL_MINOR_VERSION, &minor);
+    while (glGetError() != GL_NO_ERROR);
+
+    bool es32 = major > 3 || (major == 3 && minor >= 2);
+    floatCaps.colorBufferFloat = es32 || hasExtension(extensions, "GL_EXT_color_buffer_float");
+    floatCaps.colorBufferHalfFloat = hasExtension(extensions, "GL_EXT_color_buffer_half_float");
+    floatCaps.floatBlend = hasExtension(extensions, "GL_EXT_float_blend");
+    println("gladio: Gleitkomma-Renderziele: ES %d.%d, 16/32 Bit %s, nur 16 Bit %s, Mischen 32 Bit %s", major, minor,
+            floatCaps.colorBufferFloat ? "ja" : "nein", floatCaps.colorBufferHalfFloat ? "ja" : "nein", floatCaps.floatBlend ? "ja" : "nein");
+}
+
+/* liefert für Gleitkommaformate, ob der Treiber in sie rendern (renderable) bzw. dabei mischen kann (blend);
+ * false für alle anderen Formate (deren Angabe steht in der Tabelle) */
+static bool floatColorRenderable(GLenum internalformat, bool blend) {
+    switch (internalformat) {
+        case GL_R16F:
+        case GL_RG16F:
+        case GL_RGBA16F:
+            detectFloatCaps();
+            return floatCaps.colorBufferFloat || floatCaps.colorBufferHalfFloat;
+        case GL_RGB16F:
+            detectFloatCaps();
+            return floatCaps.colorBufferHalfFloat;
+        case GL_R11F_G11F_B10F:
+            detectFloatCaps();
+            return floatCaps.colorBufferFloat;
+        case GL_R32F:
+        case GL_RG32F:
+        case GL_RGBA32F:
+            detectFloatCaps();
+            return floatCaps.colorBufferFloat && (!blend || floatCaps.floatBlend);
+        default:
+            return false;
+    }
+}
 
 /* Formate, die nicht in der Tabelle stehen, aber als Textur mit Filterung funktionieren:
  * komprimierte (werden entpackt) und die alten Größenvarianten von LUMINANCE/INTENSITY/ALPHA/RGB(A). */
@@ -173,7 +249,7 @@ GLFormatInfo* GLFormats_queryInternalformat(GLenum target, GLenum internalformat
                 break;
             case GL_FRAMEBUFFER_RENDERABLE:
             case GL_FRAMEBUFFER_BLEND:
-                if (targetFormat->colorRenderable) result = GL_FULL_SUPPORT;
+                if (targetFormat->colorRenderable || floatColorRenderable(internalformat, pname == GL_FRAMEBUFFER_BLEND)) result = GL_FULL_SUPPORT;
                 break;
             case GL_INTERNALFORMAT_RED_SIZE:
                 result = targetFormat->redSize;

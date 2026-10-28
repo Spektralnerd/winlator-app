@@ -149,6 +149,13 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   `armv7-rootfs` (`armv7-assets.tar` → `rootfs.tzst` → `opt/wine/bin/wine`), das auf dem PC
   direkt startet – so prüft man genau das wined3d, das auch auf dem Gerät läuft.
 
+* `d3d9caps.c` – Direct3D-9-Formatabfragen (`CheckDeviceFormat` je Format für Textur, Filter,
+  Renderziel, Mischen), wie Spiele sie beim Start stellen; gibt eine Tabelle aus. Bauen:
+  `i686-w64-mingw32-gcc -O1 -o d3d9caps.exe d3d9caps.c -ld3d9`.
+* `d3d9hdr.c` – Gleitkomma-Renderziel (A16B16G16R16F) wie die Szenenfarbe der Unreal Engine 3: Werte über 1
+  und Alpha-Mischen hinein, dann mit Faktor 0,25 in den Hintergrundpuffer; gibt die erwarteten und die
+  gelesenen Farben aus. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9hdr.exe d3d9hdr.c -ld3d9 -lgdi32 -luser32`.
+
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
 
@@ -312,3 +319,13 @@ Kanal und Anteil abweichender Pixel).
   erste Wert, GL_BLEND_SRC/GL_BLEND_DST blieben unbeantwortet (glPopAttrib stellte GL_ZERO/GL_ZERO her). `gettest`
   stimmt auf beiden Pfaden mit Mesa überein (bis auf die Grenzen des Servers); das Intro läuft über
   ES 2.0 mit den Mali-400-Grenzen und über ES 3, mit Vollbild und im Fenster.
+* Gleitkomma-Renderziele (Outlast, Unreal Engine 3, auf dem CMF Phone 1): Das Spiel brach mit „Your video
+  card does not support alpha blending with floating point render targets (D3DFMT_A16B16G16R16F)“ ab.
+  wined3d fragt Renderbarkeit und Mischen über `ARB_internalformat_query2` ab (`GL_FRAMEBUFFER_RENDERABLE`,
+  `GL_FRAMEBUFFER_BLEND`), und die Tabelle des Servers (`gl_formats.c`) beantwortete das nach ES 3.0:
+  Gleitkommaformate nicht renderbar. ES 3.2 (Mali-G615, Mesa) und `GL_EXT_color_buffer_float` können das;
+  jetzt fragt der Server den Treiber (`GL_EXT_color_buffer_half_float` nur für 16 Bit, Mischen in 32 Bit nur
+  mit `GL_EXT_float_blend`) und kennt die Formate auch als Renderbuffer. `d3d9caps` zeigt über ES 3 jetzt
+  alle Gleitkommaformate als Renderziel mit Mischen, `d3d9hdr` liefert die erwarteten Farben (der vorige
+  Server: Abfrage nein, Anlegen des Renderziels scheitert). Über ES 2.0 (Mali-400) bleibt es bei keinen
+  Gleitkomma-Renderzielen.
