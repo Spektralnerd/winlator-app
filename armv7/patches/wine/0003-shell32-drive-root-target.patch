@@ -1,0 +1,30 @@
+diff --git a/dlls/shell32/shlfileop.c b/dlls/shell32/shlfileop.c
+index f24c7b7..e9276c9 100755
+--- a/dlls/shell32/shlfileop.c
++++ b/dlls/shell32/shlfileop.c
+@@ -963,6 +963,13 @@ static void file_entry_init(FILE_ENTRY *file_entry,
+         file_entry->szFilename = malloc(file_name_len * sizeof(WCHAR));
+         lstrcpyW(file_entry->szFilename, ptr + 1); /* Skip over backslash. */
+     }
++    else
++    {
++        /* Winlator: no backslash (e.g. a drive given as "C:"): do_copy() and others copy
++         * szDirectory and szFilename unconditionally, so never leave them NULL. */
++        file_entry->szDirectory = wcsdup(file_name);
++        file_entry->szFilename = wcsdup(L"");
++    }
+ 
+     file_entry->attributes = attributes;
+     file_entry->bFromWildcard = from_wildcard;
+@@ -1086,6 +1093,11 @@ static void parse_file_list(FILE_LIST *flList, LPCWSTR szFiles, BOOL parse_wildc
+ 
+         for (p = szCurFile; *p; p++) if (*p == '/') *p = '\\';
+ 
++        /* Winlator: a bare drive ("C:", e.g. the target of a file manager's paste into a drive
++         * root) means the root of that drive here; it used to crash do_copy() (NULL szDirectory). */
++        if (szCurFile[0] && szCurFile[1] == ':' && !szCurFile[2])
++            lstrcatW(szCurFile, L"\\");
++
+         /* parse wildcard files if they are in the filename */
+         if (from_wildcard && parse_wildcard)
+             parse_wildcard_files(flList, szCurFile);

@@ -105,6 +105,12 @@ Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
 - `glibc/0001-arc4random-enosys.patch` (aus dem 2.39-Wartungszweig, BZ 31612): ohne
   `getrandom` (Kernel vor 3.17, z. B. 3.0 auf dem Galaxy Note 8.0) weicht arc4random auf
   /dev/urandom aus, statt jedes Programm mit „cannot get entropy for arc4random“ abzubrechen
+- Einfügen in eine Laufwerkswurzel (wfm, „Paste“ auf C:) beendete den Dateimanager: wfm gab das
+  Ziel als `C:` weiter, Wines `SHFileOperationW` lässt bei einem Pfad ohne Backslash Verzeichnis
+  und Dateinamen leer (NULL) und kopiert sie dann mit `wcscpy` (Absturz in ucrtbase, aufgerufen
+  aus `do_copy`). `wfm/0001-paste-into-drive-root.patch` gibt `C:\` weiter;
+  `wine/0003-shell32-drive-root-target.patch` nimmt ein bloßes `C:` als Wurzel und lässt die
+  beiden Felder nie mehr leer. Gilt genauso im Original (gleiche wfm- und Wine-Quellen).
 
 Schlägt ein Schritt fehl, stehen die letzten Protokollzeilen als Annotation am Lauf und die
 vollständigen Protokolle im Release `armv7-ci-logs`.

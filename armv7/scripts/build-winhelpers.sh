@@ -46,6 +46,12 @@ $MINGW-gcc -shared -s -o "$WINDIR/libcdio.dll" -Wl,--export-all-symbols \
 log "wfm.exe"
 WFM="$SRC_DIR/wfm"
 git_fetch "$WFM_REPO" "$WFM_COMMIT" "$WFM"
+git -C "$WFM" checkout -q --force . && git -C "$WFM" clean -qfdx
+for p in "$ARMV7_DIR"/patches/wfm/*.patch; do
+    [ -f "$p" ] || continue
+    log "Patch $(basename "$p")"
+    git -C "$WFM" apply "$p"
+done
 B="$BUILD_DIR/wfm"; rm -rf "$B" && mkdir -p "$B"
 for c in "$WFM"/src/*.c; do
     $MINGW-gcc -O2 -std=c99 -DUNICODE -D_UNICODE -DCOBJMACROS -DWINVER=0x0600 -Wall \
