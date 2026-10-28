@@ -32,7 +32,7 @@ typedef struct GLVertexArrayObject {
     uint8_t maxEnabledAttribs;
     GLVertexAttrib attribs[VERTEX_ATTRIB_COUNT];
     GLBuffer* buffer[MAX_BUFFER_TARGETS];
-    GLuint bgraBuffer;
+    GLuint bgraBuffers[VERTEX_ATTRIB_COUNT]; /* je Attribut eigener Puffer für umgestellte BGRA-Farben */
 } GLVertexArrayObject;
 
 #define GL_SEND_VERTEX_ARRAY(requestCode, arrayIdx) \

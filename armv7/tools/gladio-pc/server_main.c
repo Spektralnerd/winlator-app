@@ -248,6 +248,9 @@ static bool wantDump(int frame) {
         extern int gladio_traceRequests;
         snprintf(trigger, sizeof(trigger), "%s/trace", dumpDir);
         if (access(trigger, F_OK) == 0) { unlink(trigger); gladio_traceRequests = 1; }
+        /* Datei "tracecont": solange sie existiert, jedes Bild protokollieren */
+        snprintf(trigger, sizeof(trigger), "%s/tracecont", dumpDir);
+        if (access(trigger, F_OK) == 0) gladio_traceRequests = 1;
     }
     if (!dumpFrames || !*dumpFrames) return false;
     if (!strcmp(dumpFrames, "all")) return true;

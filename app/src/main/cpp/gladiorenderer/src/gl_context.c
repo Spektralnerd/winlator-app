@@ -536,9 +536,12 @@ static void* requestHandlerThread(void* param) {
         context->stats.requests++;
         requestCodeCounts[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS]++;
         if (gladio_traceRequests) {
-            int a0 = context->inputBuffer.size >= 4 ? ((int*)context->inputBuffer.buffer)[0] : 0;
-            int a1 = context->inputBuffer.size >= 8 ? ((int*)context->inputBuffer.buffer)[1] : 0;
-            println("TRACE %s %d 0x%x 0x%x", shortRequestName(requestCode), context->inputBuffer.size, a0, a1);
+            char args[128];
+            int pos = 0, n = context->inputBuffer.size / 4 < 10 ? context->inputBuffer.size / 4 : 10;
+            args[0] = 0;
+            for (int i = 0; i < n && pos < (int)sizeof(args) - 12; i++)
+                pos += snprintf(args + pos, sizeof(args) - pos, " 0x%x", ((int*)context->inputBuffer.buffer)[i]);
+            println("TRACE %s %d%s", shortRequestName(requestCode), context->inputBuffer.size, args);
             if (requestCode == REQUEST_CODE_SWAP_DISPLAY_BUFFERS) gladio_traceRequests = 0;
         }
         context->stats.bytes += HEADER_SIZE + context->inputBuffer.size;
@@ -1127,8 +1130,11 @@ bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount,
                 uint64_t offset = (uint64_t)vertexAttrib->pointer;
                 swapPixelsRedBlue(pointer + offset, vertexAttrib->stride, byteCount - offset);
                 oldArrayBuffer = clientState->vao->buffer[indexOfGLTarget(GL_ARRAY_BUFFER)];
-                if (clientState->vao->bgraBuffer == 0) glGenBuffers(1, &clientState->vao->bgraBuffer);
-                glBindBuffer(GL_ARRAY_BUFFER, clientState->vao->bgraBuffer);
+                /* eigener Puffer je Attribut: Diffus- und Glanzfarbe (wined3d: beide GL_BGRA) lesen sonst
+                 * beide aus dem zuletzt hochgeladenen Block, in dem nur das zweite Attribut umgestellt ist */
+                GLuint* bgraBuffer = &clientState->vao->bgraBuffers[i];
+                if (*bgraBuffer == 0) glGenBuffers(1, bgraBuffer);
+                glBindBuffer(GL_ARRAY_BUFFER, *bgraBuffer);
                 glBufferData(GL_ARRAY_BUFFER, byteCount, pointer, GL_DYNAMIC_DRAW);
                 pointer = vertexAttrib->pointer;
             }

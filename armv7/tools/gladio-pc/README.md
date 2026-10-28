@@ -57,7 +57,9 @@ Ergebnis: `build/gladio-pc-server` und `build/client/libGL.so.1` (`make client32
 Mit `--dump VERZ` landen die Bilder, die der Server bei `glXSwapBuffers` fertigstellt, als
 `frame-N.ppm` dort (`--frames 1,10` wählt die Bildnummern, `all` alle). Legt man im
 Ablageverzeichnis eine Datei `now` an, wird das nächste Bild abgelegt; eine Datei `trace`
-schreibt alle Anfragen des nächsten Bilds ins Server-Protokoll (`TRACE name größe arg0 arg1`).
+schreibt alle Anfragen des nächsten Bilds ins Server-Protokoll (`TRACE name größe` und die ersten bis
+zu zehn 32-Bit-Werte der Anfrage), eine Datei `tracecont` jedes Bild, solange sie existiert (etwa um
+das Laden eines Levels samt aller Texturen mitzuschneiden).
 
 Umgebungsvariablen des Servers: `GLADIO_SOCKET`, `GLADIO_PC_ES` (2|3), `GLADIO_PC_DUMP`,
 `GLADIO_PC_DUMP_FRAMES`, `GLADIO_PC_SIZE` (Fenstergröße ohne `$DISPLAY`), `EGL_PLATFORM`

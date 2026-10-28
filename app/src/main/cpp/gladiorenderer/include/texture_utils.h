@@ -281,6 +281,14 @@ static inline void convertTexImageFormat(uint32_t target, int* internalformat, u
             if (*internalformat == GL_RGB) *internalformat = GL_RGB8;
             break;
         case GL_BGRA:
+            if ((*type == GL_UNSIGNED_SHORT_1_5_5_5_REV || *type == GL_UNSIGNED_SHORT_4_4_4_4_REV) && *internalformat != GL_NONE) {
+                /* X1R5G5B5/X4R4G4B4 (GL_RGB5/GL_RGB4): ES kennt dafür nur Formate mit Alpha, in dem das
+                 * undefinierte X-Bit landet (meist 0). Beim Abtasten muss A = 1 sein. */
+                bool opaque = *internalformat == GL_RGB5 || *internalformat == GL_RGB4 || *internalformat == GL_RGB ||
+                              *internalformat == GL_RGB8 || *internalformat == 3;
+                GLenum paramTarget = target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z ? GL_TEXTURE_CUBE_MAP : target;
+                glTexParameteri(paramTarget, GL_TEXTURE_SWIZZLE_A, opaque ? GL_ONE : GL_ALPHA);
+            }
             if (*type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
                 *type = GL_UNSIGNED_SHORT_5_5_5_1;
                 *internalformat = GL_RGB5_A1;

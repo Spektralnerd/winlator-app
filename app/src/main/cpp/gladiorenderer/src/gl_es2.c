@@ -604,6 +604,52 @@ void* GLES_repackRows(const void* pixels, int width, int height, int bytesPerPix
 
 /* ------------------------------------------------------------------ Hochladen */
 
+/* Interne Formate ohne Alphakanal: GL liefert beim Abtasten A = 1 (GL_RGB5 für D3D-X1R5G5B5,
+ * GL_RGB8 für X8R8G8B8, GL_RGB4 für X4R4G4B4 usw.). In ES 2.0 legen Format und Typ der Daten die
+ * Textur fest, und die umgesetzten Daten (RGBA 5551/4444, RGBA/BGRA 8888) tragen im Alphakanal das
+ * undefinierte X-Bit – meist 0. Sobald mit Alpha gemischt oder getestet wird, wäre die Textur dann
+ * unsichtbar (LEGO Racers: Streckenlinie der Minikarte, X1R5G5B5 mit SRC_ALPHA gemischt). */
+static bool isOpaqueInternalFormat(GLint internalformat) {
+    switch (internalformat) {
+        case 3: case GL_RGB: case GL_R3_G3_B2: case GL_RGB4: case GL_RGB5: case GL_RGB8:
+        case GL_RGB10: case GL_RGB12: case GL_RGB16: case GL_SRGB: case GL_SRGB8: case GL_RGB565:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* setzt den Alphakanal umgesetzter Daten auf 1; fremde Daten (Ringpuffer, PBO) werden vorher kopiert */
+static void* forceOpaqueAlpha(GLenum format, GLenum type, void* pixels, int dataSize, bool owned) {
+    bool shorts = type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_4_4_4_4;
+    bool bytes = type == GL_UNSIGNED_BYTE && (format == GL_RGBA || format == GL_BGRA_EXT);
+    if (!pixels || dataSize <= 0 || (!shorts && !bytes)) return pixels;
+    if (!owned) {
+        void* copy = malloc(dataSize);
+        memcpy(copy, pixels, dataSize);
+        pixels = copy;
+    }
+    if (shorts) {
+        GLushort mask = type == GL_UNSIGNED_SHORT_5_5_5_1 ? 0x0001 : 0x000f;
+        GLushort* values = pixels;
+        for (int i = 0; i < dataSize / (int)sizeof(GLushort); i++) values[i] |= mask;
+    }
+    else {
+        uint8_t* values = pixels;
+        for (int i = 3; i < dataSize; i += 4) values[i] = 0xff;
+    }
+    return pixels;
+}
+
+static void makeOpaque(GLenum format, GLenum type, void** pixels, int dataSize, bool* ownsConverted, bool ownsPacked, void* packed) {
+    bool owned = *ownsConverted || (ownsPacked && *pixels == packed);
+    void* opaque = forceOpaqueAlpha(format, type, *pixels, dataSize, owned);
+    if (opaque != *pixels) {
+        *pixels = opaque;
+        *ownsConverted = true;
+    }
+}
+
 static void* prepareUpload(int width, int height, GLenum format, GLenum type, void* data, int* dataSize, bool tight, bool* owns) {
     *owns = false;
     if (!tight && data && gles.unpackRowLength > 0 && gles.unpackRowLength != width) {
@@ -627,6 +673,7 @@ void GLES_texImage2D(GLenum target, GLint level, GLint internalformat, GLsizei w
     GLenum fmt = format, typ = type;
 
     if (GLES_convertTexImageFormat(target, &ifmt, &fmt, &typ, &pixels, &dataSize, &ownsConverted)) {
+        if (pixels && isOpaqueInternalFormat(internalformat)) makeOpaque(fmt, typ, &pixels, dataSize, &ownsConverted, ownsPacked, packed);
 #if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
         println("gladio:es2:texImage2D %s Stufe %d %dx%d %s/%s/%s -> %s/%s/%s %s", glEnumToString(target), level, width, height,
                 glEnumToString(internalformat), glEnumToString(format), glEnumToString(type), glEnumToString(ifmt), glEnumToString(fmt), glEnumToString(typ), pixels ? "mit Daten" : "ohne Daten");
@@ -663,6 +710,7 @@ void GLES_texSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset
             if (pixels) swapRedBlue(pixels, dataSize / 4, 4);
             fmt = texture->es2Format;
         }
+        if (pixels && texture && isOpaqueInternalFormat(texture->originFormat)) makeOpaque(fmt, typ, &pixels, dataSize, &ownsConverted, ownsPacked, packed);
 #if IS_DEBUG_ENABLED(DEBUG_MODE_TEXTURE_FORMAT)
         println("gladio:es2:texSubImage2D %s Stufe %d %d,%d %dx%d %s/%s -> %s/%s (Textur %s)", glEnumToString(target), level, xoffset, yoffset, width, height,
                 glEnumToString(format), glEnumToString(type), glEnumToString(fmt), glEnumToString(typ), texture ? glEnumToString(texture->es2Format) : "?");
