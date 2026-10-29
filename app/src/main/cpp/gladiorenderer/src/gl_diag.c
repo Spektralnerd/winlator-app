@@ -118,6 +118,7 @@ static const char* argumentLayout(short requestCode) {
         case REQUEST_CODE_GL_SAMPLER_PARAMETERFV:
         case REQUEST_CODE_GL_TEX_PARAMETERFV: return "ii*f";
         case REQUEST_CODE_GL_CLEAR_BUFFERFV: return "ii*f";
+        case REQUEST_CODE_GL_FLUSH_MAPPED_BUFFER_RANGE: return "iii"; /* Ziel mit GLADIO_NO_REPLY sähe sonst wie eine Zahl aus */
         default: return NULL;
     }
 }

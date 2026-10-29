@@ -60,6 +60,10 @@ static bool isDrawRequest(short requestCode) {
 
 static uint32_t requestCodeCounts[GLADIO_REPLY_CODE_SLOTS];
 static uint32_t flushCodeCounts[GLADIO_REPLY_CODE_SLOTS]; /* Anfragen, vor denen ein Stapel ausgegeben wurde */
+/* Ausführzeit je Anfragecode, geschätzt aus jeder REQUEST_TIME_SAMPLE-ten Anfrage (zufällig gewählt, damit sich
+ * kein gleichbleibendes Muster der Anfragen mit dem Abstand deckt; die Uhr kostet auf dem Telefon ~30 ns) */
+#define REQUEST_TIME_SAMPLE 16
+static uint64_t requestCodeNs[GLADIO_REPLY_CODE_SLOTS];
 /* PC-Prüfstand (Datei "trace" im Ablageverzeichnis): die Anfragen eines Bilds protokollieren */
 int gladio_traceRequests = 0;
 
@@ -95,6 +99,35 @@ static void printTopRequestCodes(const char* title, const uint32_t* counts, int 
     if (pos > 0) println("gladio: %s: %s", title, line);
 }
 
+/* die Anfragecodes mit der meisten Ausführzeit, in ms je Bild */
+static void printTopRequestTimes(const char* title, const uint64_t* nanos, int maxShown, uint32_t frames) {
+    char line[360];
+    int pos = 0;
+    int shown[10];
+    uint64_t total = 0;
+    for (int code = 0; code < GLADIO_REPLY_CODE_SLOTS; code++) {
+        if (code != REQUEST_CODE_SWAP_DISPLAY_BUFFERS) total += nanos[code];
+    }
+    if (total == 0) return;
+    if (maxShown > 10) maxShown = 10;
+    pos = snprintf(line, sizeof(line), "gesamt %.1f", total / 1e6 / frames);
+    for (int n = 0; n < maxShown; n++) {
+        int best = -1;
+        for (int code = 0; code < GLADIO_REPLY_CODE_SLOTS; code++) {
+            if (code == REQUEST_CODE_SWAP_DISPLAY_BUFFERS || nanos[code] == 0) continue;
+            bool done = false;
+            for (int k = 0; k < n; k++) if (shown[k] == code) done = true;
+            if (!done && (best < 0 || nanos[code] > nanos[best])) best = code;
+        }
+        if (best < 0) break;
+        shown[n] = best;
+        int written = snprintf(line + pos, sizeof(line) - pos, ", %s %.2f", shortRequestName(best), nanos[best] / 1e6 / frames);
+        if (written < 0 || pos + written >= (int)sizeof(line)) break;
+        pos += written;
+    }
+    println("gladio: %s: %s", title, line);
+}
+
 static void printStats(GLContext* context, int64_t now) {
     typeof(context->stats)* st = &context->stats;
     double seconds = (now - st->periodStartNs) / 1e9;
@@ -117,6 +150,7 @@ static void printStats(GLContext* context, int64_t now) {
     /* welche Anfragen auf eine Antwort warten lassen (der Client steht so lange) und welche am häufigsten kommen */
     printTopRequestCodes("Antworten je Bild außer SWAP", gladio_statsReplyCodes, 4, frames);
     printTopRequestCodes("häufigste Anfragen je Bild", requestCodeCounts, 8, frames);
+    printTopRequestTimes("Ausführzeit je Bild in ms (Stichprobe)", requestCodeNs, 8, frames);
     printTopRequestCodes("Stapel ausgegeben vor", flushCodeCounts, 6, frames);
     GladioDiag_printStats();
 }
@@ -131,6 +165,7 @@ static void resetStats(GLContext* context, int64_t now) {
     st->batchAtStart = gladio_batchStats;
     memset(gladio_statsReplyCodes, 0, sizeof(gladio_statsReplyCodes));
     memset(requestCodeCounts, 0, sizeof(requestCodeCounts));
+    memset(requestCodeNs, 0, sizeof(requestCodeNs));
     memset(flushCodeCounts, 0, sizeof(flushCodeCounts));
 }
 
@@ -547,6 +582,7 @@ static void* requestHandlerThread(void* param) {
     loadJMethods(&context->jmethods);
     GladioCrash_setThreadContext(context);
     short requestCode;
+    uint32_t sampleState = 0x9e3779b9u;
 
     resetStats(context, nowNs());
     while (context->running) {
@@ -554,7 +590,14 @@ static void* requestHandlerThread(void* param) {
         bool blocked = RingBuffer_size(context->serverRing) < HEADER_SIZE;
         int64_t waitStart = blocked ? nowNs() : 0;
         if (!gl_recv(context->serverRing, &requestCode, &context->inputBuffer)) break;
-        if (blocked) context->stats.waitNs += nowNs() - waitStart;
+        int64_t sampleStart = 0;
+        if (blocked) {
+            sampleStart = nowNs();
+            context->stats.waitNs += sampleStart - waitStart;
+        }
+        sampleState = sampleState * 1664525u + 1013904223u;
+        if ((sampleState >> 28) != 0) sampleStart = 0;
+        else if (!sampleStart) sampleStart = nowNs();
         context->stats.requests++;
         requestCodeCounts[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS]++;
         if (gladio_traceRequests) {
@@ -673,6 +716,7 @@ static void* requestHandlerThread(void* param) {
 
         /* GL-Fehler, Zeichenziel, Aufzeichnung (gl_diag.c; im Bau mit DEBUG_MODE_GL_ERROR nach jeder Anfrage) */
         GladioDiag_afterRequest(context, requestCode, drawing);
+        if (sampleStart) requestCodeNs[(unsigned short)requestCode % GLADIO_REPLY_CODE_SLOTS] += (uint64_t)(nowNs() - sampleStart) * REQUEST_TIME_SAMPLE;
     }
 
     printLastRequests(context);
