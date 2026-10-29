@@ -111,6 +111,8 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
 - Wartezeiten des Clients (auf Antworten, auf Platz im Ring, auf das vorige Bild) und was er ohne Rundreise beantwortet
   hat, gehen mit jedem glXSwapBuffers an den Server (dessen Laufstatistik zeigt sie; ein älterer Server liest nur die
   Kennung des Fensters)
+- Zum Vergleichen am Gerät lassen sich die vier Neuerungen über Umgebungsvariablen abschalten: GLADIO_NO_QUERY_BATCH=1,
+  GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1
 """
 import pathlib
 import shutil
@@ -1349,6 +1351,8 @@ sub("src/gl_calls.c",
         GL_CALL_UNLOCK();
         return;
     }
+    static int gladioQueryReplyLevel = -1; /* 2: Sammelantwort, 1: verfügbar+Ergebnis, 0: einzeln (älterer Server) */
+    if (gladioQueryReplyLevel < 0) gladioQueryReplyLevel = gladio_envFlag("GLADIO_NO_QUERY_BATCH") ? 1 : 2;
     if (pname == GL_QUERY_RESULT_AVAILABLE && querySeq) {
         if (gladioPollKnown(&gladioQueryPoll, querySeq) == 0) {
             *params = GL_FALSE;
@@ -1359,7 +1363,7 @@ sub("src/gl_calls.c",
         /* Hat der Server noch viel abzuarbeiten, wartete der Client mit der Frage darauf: lieber „nicht fertig“ (das
          * darf GL immer sagen) und erst fragen, wenn der Server aufgeholt hat – höchstens GLADIO_POLL_MAX_DELAY_NS
          * nach dem Ende der Abfrage. wined3d fragt mit CSMT ohnehin laufend nach. */
-        if (RingBuffer_size(currentGLContext->serverRing) > GLADIO_POLL_BACKLOG &&
+        if (gladioQueryReplyLevel == 2 && RingBuffer_size(currentGLContext->serverRing) > GLADIO_POLL_BACKLOG &&
             gladioPollNow() - gladioQuerySeqs[slot].endTime < GLADIO_POLL_MAX_DELAY_NS) {
             *params = GL_FALSE;
             gladio_clientStats.localQueries++;
@@ -1371,7 +1375,6 @@ sub("src/gl_calls.c",
     /* „fertig?“ und, wenn ja, das Ergebnis, dazu die Ergebnisse aller inzwischen fertigen Abfragen in einer
      * Rundreise. Ein älterer Server kennt die Frage nicht und antwortet mit einem einzelnen Wert: dann eine Stufe
      * einfacher (nur verfügbar und Ergebnis, zuletzt wieder einzeln) */
-    static int gladioQueryReplyLevel = 2;
     bool combined = querySeq && pname == GL_QUERY_RESULT_AVAILABLE && gladioQueryReplyLevel > 0;
     for (;;) {
         GLenum ask = !combined ? pname : gladioQueryReplyLevel == 2 ? GLADIO_QUERY_AVAILABLE_AND_RESULTS : GLADIO_QUERY_AVAILABLE_AND_RESULT;
@@ -1464,11 +1467,16 @@ typedef struct GladioClientStats {
     uint32_t localTexReads;
     uint32_t deferredQueries;
 } GladioClientStats;
-extern GladioClientStats gladio_clientStats;
+extern _Thread_local GladioClientStats gladio_clientStats; /* je Thread (eigene Verbindung) */
 static inline int64_t gladio_nowNs(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+/* Schalter zum Vergleichen am Gerät (Umgebungsvariable des Containers, z. B. GLADIO_NO_TEXCACHE=1) */
+static inline bool gladio_envFlag(const char* name) {
+    const char* value = getenv(name);
+    return value && value[0] && value[0] != '0';
 }
 """)
 sub("include/gladio.h", "#ifndef GLADIO_H\n#define GLADIO_H\n", "#ifndef GLADIO_H\n#define GLADIO_H\n#include <time.h>\n#include <stdint.h>\n")
@@ -1498,7 +1506,7 @@ sub("include/gladio.h",
     "    while (0)")
 sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
     "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
-    "GladioClientStats gladio_clientStats = {0};\n")
+    "_Thread_local GladioClientStats gladio_clientStats = {0};\n")
 sub("src/gl_calls.c",
     "    if (!context || !context->clientRing) return true;\n"
     "    while (context->pendingSwaps > keep) {\n"
@@ -1518,7 +1526,7 @@ sub("src/gl_calls.c",
 sub("include/ring_buffer.h", "extern bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size);\n",
     "extern bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size);\n"
     "/* patch-gladio-client.py: Nanosekunden, die der Client auf Platz im Ring gewartet hat */\n"
-    "extern int64_t gladio_ringWaitNs;\n")
+    "extern _Thread_local int64_t gladio_ringWaitNs;\n")
 sub("src/ring_buffer.c",
     "bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size) {\n"
     "    uint32_t busyWaitIter = 0;\n"
@@ -1530,7 +1538,7 @@ sub("src/ring_buffer.c",
     "    while (1);\n"
     "    return true;\n"
     "}",
-    "int64_t gladio_ringWaitNs = 0;\n"
+    "_Thread_local int64_t gladio_ringWaitNs = 0;\n"
     "\n"
     "static int64_t ringNowNs(void) {\n"
     "    struct timespec ts;\n"
@@ -1625,6 +1633,11 @@ static GladioUniformTable* gladioUniformTableFor(GLuint program) {
     void* group = currentGLContext->clientState->buffers;
     for (GladioUniformTable* table = gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS]; table; table = table->next) {
         if (table->program == program && table->group == group) return table;
+    }
+    static bool envChecked = false;
+    if (!envChecked) {
+        envChecked = true;
+        if (gladio_envFlag("GLADIO_NO_UNIFORM_TABLE")) gladioNoUniformTables = true;
     }
     if (gladioNoUniformTables) return NULL;
 
@@ -1944,6 +1957,11 @@ static GLuint gladioBoundTexture(GLenum target) {
 }
 
 static void gladioTexNoteBind(GLenum target, GLuint texture) {
+    static bool envChecked = false;
+    if (!envChecked) {
+        envChecked = true;
+        if (gladio_envFlag("GLADIO_NO_TEXCACHE")) gladioTexDisabled = true;
+    }
     if (gladioTexDisabled) return;
     GladioShadow* shadow = gladioShadow();
     if (!shadow) {
@@ -2226,7 +2244,9 @@ sub("src/gl_calls.c",
     "void glVertexAttribDivisor(GLuint index, GLuint divisor) {\n"
     "    GL_CALL_LOCK();\n"
     "    GLVertexArrayObject* gladioVao = currentGLContext->clientState->vao;\n"
-    "    if (gladioVao && index < 32) {\n"
+    "    static int gladioFilter = -1;\n"
+    "    if (gladioFilter < 0) gladioFilter = !gladio_envFlag(\"GLADIO_NO_STATE_FILTER\");\n"
+    "    if (gladioFilter && gladioVao && index < 32) {\n"
     "        if ((gladioVao->gladioDivisorKnown & (1u << index)) && gladioVao->gladioDivisor[index] == divisor) {\n"
     "            GL_CALL_UNLOCK();\n"
     "            return;\n"
@@ -2249,7 +2269,9 @@ sub("src/gl_calls.c",
     "void glBindSampler(GLuint unit, GLuint sampler) {\n"
     "    GL_CALL_LOCK();\n"
     "    GladioShadow* gladioSamplerShadow = gladioShadow();\n"
-    "    if (gladioSamplerShadow && unit < GLADIO_TEX_UNITS) {\n"
+    "    static int gladioFilter = -1;\n"
+    "    if (gladioFilter < 0) gladioFilter = !gladio_envFlag(\"GLADIO_NO_STATE_FILTER\");\n"
+    "    if (gladioFilter && gladioSamplerShadow && unit < GLADIO_TEX_UNITS) {\n"
     "        uint32_t bit = 1u << (unit % 32);\n"
     "        if ((gladioSamplerShadow->samplerKnown[unit / 32] & bit) && gladioSamplerShadow->sampler[unit] == sampler) {\n"
     "            GL_CALL_UNLOCK();\n"
