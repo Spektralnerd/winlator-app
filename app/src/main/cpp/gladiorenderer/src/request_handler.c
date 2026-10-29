@@ -1824,6 +1824,14 @@ void gd_handle_glGetQueryObjectuiv(GLContext* context) {
     GLuint id = ArrayBuffer_getInt(&context->inputBuffer);
     GLenum pname = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (pname == GLADIO_QUERY_AVAILABLE_AND_RESULT) {
+        GLint reply[2] = {0, 0};
+        GLQuery_getObjectParamsv(id, GL_QUERY_RESULT_AVAILABLE, &reply[0]);
+        if (reply[0]) GLQuery_getObjectParamsv(id, GL_QUERY_RESULT, &reply[1]);
+        gl_send(context->clientRing, REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, reply, sizeof(reply));
+        return;
+    }
+
     GLint params = 0;
     GLQuery_getObjectParamsv(id, pname, &params);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, &params, sizeof(GLint));

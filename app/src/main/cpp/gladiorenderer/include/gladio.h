@@ -38,6 +38,11 @@
  * ohne Kennung: nur Antwort (der Client wartet, bis alles davor abgearbeitet ist). */
 #define GLADIO_NO_REPLY 0x40000000
 
+/* pname von glGetQueryObjectuiv (Client, patch-gladio-client.py): „fertig?“ und, wenn ja, gleich das Ergebnis –
+ * Antwort zwei GLuint (verfügbar, Ergebnis). Spart je Verdeckungsabfrage eine Rundreise (wined3d fragt nach
+ * GL_QUERY_RESULT_AVAILABLE sofort GL_QUERY_RESULT). */
+#define GLADIO_QUERY_AVAILABLE_AND_RESULT 0x7f51
+
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
 #define MAX_TEXTURE_TARGETS 4
