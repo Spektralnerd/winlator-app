@@ -158,6 +158,10 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9hdr.c` – Gleitkomma-Renderziel (A16B16G16R16F) wie die Szenenfarbe der Unreal Engine 3: Werte über 1
   und Alpha-Mischen hinein, dann mit Faktor 0,25 in den Hintergrundpuffer; gibt die erwarteten und die
   gelesenen Farben aus. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9hdr.exe d3d9hdr.c -ld3d9 -lgdi32 -luser32`.
+* `d3d9occl.c` – Verdeckungsabfragen (`D3DQUERYTYPE_OCCLUSION`) wie die Unreal Engine 3: eine Fläche hinter
+  der Tiefe (0 Abtastwerte), ein Quadrat davor (> 0), eine leere Abfrage (0), Ergebnisse mit
+  `GetData(D3DGETDATA_FLUSH)`. `wine d3d9occl.exe out.txt` (ES 3) bzw. `out.txt es2` (unter ES 2 ist alles
+  sichtbar). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9occl.exe d3d9occl.c -ld3d9 -luser32`.
 
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
@@ -340,3 +344,12 @@ Kanal und Anteil abweichender Pixel).
   GL 4.2 in Gleitkomma um. `d3d9stride0` zeigt auf beiden Pfaden die erwarteten Farben (der vorige Server:
   beide Vierecke schwarz). `glProvokingVertex` (ES hat keine Wahl des bestimmenden Eckpunkts) wird ohne
   Meldung verworfen.
+
+* Verdeckungsabfragen (Outlast im Hauptmenü: „CreateQuery(D3DQUERYTYPE_OCCLUSION) failed with error
+  D3DERR_NOTAVAILABLE“, für die Unreal Engine 3 fatal): wined3d fragt beim Start
+  `glGetQueryiv(GL_SAMPLES_PASSED, GL_QUERY_COUNTER_BITS)` ab und schaltet die Abfragen bei 0 ab. Der Server
+  beantwortete das nur bei einer gerade laufenden Abfrage dieser Art, sonst blieb die Antwort 0 – auch im
+  Original. Jetzt meldet er für Verdeckungsabfragen immer 32 Bit; die Anzahl wird nachgebildet (ES 3 über
+  `GL_ANY_SAMPLES_PASSED`: 0 oder 255, ES 2: immer 255). `GL_QUERY_RESULT_AVAILABLE` fragt unter ES 3 den
+  Treiber, statt immer „fertig“ zu melden (sonst wartet jedes Ergebnis auf die GPU). `d3d9occl` liefert über
+  ES 3 (64 und 32 Bit) 0/255/0, über ES 2 255/255/255; vorher `D3DERR_NOTAVAILABLE`.

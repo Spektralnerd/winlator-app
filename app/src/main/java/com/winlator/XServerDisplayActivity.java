@@ -235,7 +235,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
             // wirksame Werte (die Verknüpfung geht dem Container vor)
             StartLog.add("Einstellungen"+(shortcut != null ? " (Container und Verknüpfung)" : "")+": Grafik "+graphicsDriver+", DX "+dxwrapper+
-                ", Box-Preset "+container.getBox64Preset()+", Bildschirm "+(shortcut != null ? shortcut.getExtra("screenSize", container.getScreenSize()) : container.getScreenSize())+
+                ", Box-Preset "+(shortcut != null ? shortcut.getExtra("box64Preset", container.getBox64Preset()) : container.getBox64Preset())+", Bildschirm "+(shortcut != null ? shortcut.getExtra("screenSize", container.getScreenSize()) : container.getScreenSize())+
                 ", Audio "+audioDriver+", Wine "+container.getWineVersion());
 
             this.graphicsDriver = GraphicsDrivers.parseIdentifiers(graphicsDriver);

@@ -80,15 +80,32 @@ void GLQuery_end(GLenum target) {
 }
 
 void GLQuery_getParamsv(GLenum target, GLenum pname, GLint* params) {
+    if (pname == GL_QUERY_COUNTER_BITS) {
+        /* Größe des Zählers je Abfrageart, auch ohne laufende Abfrage: wined3d fragt sie beim Start
+         * ab und schaltet Verdeckungsabfragen bei 0 ab (D3D9: CreateQuery(D3DQUERYTYPE_OCCLUSION)
+         * -> D3DERR_NOTAVAILABLE, für die Unreal Engine 3 ein fataler Fehler). Die Zahl der
+         * Abtastwerte wird nachgebildet: ES 3 kennt nur „irgendein Abtastwert“ (Ergebnis 0 oder
+         * UINT8_MAX), unter ES 2 gilt alles als sichtbar. */
+        switch (target) {
+            case GL_SAMPLES_PASSED:
+            case GL_ANY_SAMPLES_PASSED:
+            case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
+            case GL_TIME_ELAPSED:
+                *params = 32;
+                break;
+            default:
+                *params = 0;
+                break;
+        }
+        return;
+    }
+
     bool useActiveQuery = currentRenderer->activeQuery && currentRenderer->activeQuery->target == target;
     GLQuery* query = useActiveQuery ? currentRenderer->activeQuery : findQueryWithTarget(target);
     if (!query) return;
 
     if (pname == GL_CURRENT_QUERY) {
         *params = query->counter;
-    }
-    else if (pname == GL_QUERY_COUNTER_BITS) {
-        *params = (query->target == GL_TIME_ELAPSED) ? 32 : 0;
     }
 }
 
@@ -97,7 +114,17 @@ void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params) {
     if (!query) return;
 
     if (pname == GL_QUERY_RESULT_AVAILABLE) {
-        *params = GL_TRUE;
+        /* ES 3: beim Treiber nachfragen, statt immer „fertig“ zu melden – sonst wartet das folgende
+         * GL_QUERY_RESULT, bis die GPU alles bis zur Abfrage gezeichnet hat (je Abfrage ein
+         * Stillstand; die Engine stellt viele Abfragen je Bild und holt sie Bilder später ab).
+         * Eine noch nie begonnene oder gerade laufende Abfrage lässt glGetQueryObjectuiv
+         * unverändert (GL_INVALID_OPERATION), dann bleibt es bei GL_TRUE. */
+        GLuint available = GL_TRUE;
+        if (!GLES2 && query->id > 0 && query->target != GL_TIME_ELAPSED && !query->active &&
+            query->ownerId == currentRenderer->contextId) {
+            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
+        }
+        *params = available;
     }
     else if (pname == GL_QUERY_RESULT) {
         if (query->target == GL_TIME_ELAPSED) {
