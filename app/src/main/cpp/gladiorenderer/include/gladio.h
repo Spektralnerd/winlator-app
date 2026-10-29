@@ -43,6 +43,39 @@
  * GL_QUERY_RESULT_AVAILABLE sofort GL_QUERY_RESULT). */
 #define GLADIO_QUERY_AVAILABLE_AND_RESULT 0x7f51
 
+/* pname von glGetQueryObjectuiv (Client): wie GLADIO_QUERY_AVAILABLE_AND_RESULT, dazu die Ergebnisse aller
+ * inzwischen fertigen beendeten Verdeckungsabfragen – Antwort GLuint (verfügbar, Ergebnis, erste noch nicht
+ * fertige Abfrage oder 0, Anzahl n, n Paare Kennung/Ergebnis). Der Client beantwortet die folgenden Fragen nach
+ * diesen Abfragen selbst: eine Rundreise je Abfragerunde statt je Abfrage. */
+#define GLADIO_QUERY_AVAILABLE_AND_RESULTS 0x7f52
+#define GLADIO_MAX_COLLECTED_QUERIES 1024
+
+/* Name in glGetUniformLocation (Client): beginnt er mit diesem Zeichen, antwortet der Server mit den Positionen
+ * aller aktiven Uniforms des Programms (gd_handle_glGetUniformLocation); der Client beantwortet die folgenden
+ * Fragen selbst (wined3d: ~730 Fragen je neuem Programm, jede eine Rundreise) */
+#define GLADIO_UNIFORM_TABLE_PREFIX '\x01'
+#define GLADIO_UNIFORM_TABLE_MAGIC 0x31554c47 /* "GLU1" */
+
+/* Anhang an REQUEST_CODE_SWAP_DISPLAY_BUFFERS (Client, patch-gladio-client.py): Wartezeiten des Clients seit dem
+ * vorigen Bild – Kennung, Rundreisen, Nanosekunden auf Antworten, auf Platz im Ring und auf das vorige Bild
+ * (glXSwapBuffers), dazu was er ohne Rundreise beantwortet hat */
+#define GLADIO_CLIENT_STATS_MAGIC 0x54534c47 /* "GLST" */
+#ifndef GLADIO_CLIENT_STATS_DEFINED
+#define GLADIO_CLIENT_STATS_DEFINED
+#include <stdint.h>
+typedef struct GladioClientStats {
+    uint32_t magic;
+    uint32_t replies;
+    int64_t replyWaitNs;
+    int64_t ringWaitNs;
+    int64_t swapWaitNs;
+    uint32_t localQueries;    /* Verdeckungsabfragen */
+    uint32_t localUniforms;   /* glGetUniformLocation */
+    uint32_t localTexReads;   /* glGetCompressedTexImage */
+    uint32_t deferredQueries; /* „nicht fertig“, weil der Server noch viel abzuarbeiten hatte */
+} GladioClientStats;
+#endif
+
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
 #define MAX_TEXTURE_TARGETS 4

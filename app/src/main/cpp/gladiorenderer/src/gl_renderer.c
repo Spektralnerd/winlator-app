@@ -965,6 +965,9 @@ void GLRenderer_destroy(GLRenderer* renderer) {
     }
     SparseArray_free(&renderer->materialMap, false);
     MEMFREE(renderer->materials);
+    MEMFREE(renderer->endedQueries.clientIds);
+    MEMFREE(renderer->endedQueries.serials);
+    renderer->endedQueries.head = renderer->endedQueries.count = renderer->endedQueries.capacity = 0;
 
     ArrayBuffer_free(&renderer->geometry.indices);
     ArrayBuffer_free(&renderer->geometry.vertices);

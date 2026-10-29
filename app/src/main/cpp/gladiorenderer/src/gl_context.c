@@ -152,6 +152,14 @@ static void printStats(GLContext* context, int64_t now) {
     printTopRequestCodes("häufigste Anfragen je Bild", requestCodeCounts, 8, frames);
     printTopRequestTimes("Ausführzeit je Bild in ms (Stichprobe)", requestCodeNs, 8, frames);
     printTopRequestCodes("Stapel ausgegeben vor", flushCodeCounts, 6, frames);
+    if (st->clientFrames > 0) {
+        /* Sicht des Clients: wie lange er stand, statt Befehle zu erzeugen */
+        uint32_t cf = st->clientFrames;
+        println("gladio: Client je Bild: %.1f ms auf %u Antworten gewartet, %.1f ms auf Platz im Ring, %.1f ms auf das vorige Bild; "
+                "ohne Rundreise: %u Abfragen (%u zurückgestellt), %u Uniform-Positionen, %u Texturen gelesen",
+                st->client.replyWaitNs / 1e6 / cf, st->client.replies / cf, st->client.ringWaitNs / 1e6 / cf, st->client.swapWaitNs / 1e6 / cf,
+                st->client.localQueries / cf, st->client.deferredQueries / cf, st->client.localUniforms / cf, st->client.localTexReads / cf);
+    }
     GladioDiag_printStats();
 }
 
@@ -681,6 +689,21 @@ static void* requestHandlerThread(void* param) {
             }
             case REQUEST_CODE_SWAP_DISPLAY_BUFFERS: {
                 int drawableId = ArrayBuffer_getInt(&context->inputBuffer);
+                if (context->inputBuffer.size >= (int)(sizeof(int) + sizeof(GladioClientStats))) {
+                    GladioClientStats clientStats;
+                    memcpy(&clientStats, (char*)context->inputBuffer.buffer + sizeof(int), sizeof(clientStats));
+                    if (clientStats.magic == GLADIO_CLIENT_STATS_MAGIC) {
+                        context->stats.client.replies += clientStats.replies;
+                        context->stats.client.replyWaitNs += clientStats.replyWaitNs;
+                        context->stats.client.ringWaitNs += clientStats.ringWaitNs;
+                        context->stats.client.swapWaitNs += clientStats.swapWaitNs;
+                        context->stats.client.localQueries += clientStats.localQueries;
+                        context->stats.client.localUniforms += clientStats.localUniforms;
+                        context->stats.client.localTexReads += clientStats.localTexReads;
+                        context->stats.client.deferredQueries += clientStats.deferredQueries;
+                        context->stats.clientFrames++;
+                    }
+                }
                 currentRenderer->frameCount++;
                 int64_t swapStart = nowNs();
                 swapDisplayBuffers(context, drawableId);

@@ -34,10 +34,92 @@ static GLQuery* findQueryWithId(GLuint id) {
         if (GLES2) query->id = 0; /* keine Abfrageobjekte in ES 2.0 */
         else glGenQueries(1, &query->id);
         query->ownerId = currentRenderer->contextId;
+        query->clientId = id;
         SparseArray_put(currentRenderer->clientState.queries, id, query);
     }
     GLX_CONTEXT_UNLOCK();
     return query;
+}
+
+/* Beendete Verdeckungsabfragen in der Reihenfolge ihres Endes merken: der Client bekommt ihre Ergebnisse
+ * gesammelt mit der nächsten Frage (GLADIO_QUERY_AVAILABLE_AND_RESULTS), statt je Abfrage einmal zu warten.
+ * Höchstens MAX_ENDED_QUERIES; fällt eine heraus, fragt der Client sie wie bisher einzeln ab. */
+#define MAX_ENDED_QUERIES 8192
+
+static void rememberEndedQuery(GLRenderer* renderer, GLQuery* query) {
+    GLEndedQueries* fifo = &renderer->endedQueries;
+    if (fifo->count == fifo->capacity) {
+        if (fifo->capacity >= MAX_ENDED_QUERIES) {
+            /* voll: die älteste vergessen */
+            fifo->head = (fifo->head + 1) % fifo->capacity;
+            fifo->count--;
+        }
+        else {
+            uint32_t capacity = fifo->capacity ? fifo->capacity * 2 : 256;
+            GLuint* clientIds = malloc(capacity * sizeof(GLuint));
+            uint32_t* serials = malloc(capacity * sizeof(uint32_t));
+            if (!clientIds || !serials) {
+                free(clientIds);
+                free(serials);
+                return;
+            }
+            for (uint32_t i = 0; i < fifo->count; i++) {
+                clientIds[i] = fifo->clientIds[(fifo->head + i) % fifo->capacity];
+                serials[i] = fifo->serials[(fifo->head + i) % fifo->capacity];
+            }
+            free(fifo->clientIds);
+            free(fifo->serials);
+            fifo->clientIds = clientIds;
+            fifo->serials = serials;
+            fifo->head = 0;
+            fifo->capacity = capacity;
+        }
+    }
+    if (++fifo->lastSerial == 0) fifo->lastSerial = 1;
+    query->endSerial = fifo->lastSerial;
+    uint32_t tail = (fifo->head + fifo->count) % fifo->capacity;
+    fifo->clientIds[tail] = query->clientId;
+    fifo->serials[tail] = query->endSerial;
+    fifo->count++;
+}
+
+static uint32_t occlusionResult(GLQuery* query) {
+    GLuint result = GL_FALSE;
+    glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
+    query->counter = result == GL_TRUE && query->target == GL_SAMPLES_PASSED ? UINT8_MAX : result;
+    return query->counter;
+}
+
+/* Ergebnisse der fertigen beendeten Abfragen in der Reihenfolge ihres Endes (Paare Kennung, Ergebnis) bis zur
+ * ersten noch nicht fertigen (deren Kennung in firstPendingId, sonst 0); Rückgabe: Zahl der Paare */
+int GLQuery_collectResults(GLuint* pairs, int maxPairs, GLuint* firstPendingId) {
+    *firstPendingId = 0;
+    if (!currentRenderer || GLES2) return 0;
+    GLEndedQueries* fifo = &currentRenderer->endedQueries;
+    int n = 0;
+    GLX_CONTEXT_LOCK();
+    while (fifo->count > 0 && n < maxPairs) {
+        GLuint clientId = fifo->clientIds[fifo->head];
+        uint32_t serial = fifo->serials[fifo->head];
+        GLQuery* query = SparseArray_get(currentRenderer->clientState.queries, clientId);
+        bool current = query && query != &nullQuery && query->endSerial == serial && !query->active && query->id > 0 &&
+                       query->ownerId == currentRenderer->contextId;
+        if (current) {
+            GLuint available = GL_FALSE;
+            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
+            if (!available) {
+                *firstPendingId = clientId;
+                break;
+            }
+            pairs[2 * n] = clientId;
+            pairs[2 * n + 1] = occlusionResult(query);
+            n++;
+        }
+        fifo->head = (fifo->head + 1) % fifo->capacity;
+        fifo->count--;
+    }
+    GLX_CONTEXT_UNLOCK();
+    return n;
 }
 
 void GLQuery_begin(GLenum target, GLuint id) {
@@ -46,6 +128,7 @@ void GLQuery_begin(GLenum target, GLuint id) {
     query->target = target;
     query->active = true;
     query->counter = 0;
+    query->endSerial = 0; /* ein gemerktes früheres Ende gilt nicht mehr */
     currentRenderer->activeQuery = query;
 
     switch(target) {
@@ -76,6 +159,8 @@ void GLQuery_end(GLenum target) {
         query->counter = 0;
         if (target == GL_SAMPLES_PASSED) target = GL_ANY_SAMPLES_PASSED;
         if (!GLES2) glEndQuery(target);
+        if (!GLES2 && query->id > 0 && (target == GL_ANY_SAMPLES_PASSED || target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE))
+            rememberEndedQuery(currentRenderer, query);
     }
 }
 
@@ -136,10 +221,7 @@ void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params) {
             *params = query->counter;
         }
         else {
-            GLuint result = GL_FALSE;
-            glGetQueryObjectuiv(query->id, pname, &result);
-            query->counter = result == GL_TRUE && query->target == GL_SAMPLES_PASSED ? UINT8_MAX : result;
-            *params = query->counter;
+            *params = occlusionResult(query);
         }
     }
 }

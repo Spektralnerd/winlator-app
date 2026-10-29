@@ -137,6 +137,15 @@ typedef struct GLBgraStream {
     int64_t cursor;
 } GLBgraStream;
 
+/* beendete Verdeckungsabfragen in der Reihenfolge ihres Endes, deren Ergebnis der Client noch nicht gesammelt
+ * bekommen hat (GLADIO_QUERY_AVAILABLE_AND_RESULTS, gl_query.c) */
+typedef struct GLEndedQueries {
+    GLuint* clientIds;
+    uint32_t* serials;
+    uint32_t head, count, capacity;
+    uint32_t lastSerial;
+} GLEndedQueries;
+
 typedef struct GLRenderer {
     int contextId;
     short displaySize[2];
@@ -165,6 +174,7 @@ typedef struct GLRenderer {
 
     GLQuery* activeQuery;
     uint64_t queriesStartTime;
+    GLEndedQueries endedQueries;
     uint32_t frameCount;
 
     PixelReadCache* pixelReadCache;

@@ -90,6 +90,27 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   er doch beim Server, kommt mit „fertig“ gleich das Ergebnis mit (GLADIO_QUERY_AVAILABLE_AND_RESULT); das folgende
   GL_QUERY_RESULT braucht dann keine Rundreise mehr (ein älterer Server ohne diese Frage antwortet mit einem einzelnen
   Wert, dann fragt der Client wieder einzeln)
+- Mit der Frage nach einer Verdeckungsabfrage kommen die Ergebnisse aller inzwischen fertigen beendeten Abfragen und die
+  erste noch nicht fertige mit (GLADIO_QUERY_AVAILABLE_AND_RESULTS): eine Rundreise je Abfragerunde statt je Abfrage
+  (Outlast: ~150 je Bild). Hat der Server noch mehr als 4 KB abzuarbeiten, antwortet der Client bei Abfragen, die vor
+  weniger als 30 ms endeten, ohne Frage „nicht fertig“, statt auf den Server zu warten – wined3d fragt ohnehin laufend
+  nach. Ältere Server: stufenweise zurück auf die bisherigen Fragen
+- glGetUniformLocation: bei der ersten Frage zu einem Programm holt der Client alle aktiven Uniforms mit ihren Positionen
+  in einer Rundreise (Name mit GLADIO_UNIFORM_TABLE_PREFIX) und beantwortet die weiteren Fragen selbst (wined3d: ~730 je
+  neuem Programm, jede eine Rundreise – ein Ruckler von 0,1–0,2 s). Nicht aktive Namen: -1 wie in GL; glLinkProgram
+  und Löschen verwerfen die Tabelle; ungewöhnliche Namen, nicht gebundene Programme und ältere Server gehen einzeln
+- glGetCompressedTexImage beantwortet der Client aus einer Kopie der zuletzt hochgeladenen S3TC-Stufen (64 MB, im
+  32-Bit-Client 24 MB und erst nach dem ersten Zurücklesen): wined3d kopiert ohne GL_EXT_texture_sRGB_decode jede mit
+  D3DSAMP_SRGBTEXTURE gelesene DXT-Textur gleich nach dem Hochladen Stufe für Stufe in eine sRGB-Fassung (Outlast:
+  10–90 Rundreisen je Bild, der Server las die entpackte Textur von der GPU zurück und packte sie neu; beim Laden bis
+  80 ms je Bild). Dafür führt der Client die Texturbindungen je Einheit mit (auch in den DSA-Makros); alles, was eine
+  Stufe sonst verändert (glTexImage2D, glTexSubImage2D, Kopieren, Mipmaps, Framebuffer-Anhang, GL_GENERATE_MIPMAP,
+  glPopAttrib), verwirft die Kopie
+- glVertexAttribDivisor (je Vertex-Array-Objekt) und glBindSampler (je Einheit) mit unverändertem Wert gehen nicht mehr
+  hinaus (Outlast: 5600 bzw. 1400 je Bild)
+- Wartezeiten des Clients (auf Antworten, auf Platz im Ring, auf das vorige Bild) und was er ohne Rundreise beantwortet
+  hat, gehen mit jedem glXSwapBuffers an den Server (dessen Laufstatistik zeigt sie; ein älterer Server liest nur die
+  Kennung des Fensters)
 """
 import pathlib
 import shutil
@@ -1215,7 +1236,10 @@ sub("src/gl_calls.c", "void glBeginQuery(GLenum target, GLuint id) {\n    GL_CAL
     "} GladioPollState;\n"
     "static GladioPollState gladioQueryPoll, gladioFencePoll;\n"
     "#define GLADIO_QUERY_AVAILABLE_AND_RESULT 0x7f51 /* Server: Antwort (verfügbar, Ergebnis) */\n"
-    "static struct { GLuint id; uint32_t seq; bool hasResult; GLuint result; } gladioQuerySeqs[GLADIO_POLL_SLOTS];\n"
+    "#define GLADIO_QUERY_AVAILABLE_AND_RESULTS 0x7f52 /* dazu die Ergebnisse aller fertigen beendeten Abfragen */\n"
+    "#define GLADIO_POLL_BACKLOG 4096 /* hat der Server mehr Byte abzuarbeiten, fragt der Client nicht nach */\n"
+    "#define GLADIO_POLL_MAX_DELAY_NS 30000000LL /* ... höchstens so lange nach dem Ende der Abfrage */\n"
+    "static struct { GLuint id; uint32_t seq; bool hasResult; GLuint result; int64_t endTime; } gladioQuerySeqs[GLADIO_POLL_SLOTS];\n"
     "static struct { uintptr_t sync; uint32_t seq; } gladioFenceSeqs[GLADIO_POLL_SLOTS];\n"
     "static GLuint gladioActiveQueries[3];\n"
     "\n"
@@ -1269,6 +1293,7 @@ sub("src/gl_calls.c", "void glBeginQuery(GLenum target, GLuint id) {\n    GL_CAL
     "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].id = id;\n"
     "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].seq = ++gladioQueryPoll.counter;\n"
     "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].hasResult = false;\n"
+    "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].endTime = gladioPollNow();\n"
     "}\n"
     "\n"
     "static uint32_t gladioQuerySeqOf(GLuint id) {\n"
@@ -1312,59 +1337,92 @@ sub("src/gl_calls.c",
     "    memcpy(params, inputBuffer.buffer, inputBuffer.size);\n"
     "    GL_CALL_UNLOCK();\n"
     "}\n",
-    "void glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params) {\n"
-    "    GL_CALL_LOCK();\n"
-    "    uint32_t querySeq = gladioQuerySeqOf(id);\n"
-    "    if (pname != GL_QUERY_RESULT_AVAILABLE && pname != GL_QUERY_RESULT) querySeq = 0;\n"
-    "    if (querySeq && gladioQuerySeqs[id % GLADIO_POLL_SLOTS].hasResult) {\n"
-    "        /* mit einer früheren Antwort gekommen */\n"
-    "        *params = pname == GL_QUERY_RESULT ? gladioQuerySeqs[id % GLADIO_POLL_SLOTS].result : GL_TRUE;\n"
-    "        GL_CALL_UNLOCK();\n"
-    "        return;\n"
-    "    }\n"
-    "    if (pname == GL_QUERY_RESULT_AVAILABLE && gladioPollKnown(&gladioQueryPoll, querySeq) == 0) {\n"
-    "        *params = GL_FALSE;\n"
-    "        GL_CALL_UNLOCK();\n"
-    "        return;\n"
-    "    }\n"
-    "    /* „fertig?“ und, wenn ja, das Ergebnis in einer Rundreise (ein älterer Server kennt die Frage nicht\n"
-    "     * und antwortet mit einem einzelnen Wert: dann wieder einzeln fragen) */\n"
-    "    static bool gladioNoCombinedReply = false;\n"
-    "    bool combined = querySeq && pname == GL_QUERY_RESULT_AVAILABLE && !gladioNoCombinedReply;\n"
-    "    ArrayBuffer_rewind(&outputBuffer);\n"
-    "    ArrayBuffer_putInt(&outputBuffer, id);\n"
-    "    ArrayBuffer_putInt(&outputBuffer, combined ? GLADIO_QUERY_AVAILABLE_AND_RESULT : pname);\n"
-    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, outputBuffer.buffer, outputBuffer.size);\n"
-    "    GL_RECV_CHECKED();\n"
-    "    if (combined && inputBuffer.size < 2 * (int)sizeof(GLuint)) {\n"
-    "        gladioNoCombinedReply = true;\n"
-    "        combined = false;\n"
-    "        ArrayBuffer_rewind(&outputBuffer);\n"
-    "        ArrayBuffer_putInt(&outputBuffer, id);\n"
-    "        ArrayBuffer_putInt(&outputBuffer, pname);\n"
-    "        GL_SEND_CHECKED(REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, outputBuffer.buffer, outputBuffer.size);\n"
-    "        GL_RECV_CHECKED();\n"
-    "    }\n"
-    "    GLuint reply[2] = {0, 0};\n"
-    "    memcpy(reply, inputBuffer.buffer, inputBuffer.size < (int)sizeof(reply) ? inputBuffer.size : (int)sizeof(reply));\n"
-    "    if (combined) {\n"
-    "        *params = reply[0] ? GL_TRUE : GL_FALSE;\n"
-    "        if (reply[0]) {\n"
-    "            gladioQuerySeqs[id % GLADIO_POLL_SLOTS].result = reply[1];\n"
-    "            gladioQuerySeqs[id % GLADIO_POLL_SLOTS].hasResult = true;\n"
-    "        }\n"
-    "    }\n"
-    "    else {\n"
-    "        *params = reply[0];\n"
-    "        if (querySeq && pname == GL_QUERY_RESULT) {\n"
-    "            /* GL_QUERY_RESULT wartet, bis die Abfrage fertig ist */\n"
-    "            gladioQuerySeqs[id % GLADIO_POLL_SLOTS].result = reply[0];\n"
-    "            gladioQuerySeqs[id % GLADIO_POLL_SLOTS].hasResult = true;\n"
-    "        }\n"
-    "    }\n"
-    "    if (querySeq) gladioPollLearn(&gladioQueryPoll, querySeq, pname == GL_QUERY_RESULT || *params != GL_FALSE);\n"
-    "    GL_CALL_UNLOCK();\n"
-    "}\n")
+    r'''void glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params) {
+    GL_CALL_LOCK();
+    uint32_t querySeq = gladioQuerySeqOf(id);
+    if (pname != GL_QUERY_RESULT_AVAILABLE && pname != GL_QUERY_RESULT) querySeq = 0;
+    int slot = id % GLADIO_POLL_SLOTS;
+    if (querySeq && gladioQuerySeqs[slot].hasResult) {
+        /* mit einer früheren Antwort gekommen */
+        *params = pname == GL_QUERY_RESULT ? gladioQuerySeqs[slot].result : GL_TRUE;
+        gladio_clientStats.localQueries++;
+        GL_CALL_UNLOCK();
+        return;
+    }
+    if (pname == GL_QUERY_RESULT_AVAILABLE && querySeq) {
+        if (gladioPollKnown(&gladioQueryPoll, querySeq) == 0) {
+            *params = GL_FALSE;
+            gladio_clientStats.localQueries++;
+            GL_CALL_UNLOCK();
+            return;
+        }
+        /* Hat der Server noch viel abzuarbeiten, wartete der Client mit der Frage darauf: lieber „nicht fertig“ (das
+         * darf GL immer sagen) und erst fragen, wenn der Server aufgeholt hat – höchstens GLADIO_POLL_MAX_DELAY_NS
+         * nach dem Ende der Abfrage. wined3d fragt mit CSMT ohnehin laufend nach. */
+        if (RingBuffer_size(currentGLContext->serverRing) > GLADIO_POLL_BACKLOG &&
+            gladioPollNow() - gladioQuerySeqs[slot].endTime < GLADIO_POLL_MAX_DELAY_NS) {
+            *params = GL_FALSE;
+            gladio_clientStats.localQueries++;
+            gladio_clientStats.deferredQueries++;
+            GL_CALL_UNLOCK();
+            return;
+        }
+    }
+    /* „fertig?“ und, wenn ja, das Ergebnis, dazu die Ergebnisse aller inzwischen fertigen Abfragen in einer
+     * Rundreise. Ein älterer Server kennt die Frage nicht und antwortet mit einem einzelnen Wert: dann eine Stufe
+     * einfacher (nur verfügbar und Ergebnis, zuletzt wieder einzeln) */
+    static int gladioQueryReplyLevel = 2;
+    bool combined = querySeq && pname == GL_QUERY_RESULT_AVAILABLE && gladioQueryReplyLevel > 0;
+    for (;;) {
+        GLenum ask = !combined ? pname : gladioQueryReplyLevel == 2 ? GLADIO_QUERY_AVAILABLE_AND_RESULTS : GLADIO_QUERY_AVAILABLE_AND_RESULT;
+        ArrayBuffer_rewind(&outputBuffer);
+        ArrayBuffer_putInt(&outputBuffer, id);
+        ArrayBuffer_putInt(&outputBuffer, ask);
+        GL_SEND_CHECKED(REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, outputBuffer.buffer, outputBuffer.size);
+        GL_RECV_CHECKED();
+        if (!combined || inputBuffer.size >= (gladioQueryReplyLevel == 2 ? 4 : 2) * (int)sizeof(GLuint)) break;
+        gladioQueryReplyLevel--;
+        combined = gladioQueryReplyLevel > 0;
+    }
+    GLuint reply[4] = {0, 0, 0, 0};
+    memcpy(reply, inputBuffer.buffer, inputBuffer.size < (int)sizeof(reply) ? inputBuffer.size : (int)sizeof(reply));
+    if (combined) {
+        *params = reply[0] ? GL_TRUE : GL_FALSE;
+        if (reply[0]) {
+            gladioQuerySeqs[slot].result = reply[1];
+            gladioQuerySeqs[slot].hasResult = true;
+        }
+        if (gladioQueryReplyLevel == 2) {
+            /* gesammelte Ergebnisse (Kennung, Ergebnis), dann die erste noch nicht fertige Abfrage */
+            uint32_t count = reply[3];
+            uint32_t room = (uint32_t)(inputBuffer.size / sizeof(GLuint) - 4) / 2;
+            if (count > room) count = room;
+            const char* pairs = (const char*)inputBuffer.buffer + 4 * sizeof(GLuint);
+            for (uint32_t i = 0; i < count; i++) {
+                GLuint pair[2];
+                memcpy(pair, pairs + i * sizeof(pair), sizeof(pair));
+                int other = pair[0] % GLADIO_POLL_SLOTS;
+                if (gladioQuerySeqs[other].id != pair[0] || !gladioQuerySeqs[other].seq) continue;
+                gladioQuerySeqs[other].result = pair[1];
+                gladioQuerySeqs[other].hasResult = true;
+                gladioPollLearn(&gladioQueryPoll, gladioQuerySeqs[other].seq, 1);
+            }
+            uint32_t pendingSeq = reply[2] ? gladioQuerySeqOf(reply[2]) : 0;
+            if (pendingSeq) gladioPollLearn(&gladioQueryPoll, pendingSeq, 0);
+        }
+    }
+    else {
+        *params = reply[0];
+        if (querySeq && pname == GL_QUERY_RESULT) {
+            /* GL_QUERY_RESULT wartet, bis die Abfrage fertig ist */
+            gladioQuerySeqs[slot].result = reply[0];
+            gladioQuerySeqs[slot].hasResult = true;
+        }
+    }
+    if (querySeq) gladioPollLearn(&gladioQueryPoll, querySeq, pname == GL_QUERY_RESULT || *params != GL_FALSE);
+    GL_CALL_UNLOCK();
+}
+''')
 sub("src/gl_calls.c",
     "    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);\n    GL_CALL_UNLOCK();\n    return sync;\n}",
     "    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);\n    gladioNoteFence(sync);\n    GL_CALL_UNLOCK();\n    return sync;\n}")
@@ -1387,6 +1445,848 @@ sub("src/gl_calls.c",
     "    GL_CALL_UNLOCK();\n    return result;\n}\n\nvoid glClipPlane")
 sub("src/gl_calls.c", "void glDeleteSync(GLsync sync) {\n    GL_CALL_LOCK();\n",
     "void glDeleteSync(GLsync sync) {\n    GL_CALL_LOCK();\n    gladioForgetFence(sync);\n")
+
+# ---- Wartezeiten des Clients: mit jedem glXSwapBuffers an den Server (Laufstatistik dort) ----
+# Rundreisen und die Zeit darin, Warten auf Platz im Ring und auf das vorige Bild, dazu was der Client ohne
+# Rundreise beantwortet hat (Abfragen, Uniform-Positionen, Texturen)
+sub("include/gladio.h", "extern bool gladio_drainSwapReplies(int keep);\n",
+    "extern bool gladio_drainSwapReplies(int keep);\n"
+    r"""/* patch-gladio-client.py: Wartezeiten des Clients seit dem vorigen Bild (Anhang an SWAP_DISPLAY_BUFFERS) */
+#define GLADIO_CLIENT_STATS_MAGIC 0x54534c47
+typedef struct GladioClientStats {
+    uint32_t magic;
+    uint32_t replies;
+    int64_t replyWaitNs;
+    int64_t ringWaitNs;
+    int64_t swapWaitNs;
+    uint32_t localQueries;
+    uint32_t localUniforms;
+    uint32_t localTexReads;
+    uint32_t deferredQueries;
+} GladioClientStats;
+extern GladioClientStats gladio_clientStats;
+static inline int64_t gladio_nowNs(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+""")
+sub("include/gladio.h", "#ifndef GLADIO_H\n#define GLADIO_H\n", "#ifndef GLADIO_H\n#define GLADIO_H\n#include <time.h>\n#include <stdint.h>\n")
+sub("include/gladio.h",
+    "#define GL_RECV_CHECKED(...) \\\n"
+    "    do { \\\n"
+    "        if (!gladio_drainSwapReplies(0) || !gl_recv(currentGLContext->clientRing, NULL, &inputBuffer)) { \\\n"
+    "            GL_CALL_UNLOCK(); \\\n"
+    "            return __VA_OPT__(GL_FALSE); \\\n"
+    "        } \\\n"
+    "    } \\\n"
+    "    while (0)",
+    "#define GL_RECV_CHECKED(...) \\\n"
+    "    do { \\\n"
+    "        if (!gladio_drainSwapReplies(0)) { \\\n"
+    "            GL_CALL_UNLOCK(); \\\n"
+    "            return __VA_OPT__(GL_FALSE); \\\n"
+    "        } \\\n"
+    "        int64_t gladioRecvStart = gladio_nowNs(); \\\n"
+    "        if (!gl_recv(currentGLContext->clientRing, NULL, &inputBuffer)) { \\\n"
+    "            GL_CALL_UNLOCK(); \\\n"
+    "            return __VA_OPT__(GL_FALSE); \\\n"
+    "        } \\\n"
+    "        gladio_clientStats.replyWaitNs += gladio_nowNs() - gladioRecvStart; \\\n"
+    "        gladio_clientStats.replies++; \\\n"
+    "    } \\\n"
+    "    while (0)")
+sub("src/gl_calls.c", "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n",
+    "pthread_mutex_t gl_call_mutex = PTHREAD_MUTEX_INITIALIZER;\n"
+    "GladioClientStats gladio_clientStats = {0};\n")
+sub("src/gl_calls.c",
+    "    if (!context || !context->clientRing) return true;\n"
+    "    while (context->pendingSwaps > keep) {\n"
+    "        if (!gl_recv(context->clientRing, NULL, &swapReply)) return false;\n"
+    "        context->pendingSwaps--;\n"
+    "    }\n"
+    "    return true;\n",
+    "    if (!context || !context->clientRing) return true;\n"
+    "    if (context->pendingSwaps <= keep) return true;\n"
+    "    int64_t start = gladio_nowNs();\n"
+    "    while (context->pendingSwaps > keep) {\n"
+    "        if (!gl_recv(context->clientRing, NULL, &swapReply)) return false;\n"
+    "        context->pendingSwaps--;\n"
+    "    }\n"
+    "    gladio_clientStats.swapWaitNs += gladio_nowNs() - start;\n"
+    "    return true;\n")
+sub("include/ring_buffer.h", "extern bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size);\n",
+    "extern bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size);\n"
+    "/* patch-gladio-client.py: Nanosekunden, die der Client auf Platz im Ring gewartet hat */\n"
+    "extern int64_t gladio_ringWaitNs;\n")
+sub("src/ring_buffer.c",
+    "bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size) {\n"
+    "    uint32_t busyWaitIter = 0;\n"
+    "    do {\n"
+    "        if (RingBuffer_freeSpace(ring) >= size) break;\n"
+    "        busyWait(&busyWaitIter);\n"
+    "        if (RingBuffer_hasStatus(ring, RING_STATUS_EXIT)) return false;\n"
+    "    }\n"
+    "    while (1);\n"
+    "    return true;\n"
+    "}",
+    "int64_t gladio_ringWaitNs = 0;\n"
+    "\n"
+    "static int64_t ringNowNs(void) {\n"
+    "    struct timespec ts;\n"
+    "    clock_gettime(CLOCK_MONOTONIC, &ts);\n"
+    "    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;\n"
+    "}\n"
+    "\n"
+    "bool RingBuffer_waitForWrite(RingBuffer* ring, uint32_t size) {\n"
+    "    uint32_t busyWaitIter = 0;\n"
+    "    int64_t waitStart = 0;\n"
+    "    do {\n"
+    "        if (RingBuffer_freeSpace(ring) >= size) break;\n"
+    "        if (!waitStart) waitStart = ringNowNs();\n"
+    "        busyWait(&busyWaitIter);\n"
+    "        if (RingBuffer_hasStatus(ring, RING_STATUS_EXIT)) return false;\n"
+    "    }\n"
+    "    while (1);\n"
+    "    if (waitStart) gladio_ringWaitNs += ringNowNs() - waitStart;\n"
+    "    return true;\n"
+    "}")
+sub("src/ring_buffer.c", "#include <sys/mman.h>\n", "#include <sys/mman.h>\n#include <time.h>\n")
+sub("src/glx_calls.c",
+    "    int drawableId = (int)drawable;\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_SWAP_DISPLAY_BUFFERS, &drawableId, sizeof(int));\n",
+    "    int drawableId = (int)drawable;\n"
+    "    /* mit den Wartezeiten des Clients seit dem vorigen Bild (ein älterer Server liest nur die Kennung) */\n"
+    "    char swapData[sizeof(int) + sizeof(GladioClientStats)];\n"
+    "    gladio_clientStats.magic = GLADIO_CLIENT_STATS_MAGIC;\n"
+    "    gladio_clientStats.ringWaitNs = gladio_ringWaitNs;\n"
+    "    memcpy(swapData, &drawableId, sizeof(int));\n"
+    "    memcpy(swapData + sizeof(int), &gladio_clientStats, sizeof(GladioClientStats));\n"
+    "    memset(&gladio_clientStats, 0, sizeof(gladio_clientStats));\n"
+    "    gladio_ringWaitNs = 0;\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_SWAP_DISPLAY_BUFFERS, swapData, sizeof(swapData));\n")
+
+# ---- Uniform-Positionen eines Programms in einer Rundreise ----
+# wined3d fragt nach jedem Binden eines Programms ~730 Positionen einzeln ab (vs_c[0..255], ps_c[0..223], ...), jede
+# eine Rundreise: ein neues Programm ließ das Spiel ~0,1–0,2 s stehen. Jetzt holt der Client bei der ersten Frage alle
+# aktiven Uniforms des Programms mit ihren Positionen (Name mit GLADIO_UNIFORM_TABLE_PREFIX, Server
+# gd_handle_glGetUniformLocation) und beantwortet die Fragen selbst; nicht aktive Namen haben -1 wie in GL. Neu binden
+# oder löschen verwirft die Tabelle; ungewöhnliche Namen und ein älterer Server gehen wie bisher einzeln.
+sub("src/gl_calls.c", "void glBindTexture(GLenum target, GLuint texture) {\n",
+    r"""/* ---- patch-gladio-client.py: Uniform-Positionen eines Programms auf einmal ---- */
+#include <ctype.h>
+#define GLADIO_UNIFORM_TABLE_PREFIX '\x01'
+#define GLADIO_UNIFORM_TABLE_MAGIC 0x31554c47
+#define GLADIO_UNIFORM_TABLE_SLOTS 1024
+
+typedef struct GladioUniformEntry {
+    char* name;
+    int length;
+    int arraySize; /* 0: kein Array */
+    GLint* locations;
+} GladioUniformEntry;
+
+typedef struct GladioUniformTable {
+    struct GladioUniformTable* next;
+    void* group; /* Kontexte mit gemeinsamen Objekten teilen sich die Puffertabelle */
+    GLuint program;
+    int count;
+    GladioUniformEntry* entries;
+} GladioUniformTable;
+
+static GladioUniformTable* gladioUniformTables[GLADIO_UNIFORM_TABLE_SLOTS];
+static bool gladioNoUniformTables = false;
+
+static void gladioFreeUniformTable(GladioUniformTable* table) {
+    for (int i = 0; i < table->count; i++) {
+        free(table->entries[i].name);
+        free(table->entries[i].locations);
+    }
+    free(table->entries);
+    free(table);
+}
+
+static void gladioForgetUniforms(GLuint program) {
+    if (!currentGLContext || !currentGLContext->clientState) return;
+    void* group = currentGLContext->clientState->buffers;
+    GladioUniformTable** link = &gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];
+    while (*link) {
+        GladioUniformTable* table = *link;
+        if (table->program == program && table->group == group) {
+            *link = table->next;
+            gladioFreeUniformTable(table);
+        }
+        else link = &table->next;
+    }
+}
+
+/* Tabelle des Programms, beim ersten Mal vom Server; NULL: einzeln fragen */
+static GladioUniformTable* gladioUniformTableFor(GLuint program) {
+    void* group = currentGLContext->clientState->buffers;
+    for (GladioUniformTable* table = gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS]; table; table = table->next) {
+        if (table->program == program && table->group == group) return table;
+    }
+    if (gladioNoUniformTables) return NULL;
+
+    char request[sizeof(GLuint) + 2];
+    memcpy(request, &program, sizeof(GLuint));
+    request[sizeof(GLuint)] = GLADIO_UNIFORM_TABLE_PREFIX;
+    request[sizeof(GLuint) + 1] = 0;
+    if (!gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_GET_UNIFORM_LOCATION, request, sizeof(request))) return NULL;
+    if (!gladio_drainSwapReplies(0)) return NULL;
+    int64_t start = gladio_nowNs();
+    if (!gl_recv(currentGLContext->clientRing, NULL, &inputBuffer)) return NULL;
+    gladio_clientStats.replyWaitNs += gladio_nowNs() - start;
+    gladio_clientStats.replies++;
+
+    const char* data = inputBuffer.buffer;
+    int size = inputBuffer.size;
+    uint32_t header[3] = {0, 0, 0};
+    if (size >= (int)sizeof(header)) memcpy(header, data, sizeof(header));
+    if (size < (int)sizeof(header) || header[0] != GLADIO_UNIFORM_TABLE_MAGIC) {
+        /* älterer Server: hat nur eine Position (-1) geschickt */
+        gladioNoUniformTables = true;
+        return NULL;
+    }
+    if (!header[1]) return NULL; /* nicht gebunden: einzeln fragen, wie GL dann antwortet */
+
+    GladioUniformTable* table = calloc(1, sizeof(GladioUniformTable));
+    if (!table) return NULL;
+    table->group = group;
+    table->program = program;
+    int count = (int)header[2];
+    table->entries = calloc(count > 0 ? count : 1, sizeof(GladioUniformEntry));
+    if (!table->entries) {
+        free(table);
+        return NULL;
+    }
+    int pos = sizeof(header);
+    for (int i = 0; i < count; i++) {
+        int field[2];
+        if (pos + (int)sizeof(field) > size) goto bad;
+        memcpy(field, data + pos, sizeof(field));
+        pos += sizeof(field);
+        int length = field[0], arraySize = field[1];
+        int padded = (length + 3) & ~3;
+        int locationCount = arraySize > 0 ? arraySize : 1;
+        if (length <= 0 || length > 4096 || arraySize < 0 || arraySize > 65536 ||
+            pos + padded + locationCount * (int)sizeof(GLint) > size) goto bad;
+        GladioUniformEntry* entry = &table->entries[table->count];
+        entry->name = malloc(length + 1);
+        entry->locations = malloc(locationCount * sizeof(GLint));
+        if (!entry->name || !entry->locations) {
+            free(entry->name);
+            free(entry->locations);
+            goto bad;
+        }
+        memcpy(entry->name, data + pos, length);
+        entry->name[length] = 0;
+        pos += padded;
+        memcpy(entry->locations, data + pos, locationCount * sizeof(GLint));
+        pos += locationCount * sizeof(GLint);
+        entry->length = length;
+        entry->arraySize = arraySize;
+        table->count++;
+    }
+    table->next = gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];
+    gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS] = table;
+    return table;
+bad:
+    gladioFreeUniformTable(table);
+    return NULL;
+}
+
+/* 1: beantwortet, 0: beim Server fragen */
+static int gladioLookupUniform(GladioUniformTable* table, const char* name, GLint* location) {
+    size_t length = strlen(name);
+    if (length == 0 || length > 1024) return 0;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (!isalnum(c) && c != '_' && c != '.' && c != '[' && c != ']') return 0;
+    }
+    /* der ganze Name: einfaches Uniform, Glied einer Struktur, Array (= Element 0) */
+    for (int i = 0; i < table->count; i++) {
+        GladioUniformEntry* entry = &table->entries[i];
+        if ((size_t)entry->length == length && memcmp(entry->name, name, length) == 0) {
+            *location = entry->locations[0];
+            return 1;
+        }
+    }
+    /* ein Arrayelement name[N] */
+    if (name[length - 1] == ']') {
+        const char* open = strrchr(name, '[');
+        if (!open || open == name) return 0;
+        const char* digits = open + 1;
+        size_t digitCount = (size_t)(name + length - 1 - digits);
+        if (digitCount == 0 || digitCount > 6 || (digitCount > 1 && digits[0] == '0')) return 0;
+        long index = 0;
+        for (size_t i = 0; i < digitCount; i++) {
+            if (!isdigit((unsigned char)digits[i])) return 0;
+            index = index * 10 + (digits[i] - '0');
+        }
+        size_t baseLength = (size_t)(open - name);
+        for (int i = 0; i < table->count; i++) {
+            GladioUniformEntry* entry = &table->entries[i];
+            if ((size_t)entry->length == baseLength && memcmp(entry->name, name, baseLength) == 0) {
+                if (entry->arraySize == 0) return 0; /* laut Treiber kein Array: lieber fragen */
+                *location = index < entry->arraySize ? entry->locations[index] : -1;
+                return 1;
+            }
+        }
+    }
+    /* nicht aktiv */
+    *location = -1;
+    return 1;
+}
+
+void glBindTexture(GLenum target, GLuint texture) {
+""")
+sub("src/gl_calls.c", "GLint glGetUniformLocation(GLuint program, const GLchar* name) {\n    GL_CALL_LOCK();\n",
+    "GLint glGetUniformLocation(GLuint program, const GLchar* name) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (program && name && strncmp(name, \"gl_\", 3) != 0) {\n"
+    "        GladioUniformTable* table = gladioUniformTableFor(program);\n"
+    "        GLint location = -1;\n"
+    "        if (table && gladioLookupUniform(table, name, &location)) {\n"
+    "            gladio_clientStats.localUniforms++;\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return location;\n"
+    "        }\n"
+    "    }\n")
+sub("src/gl_calls.c", "void glLinkProgram(GLuint program) {\n    GL_CALL_LOCK();\n",
+    "void glLinkProgram(GLuint program) {\n    GL_CALL_LOCK();\n    gladioForgetUniforms(program);\n")
+sub("src/gl_calls.c", "void glDeleteProgram(GLuint program) {\n    GL_CALL_LOCK();\n",
+    "void glDeleteProgram(GLuint program) {\n    GL_CALL_LOCK();\n    gladioForgetUniforms(program);\n")
+sub("src/gl_calls.c", "void glDeleteObjectARB(GLhandleARB obj) {\n    GL_CALL_LOCK();\n",
+    "void glDeleteObjectARB(GLhandleARB obj) {\n    GL_CALL_LOCK();\n    gladioForgetUniforms((GLuint)obj);\n")
+
+# ---- komprimierte Texturebenen im Client: glGetCompressedTexImage ohne Rundreise ----
+# wined3d hält ohne GL_EXT_texture_sRGB_decode zu jeder DXT-Textur, die das Programm mit D3DSAMP_SRGBTEXTURE liest,
+# eine zweite (sRGB) und kopiert jede Ebene über glGetCompressedTexImage + glCompressedTexSubImage2D – gleich nach
+# dem Hochladen (Outlast: 10–40 Rundreisen je Bild, beim Laden bis 80 ms je Bild; der Server liest die entpackte
+# Textur von der GPU und packt sie neu). Der Client merkt sich die zuletzt hochgeladenen S3TC-Ebenen (höchstens
+# GLADIO_TEX_BUDGET, die ältesten fallen heraus) und beantwortet das Zurücklesen selbst, mit den Originaldaten. Dazu
+# führt er die Texturbindungen je Einheit mit (auch über die DSA-Makros). Was eine Ebene anders verändert
+# (glTexImage2D, glTexSubImage2D, Kopieren, Mipmaps, Framebuffer-Anhang, glPopAttrib), verwirft die Kopie; alles
+# andere fragt wie bisher beim Server.
+sub("include/gl_dsa.h", '#include "gladio.h"\n',
+    '#include "gladio.h"\n'
+    "\n"
+    "/* patch-gladio-client.py: Textur bzw. Einheit eines DSA-Aufrufs (-1: keine), für die Texturkopien im Client */\n"
+    "extern _Thread_local int64_t gladio_dsaTexture;\n"
+    "extern _Thread_local int gladio_dsaUnit;\n"
+    "/* der letzte Kontext einer Gruppe gemeinsamer Objekte endet */\n"
+    "extern void gladio_forgetShareGroup(void* group);\n")
+sub("include/gl_dsa.h",
+    "#define GL_DSA_SAVE_ACTIVE_TEXTURE(unit) \\\n"
+    "    GL_CALL_LOCK(); \\\n"
+    "    GLuint oldUnit = GL_TEXTURE0 + currentGLContext->clientState->activeTexture; \\\n",
+    "#define GL_DSA_SAVE_ACTIVE_TEXTURE(unit) \\\n"
+    "    GL_CALL_LOCK(); \\\n"
+    "    GLuint oldUnit = GL_TEXTURE0 + currentGLContext->clientState->activeTexture; \\\n"
+    "    gladio_dsaUnit = (int)(unit) - GL_TEXTURE0; \\\n")
+sub("include/gl_dsa.h",
+    "#define GL_DSA_RESTORE_ACTIVE_TEXTURE() \\\n",
+    "#define GL_DSA_RESTORE_ACTIVE_TEXTURE() \\\n"
+    "    gladio_dsaUnit = -1; \\\n")
+sub("include/gl_dsa.h",
+    "#define GL_DSA_SAVE_BOUND_TEXTURE(texture) \\\n"
+    "    GL_CALL_LOCK(); \\\n",
+    "#define GL_DSA_SAVE_BOUND_TEXTURE(texture) \\\n"
+    "    GL_CALL_LOCK(); \\\n"
+    "    gladio_dsaTexture = (texture); \\\n")
+sub("include/gl_dsa.h",
+    "#define GL_DSA_RESTORE_BOUND_TEXTURE() \\\n",
+    "#define GL_DSA_RESTORE_BOUND_TEXTURE() \\\n"
+    "    gladio_dsaTexture = -1; \\\n")
+sub("src/gl_calls.c",
+    "    float stack[3][SHADOW_STACK_DEPTH][16];\n} GladioShadow;\n",
+    "    float stack[3][SHADOW_STACK_DEPTH][16];\n"
+    "    GLuint bound2D[GLADIO_TEX_UNITS];   /* gebundene Texturen je Einheit (GLADIO_TEX_UNKNOWN: unbekannt) */\n"
+    "    GLuint boundCube[GLADIO_TEX_UNITS];\n"
+    "} GladioShadow;\n")
+sub("src/gl_calls.c", "#define SHADOW_STACK_DEPTH 32\n",
+    "#define SHADOW_STACK_DEPTH 32\n#define GLADIO_TEX_UNITS 256\n#define GLADIO_TEX_UNKNOWN 0xffffffffu\n")
+sub("src/gl_calls.c", "void glBindTexture(GLenum target, GLuint texture) {\n",
+    r"""/* ---- patch-gladio-client.py: komprimierte Texturebenen im Client (glGetCompressedTexImage ohne Rundreise) ---- */
+#define GLADIO_TEX_FACES 6
+#define GLADIO_TEX_LEVELS 16
+#define GLADIO_TEX_SLOTS 4096
+/* höchstens so viele Byte Kopien; 32-Bit-Client (armhf, oft wenig Speicher): weniger, und erst nachdem das Programm
+ * einmal zurückgelesen hat (unter ES 2 gibt es keine sRGB-Fassungen, also kein Zurücklesen) */
+#define GLADIO_TEX_BUDGET (sizeof(void*) >= 8 ? (64u << 20) : (24u << 20))
+static bool gladioTexWanted = sizeof(void*) >= 8;
+
+_Thread_local int64_t gladio_dsaTexture = -1;
+_Thread_local int gladio_dsaUnit = -1;
+
+typedef struct GladioTexLevel {
+    struct GladioTexLevel* lruPrev; /* Ebenen mit Daten, die älteste vorn */
+    struct GladioTexLevel* lruNext;
+    GLenum format;
+    GLsizei width, height;
+    uint32_t size; /* Bytes der ganzen Ebene, 0: nicht S3TC */
+    void* data;    /* NULL: Inhalt nicht bekannt */
+} GladioTexLevel;
+
+typedef struct GladioTexInfo {
+    struct GladioTexInfo* next;
+    void* group;
+    GLuint id;
+    bool noCache; /* hing an einem Framebuffer oder erzeugt Mipmaps selbst */
+    GladioTexLevel* levels[GLADIO_TEX_FACES][GLADIO_TEX_LEVELS];
+} GladioTexInfo;
+
+static GladioTexInfo* gladioTextures[GLADIO_TEX_SLOTS];
+static GladioTexLevel* gladioTexLruHead;
+static GladioTexLevel* gladioTexLruTail;
+static uint64_t gladioTexBytes;
+static bool gladioTexDisabled = false;
+
+static bool gladioIsS3tc(GLenum format) {
+    return (format >= 0x83F0 && format <= 0x83F3) || (format >= 0x8C4C && format <= 0x8C4F);
+}
+
+static uint32_t gladioS3tcBlockSize(GLenum format) {
+    return format == 0x83F0 || format == 0x83F1 || format == 0x8C4C || format == 0x8C4D ? 8 : 16;
+}
+
+static uint32_t gladioS3tcSize(GLenum format, GLsizei width, GLsizei height) {
+    if (width <= 0 || height <= 0) return 0;
+    return (uint32_t)((width + 3) / 4) * (uint32_t)((height + 3) / 4) * gladioS3tcBlockSize(format);
+}
+
+static int gladioTexFace(GLenum target) {
+    if (target == GL_TEXTURE_2D) return 0;
+    if (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) return target - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+    return -1;
+}
+
+static void gladioTexUnlink(GladioTexLevel* level) {
+    if (level->lruPrev) level->lruPrev->lruNext = level->lruNext;
+    else gladioTexLruHead = level->lruNext;
+    if (level->lruNext) level->lruNext->lruPrev = level->lruPrev;
+    else gladioTexLruTail = level->lruPrev;
+    level->lruPrev = level->lruNext = NULL;
+}
+
+static void gladioTexDropData(GladioTexLevel* level) {
+    if (!level || !level->data) return;
+    free(level->data);
+    level->data = NULL;
+    gladioTexBytes -= level->size;
+    gladioTexUnlink(level);
+}
+
+static void gladioTexDropAll(GladioTexInfo* info) {
+    for (int face = 0; face < GLADIO_TEX_FACES; face++) {
+        for (int level = 0; level < GLADIO_TEX_LEVELS; level++) gladioTexDropData(info->levels[face][level]);
+    }
+}
+
+/* alle Kopien verwerfen (eine Bindung ist nicht mehr bekannt) */
+static void gladioTexDropEverything(void) {
+    if (!gladioTexLruHead) return;
+    for (int i = 0; i < GLADIO_TEX_SLOTS; i++) {
+        for (GladioTexInfo* info = gladioTextures[i]; info; info = info->next) gladioTexDropAll(info);
+    }
+}
+
+static GladioTexInfo* gladioTexInfo(GLuint id, bool create) {
+    if (!id || id == GLADIO_TEX_UNKNOWN || !currentGLContext || !currentGLContext->clientState) return NULL;
+    void* group = currentGLContext->clientState->buffers;
+    GladioTexInfo** slot = &gladioTextures[id % GLADIO_TEX_SLOTS];
+    for (GladioTexInfo* info = *slot; info; info = info->next) {
+        if (info->id == id && info->group == group) return info;
+    }
+    if (!create) return NULL;
+    GladioTexInfo* info = calloc(1, sizeof(GladioTexInfo));
+    if (!info) return NULL;
+    info->id = id;
+    info->group = group;
+    info->next = *slot;
+    *slot = info;
+    return info;
+}
+
+static void gladioTexForget(GLuint id) {
+    if (!id || !currentGLContext || !currentGLContext->clientState) return;
+    void* group = currentGLContext->clientState->buffers;
+    GladioTexInfo** link = &gladioTextures[id % GLADIO_TEX_SLOTS];
+    while (*link) {
+        GladioTexInfo* info = *link;
+        if (info->id == id && info->group == group) {
+            *link = info->next;
+            for (int face = 0; face < GLADIO_TEX_FACES; face++) {
+                for (int level = 0; level < GLADIO_TEX_LEVELS; level++) {
+                    gladioTexDropData(info->levels[face][level]);
+                    free(info->levels[face][level]);
+                }
+            }
+            free(info);
+            return;
+        }
+        link = &info->next;
+    }
+}
+
+/* die an target der aktuellen (bzw. DSA-)Einheit gebundene Textur; GLADIO_TEX_UNKNOWN: nicht bekannt */
+static GLuint gladioBoundTexture(GLenum target) {
+    if (gladio_dsaTexture >= 0) return (GLuint)gladio_dsaTexture;
+    GladioShadow* shadow = gladioShadow();
+    if (!shadow) return GLADIO_TEX_UNKNOWN;
+    int unit = gladio_dsaUnit >= 0 ? gladio_dsaUnit : currentGLContext->clientState->activeTexture;
+    if (unit < 0 || unit >= GLADIO_TEX_UNITS) return GLADIO_TEX_UNKNOWN;
+    if (target == GL_TEXTURE_2D) return shadow->bound2D[unit];
+    if (target == GL_TEXTURE_CUBE_MAP || (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z))
+        return shadow->boundCube[unit];
+    return 0;
+}
+
+static void gladioTexNoteBind(GLenum target, GLuint texture) {
+    if (gladioTexDisabled) return;
+    GladioShadow* shadow = gladioShadow();
+    if (!shadow) {
+        /* ohne Zustand keine Zuordnung mehr: ganz abschalten */
+        gladioTexDropEverything();
+        gladioTexDisabled = true;
+        return;
+    }
+    int unit = gladio_dsaUnit >= 0 ? gladio_dsaUnit : currentGLContext->clientState->activeTexture;
+    if (unit < 0 || unit >= GLADIO_TEX_UNITS) return;
+    if (target == GL_TEXTURE_2D) shadow->bound2D[unit] = texture;
+    else if (target == GL_TEXTURE_CUBE_MAP) shadow->boundCube[unit] = texture;
+}
+
+/* glPopAttrib kann Bindungen zurücksetzen: bis zum nächsten glBindTexture der Einheit unbekannt */
+static void gladioTexBindingsUnknown(void) {
+    if (gladioTexDisabled) return;
+    GladioShadow* shadow = gladioShadow();
+    if (shadow) {
+        for (int i = 0; i < GLADIO_TEX_UNITS; i++) shadow->bound2D[i] = shadow->boundCube[i] = GLADIO_TEX_UNKNOWN;
+    }
+    gladioTexDropEverything();
+}
+
+/* Ebene der an target gebundenen Textur (create: Eintrag anlegen) */
+static GladioTexLevel* gladioTexLevel(GLenum target, GLint level, bool create, GladioTexInfo** outInfo) {
+    *outInfo = NULL;
+    int face = gladioTexFace(target);
+    if (gladioTexDisabled || face < 0 || level < 0 || level >= GLADIO_TEX_LEVELS) return NULL;
+    GLuint id = gladioBoundTexture(target);
+    if (id == GLADIO_TEX_UNKNOWN) {
+        gladioTexDropEverything();
+        return NULL;
+    }
+    GladioTexInfo* info = gladioTexInfo(id, create);
+    if (!info) return NULL;
+    *outInfo = info;
+    GladioTexLevel* entry = info->levels[face][level];
+    if (!entry && create) entry = info->levels[face][level] = calloc(1, sizeof(GladioTexLevel));
+    return entry;
+}
+
+static void gladioTexStore(GladioTexInfo* info, GladioTexLevel* level, const void* data) {
+    if (!gladioTexWanted || info->noCache || !level->size || level->size > GLADIO_TEX_BUDGET / 4) {
+        gladioTexDropData(level);
+        return;
+    }
+    if (!level->data) {
+        while (gladioTexLruHead && gladioTexBytes + level->size > GLADIO_TEX_BUDGET) gladioTexDropData(gladioTexLruHead);
+        level->data = malloc(level->size);
+        if (!level->data) return;
+        gladioTexBytes += level->size;
+    }
+    else gladioTexUnlink(level);
+    level->lruPrev = gladioTexLruTail;
+    level->lruNext = NULL;
+    if (gladioTexLruTail) gladioTexLruTail->lruNext = level;
+    else gladioTexLruHead = level;
+    gladioTexLruTail = level;
+    memcpy(level->data, data, level->size);
+}
+
+/* glTexImage2D, glCopyTexImage2D, glCompressedTexImage2D: Ebene neu angelegt (Inhalt unbekannt) */
+static void gladioTexNoteImage(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height) {
+    GladioTexInfo* info;
+    GladioTexLevel* entry = gladioTexLevel(target, level, gladioIsS3tc(internalformat), &info);
+    if (!entry) return;
+    gladioTexDropData(entry);
+    entry->format = internalformat;
+    entry->width = width;
+    entry->height = height;
+    entry->size = gladioIsS3tc(internalformat) ? gladioS3tcSize(internalformat, width, height) : 0;
+}
+
+static void gladioTexNoteCompressedImage(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height,
+                                         GLsizei imageSize, const void* data) {
+    gladioTexNoteImage(target, level, internalformat, width, height);
+    if (!data || !gladioIsS3tc(internalformat) || GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER)) return;
+    GladioTexInfo* info;
+    GladioTexLevel* entry = gladioTexLevel(target, level, false, &info);
+    if (entry && entry->size && (uint32_t)imageSize == entry->size) gladioTexStore(info, entry, data);
+}
+
+static void gladioTexNoteCompressedSubImage(GLenum target, GLint level, GLint x, GLint y, GLsizei width, GLsizei height,
+                                            GLenum format, GLsizei imageSize, const void* data) {
+    GladioTexInfo* info;
+    GladioTexLevel* entry = gladioTexLevel(target, level, false, &info);
+    if (!entry) return;
+    bool usable = data && entry->size && format == entry->format && !info->noCache && !GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
+    if (usable && x == 0 && y == 0 && width == entry->width && height == entry->height && (uint32_t)imageSize == entry->size) {
+        gladioTexStore(info, entry, data);
+        return;
+    }
+    if (usable && entry->data && x >= 0 && y >= 0 && width > 0 && height > 0 && x % 4 == 0 && y % 4 == 0 &&
+        x + width <= entry->width && y + height <= entry->height &&
+        (width % 4 == 0 || x + width == entry->width) && (height % 4 == 0 || y + height == entry->height)) {
+        /* Teil der Ebene: Blockzeilen in die Kopie */
+        uint32_t block = gladioS3tcBlockSize(format);
+        uint32_t rowBytes = (uint32_t)((width + 3) / 4) * block, rows = (uint32_t)((height + 3) / 4);
+        if ((uint32_t)imageSize == rowBytes * rows) {
+            uint32_t levelRowBytes = (uint32_t)((entry->width + 3) / 4) * block;
+            for (uint32_t row = 0; row < rows; row++) {
+                memcpy((char*)entry->data + (uint32_t)(y / 4 + row) * levelRowBytes + (uint32_t)(x / 4) * block,
+                       (const char*)data + row * rowBytes, rowBytes);
+            }
+            return;
+        }
+    }
+    gladioTexDropData(entry);
+}
+
+/* glTexSubImage2D, glCopyTexSubImage2D: Inhalt der Ebene anders verändert */
+static void gladioTexNoteChange(GLenum target, GLint level) {
+    GladioTexInfo* info;
+    gladioTexDropData(gladioTexLevel(target, level, false, &info));
+}
+
+/* glGenerateMipmap: alle Ebenen */
+static void gladioTexNoteChangeAll(GLenum target) {
+    if (gladioTexDisabled) return;
+    GLuint id = gladioBoundTexture(target);
+    if (id == GLADIO_TEX_UNKNOWN) {
+        gladioTexDropEverything();
+        return;
+    }
+    GladioTexInfo* info = gladioTexInfo(id, false);
+    if (info) gladioTexDropAll(info);
+}
+
+/* hängt an einem Framebuffer bzw. erzeugt Mipmaps selbst (GL_GENERATE_MIPMAP): nie zwischenspeichern */
+static void gladioTexNoCache(GLuint texture) {
+    if (gladioTexDisabled || !texture) return;
+    if (texture == GLADIO_TEX_UNKNOWN) {
+        gladioTexDropEverything();
+        return;
+    }
+    GladioTexInfo* info = gladioTexInfo(texture, true);
+    if (!info) {
+        gladioTexDropEverything();
+        gladioTexDisabled = true;
+        return;
+    }
+    info->noCache = true;
+    gladioTexDropAll(info);
+}
+
+static void gladioTexNoteParameter(GLenum target, GLenum pname, GLfloat param) {
+    if (pname == GL_GENERATE_MIPMAP && param != 0.0f) gladioTexNoCache(gladioBoundTexture(target));
+}
+
+static void gladioTexNoteDelete(GLsizei n, const GLuint* textures) {
+    if (gladioTexDisabled || !textures) return;
+    GladioShadow* shadow = gladioShadow();
+    for (GLsizei i = 0; i < n; i++) {
+        GLuint id = textures[i];
+        if (!id) continue;
+        gladioTexForget(id);
+        if (!shadow) continue;
+        for (int unit = 0; unit < GLADIO_TEX_UNITS; unit++) {
+            if (shadow->bound2D[unit] == id) shadow->bound2D[unit] = 0;
+            if (shadow->boundCube[unit] == id) shadow->boundCube[unit] = 0;
+        }
+    }
+}
+
+/* der Kontext mit den gemeinsamen Objekten endet: Kopien und Uniform-Tabellen seiner Gruppe vergessen (ihre Adresse
+ * kann eine neue Gruppe bekommen) */
+void gladio_forgetShareGroup(void* group) {
+    for (int i = 0; i < GLADIO_TEX_SLOTS; i++) {
+        GladioTexInfo** link = &gladioTextures[i];
+        while (*link) {
+            GladioTexInfo* info = *link;
+            if (info->group != group) {
+                link = &info->next;
+                continue;
+            }
+            *link = info->next;
+            for (int face = 0; face < GLADIO_TEX_FACES; face++) {
+                for (int level = 0; level < GLADIO_TEX_LEVELS; level++) {
+                    gladioTexDropData(info->levels[face][level]);
+                    free(info->levels[face][level]);
+                }
+            }
+            free(info);
+        }
+    }
+    for (int i = 0; i < GLADIO_UNIFORM_TABLE_SLOTS; i++) {
+        GladioUniformTable** link = &gladioUniformTables[i];
+        while (*link) {
+            GladioUniformTable* table = *link;
+            if (table->group == group) {
+                *link = table->next;
+                gladioFreeUniformTable(table);
+            }
+            else link = &table->next;
+        }
+    }
+}
+
+/* glGetCompressedTexImage aus der Kopie (true), sonst beim Server */
+static bool gladioTexRead(GLenum target, GLint level, void* img) {
+    gladioTexWanted = true;
+    if (!img || GLBuffer_getBound(GL_PIXEL_PACK_BUFFER)) return false;
+    GladioTexInfo* info;
+    GladioTexLevel* entry = gladioTexLevel(target, level, false, &info);
+    if (!entry || !entry->data) return false;
+    memcpy(img, entry->data, entry->size);
+    gladio_clientStats.localTexReads++;
+    return true;
+}
+
+void glBindTexture(GLenum target, GLuint texture) {
+""")
+sub("src/gl_calls.c", "void glBindTexture(GLenum target, GLuint texture) {\n    GL_CALL_LOCK();\n",
+    "void glBindTexture(GLenum target, GLuint texture) {\n    GL_CALL_LOCK();\n    gladioTexNoteBind(target, texture);\n")
+sub("src/gl_calls.c",
+    "void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void* data) {\n    GL_CALL_LOCK();\n",
+    "void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void* data) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteCompressedImage(target, level, internalformat, width, height, imageSize, data);\n")
+sub("src/gl_calls.c",
+    "void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void* data) {\n    GL_CALL_LOCK();\n",
+    "void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void* data) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteCompressedSubImage(target, level, xoffset, yoffset, width, height, format, imageSize, data);\n")
+sub("src/gl_calls.c",
+    "void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void* pixels) {\n    GL_CALL_LOCK();\n",
+    "void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void* pixels) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteImage(target, level, internalformat, width, height);\n")
+sub("src/gl_calls.c",
+    "void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void* pixels) {\n    GL_CALL_LOCK();\n",
+    "void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void* pixels) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteChange(target, level);\n")
+sub("src/gl_calls.c",
+    "void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border) {\n    GL_CALL_LOCK();\n",
+    "void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteImage(target, level, 0, width, height);\n")
+sub("src/gl_calls.c",
+    "void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height) {\n    GL_CALL_LOCK();\n",
+    "void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height) {\n    GL_CALL_LOCK();\n"
+    "    gladioTexNoteChange(target, level);\n")
+sub("src/gl_calls.c", "void glGenerateMipmap(GLenum target) {\n    GL_CALL_LOCK();\n",
+    "void glGenerateMipmap(GLenum target) {\n    GL_CALL_LOCK();\n    gladioTexNoteChangeAll(target);\n")
+sub("src/gl_calls.c", "void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) {\n    GL_CALL_LOCK();\n",
+    "void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) {\n    GL_CALL_LOCK();\n    gladioTexNoCache(texture);\n")
+sub("src/gl_calls.c", "void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {\n    GL_CALL_LOCK();\n",
+    "void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) {\n    GL_CALL_LOCK();\n    gladioTexNoCache(texture);\n")
+sub("src/gl_calls.c", "void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) {\n    GL_CALL_LOCK();\n",
+    "void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) {\n    GL_CALL_LOCK();\n    gladioTexNoCache(texture);\n")
+sub("src/gl_calls.c", "void glDeleteTextures(GLsizei n, const GLuint* textures) {\n    GL_CALL_LOCK();\n",
+    "void glDeleteTextures(GLsizei n, const GLuint* textures) {\n    GL_CALL_LOCK();\n    gladioTexNoteDelete(n, textures);\n")
+sub("src/gl_calls.c", "void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {\n    GL_CALL_LOCK();\n",
+    "void glTexParameterf(GLenum target, GLenum pname, GLfloat param) {\n    GL_CALL_LOCK();\n    gladioTexNoteParameter(target, pname, param);\n")
+sub("src/gl_calls.c", "void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {\n    GL_CALL_LOCK();\n",
+    "void glTexParameterfv(GLenum target, GLenum pname, const GLfloat* params) {\n    GL_CALL_LOCK();\n"
+    "    if (params) gladioTexNoteParameter(target, pname, params[0]);\n")
+sub("src/gl_calls.c",
+    "    if (shadow) shadow->depthMask = -1;\n"
+    "    currentGLContext->clientState->sentActiveTexture = -1;\n",
+    "    if (shadow) shadow->depthMask = -1;\n"
+    "    currentGLContext->clientState->sentActiveTexture = -1;\n"
+    "    gladioTexBindingsUnknown();\n")
+sub("src/gl_calls.c", "void glGetCompressedTexImage(GLenum target, GLint level, void* img) {\n    GL_CALL_LOCK();\n",
+    "void glGetCompressedTexImage(GLenum target, GLint level, void* img) {\n    GL_CALL_LOCK();\n"
+    "    if (gladioTexRead(target, level, img)) {\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n")
+
+# ---- unveränderte Teiler und Sampler-Bindungen nicht senden ----
+# wined3d setzt vor jedem Zeichenaufruf für jedes Attribut den Teiler (Outlast: 5600 je Bild, fast alle unverändert)
+# und bindet die Sampler aller Einheiten neu (1800 je Bild, 78 % unverändert). Der Client merkt sich den zuletzt
+# gesendeten Wert (Teiler je Vertex-Array-Objekt, Sampler je Einheit) und lässt gleiche weg; glPopClientAttrib bzw.
+# glPopAttrib und glDeleteSamplers machen die Werte wieder unbekannt.
+sub("include/gl_vao.h", "    short bgraStride[VERTEX_ATTRIB_COUNT];\n",
+    "    short bgraStride[VERTEX_ATTRIB_COUNT];\n"
+    "    /* patch-gladio-client.py: zuletzt gesendete Teiler (glVertexAttribDivisor) der generischen Attribute 0–31 */\n"
+    "    uint32_t gladioDivisor[32];\n"
+    "    uint32_t gladioDivisorKnown;\n", 1)
+sub("src/gl_calls.c",
+    "void glVertexAttribDivisor(GLuint index, GLuint divisor) {\n    GL_CALL_LOCK();\n",
+    "void glVertexAttribDivisor(GLuint index, GLuint divisor) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    GLVertexArrayObject* gladioVao = currentGLContext->clientState->vao;\n"
+    "    if (gladioVao && index < 32) {\n"
+    "        if ((gladioVao->gladioDivisorKnown & (1u << index)) && gladioVao->gladioDivisor[index] == divisor) {\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return;\n"
+    "        }\n"
+    "        gladioVao->gladioDivisor[index] = divisor;\n"
+    "        gladioVao->gladioDivisorKnown |= 1u << index;\n"
+    "    }\n")
+sub("src/gl_calls.c",
+    "void glPopClientAttrib() {\n    GL_CALL_LOCK();\n",
+    "void glPopClientAttrib() {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (currentGLContext->clientState->vao) currentGLContext->clientState->vao->gladioDivisorKnown = 0;\n")
+sub("src/gl_calls.c",
+    "    GLuint bound2D[GLADIO_TEX_UNITS];   /* gebundene Texturen je Einheit (GLADIO_TEX_UNKNOWN: unbekannt) */\n",
+    "    GLuint bound2D[GLADIO_TEX_UNITS];   /* gebundene Texturen je Einheit (GLADIO_TEX_UNKNOWN: unbekannt) */\n"
+    "    GLuint sampler[GLADIO_TEX_UNITS];   /* zuletzt gesendete Sampler-Bindung je Einheit */\n"
+    "    uint32_t samplerKnown[GLADIO_TEX_UNITS / 32];\n")
+sub("src/gl_calls.c",
+    "void glBindSampler(GLuint unit, GLuint sampler) {\n    GL_CALL_LOCK();\n",
+    "void glBindSampler(GLuint unit, GLuint sampler) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    GladioShadow* gladioSamplerShadow = gladioShadow();\n"
+    "    if (gladioSamplerShadow && unit < GLADIO_TEX_UNITS) {\n"
+    "        uint32_t bit = 1u << (unit % 32);\n"
+    "        if ((gladioSamplerShadow->samplerKnown[unit / 32] & bit) && gladioSamplerShadow->sampler[unit] == sampler) {\n"
+    "            GL_CALL_UNLOCK();\n"
+    "            return;\n"
+    "        }\n"
+    "        gladioSamplerShadow->sampler[unit] = sampler;\n"
+    "        gladioSamplerShadow->samplerKnown[unit / 32] |= bit;\n"
+    "    }\n")
+sub("src/gl_calls.c",
+    "void glDeleteSamplers(GLsizei count, const GLuint* samplers) {\n    GL_CALL_LOCK();\n",
+    "void glDeleteSamplers(GLsizei count, const GLuint* samplers) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    {\n"
+    "        /* gelöschte Sampler lösen sich von allen Einheiten */\n"
+    "        GladioShadow* gladioSamplerShadow = gladioShadow();\n"
+    "        if (gladioSamplerShadow) memset(gladioSamplerShadow->samplerKnown, 0, sizeof(gladioSamplerShadow->samplerKnown));\n"
+    "    }\n")
+sub("src/gl_calls.c",
+    "    currentGLContext->clientState->sentActiveTexture = -1;\n"
+    "    gladioTexBindingsUnknown();\n",
+    "    currentGLContext->clientState->sentActiveTexture = -1;\n"
+    "    gladioTexBindingsUnknown();\n"
+    "    if (shadow) memset(shadow->samplerKnown, 0, sizeof(shadow->samplerKnown));\n")
+
+# Kopien und Uniform-Tabellen einer Gruppe gemeinsamer Objekte mit deren erstem Kontext vergessen (seine Puffertabelle
+# ist die Kennung der Gruppe und wird frei; eine neue Gruppe kann dieselbe Adresse bekommen). Vor GLX_CALL_LOCK: kein
+# Thread hält die GL-Sperre und wartet dann auf die GLX-Sperre.
+sub("src/glx_calls.c",
+    "void glXDestroyContext(Display* dpy, GLXContext ctx) {\n    GLX_CALL_LOCK();\n",
+    "void glXDestroyContext(Display* dpy, GLXContext ctx) {\n"
+    "    if (ctx && !ctx->clientState.usingSharedState) {\n"
+    "        bool held = currentGLContext && currentGLContext->lockCount > 0;\n"
+    "        if (!held) pthread_mutex_lock(&gl_call_mutex);\n"
+    "        gladio_forgetShareGroup(ctx->clientState.buffers);\n"
+    "        if (!held) pthread_mutex_unlock(&gl_call_mutex);\n"
+    "    }\n"
+    "    GLX_CALL_LOCK();\n")
 
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",

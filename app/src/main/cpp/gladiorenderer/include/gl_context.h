@@ -61,6 +61,8 @@ typedef struct GLContext {
         int64_t waitNs, swapNs, drawNs, uploadNs;
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
         GladioBatchStats batchAtStart;
+        GladioClientStats client; /* Wartezeiten, die der Client mit glXSwapBuffers meldet */
+        uint32_t clientFrames;
     } stats;
 
     /* die letzten Anfragen (Ring), fürs Protokoll beim Ende der Verbindung – z. B. nach einem Absturz des Programms */

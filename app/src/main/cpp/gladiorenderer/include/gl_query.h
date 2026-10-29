@@ -9,6 +9,8 @@ typedef struct GLQuery {
     bool active;
     GLenum target;
     uint32_t counter;
+    GLuint clientId;    /* Kennung beim Client */
+    uint32_t endSerial; /* Nummer des letzten Endes (endedQueries im Renderer), 0: läuft oder nie beendet */
 } GLQuery;
 
 extern GLuint GLQuery_create();
@@ -19,5 +21,6 @@ extern void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params);
 extern void GLQuery_queryCounter(GLuint id, GLenum target);
 extern void GLQuery_delete(GLuint id);
 extern bool GLQuery_exists(GLuint id);
+extern int GLQuery_collectResults(GLuint* pairs, int maxPairs, GLuint* firstPendingId);
 
 #endif

@@ -179,6 +179,11 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9srgb.c` – sRGB-Lesen (`D3DSAMP_SRGBTEXTURE`) mit DXT1/3/5, A8R8G8B8 und X8R8G8B8: Fähigkeiten, Grau 0x84
   ohne sRGB (~132) und mit (~59), danach eine nur mit sRGB benutzte Textur zurücklesen (Bytes unverändert).
   Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9srgb.exe d3d9srgb.c -ld3d9 -luser32`.
+* `d3d9srgbstream.c` – DXT-Texturen mit allen Mip-Stufen wie beim Textur-Streaming der Unreal Engine 3:
+  `D3DPOOL_DEFAULT` über `UpdateTexture`, mit `D3DSAMP_SRGBTEXTURE` gelesen (wined3d kopiert jede Stufe über
+  `glGetCompressedTexImage` in die sRGB-Fassung), neu hochgeladen, zum Teil freigegeben und neu angelegt; jede Stufe
+  einzeln (`D3DSAMP_MAXMIPLEVEL`) mit und ohne sRGB gegen die erwartete Farbe geprüft (216 Stufen). Bauen:
+  `x86_64-w64-mingw32-gcc -O1 -o d3d9srgbstream64.exe d3d9srgbstream.c -ld3d9 -luser32 -lm`.
 
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
@@ -418,4 +423,13 @@ Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
   sRGB-Textur roh über `glReadPixels`/`glTexSubImage2D`. Dabei behoben: `glGetTexImage`/`glGetCompressedTexImage` lasen
   immer Stufe 0 in deren Größe (eine kleinere Stufe schrieb über das Pufferende) und konnten aus dem Lesecache das
   Bild einer anderen Textur liefern. `d3d9srgb`: vorher alles 132, jetzt 132/59.
-
+* Rundreisen (Outlast nach dem sRGB-Umbau: ~160 je Bild – Verdeckungsabfragen, sRGB-Kopien der DXT-Texturen über
+  `glGetCompressedTexImage`, dazu ~730 `glGetUniformLocation` je neuem Shader-Programm): Der Server merkt sich beendete
+  Verdeckungsabfragen in der Reihenfolge ihres Endes und schickt mit jeder Frage die Ergebnisse aller inzwischen
+  fertigen mit; hat er noch viel abzuarbeiten, fragt der Client bei jungen Abfragen gar nicht erst. Uniform-Positionen
+  kommen je Programm in einer Antwort (Tabelle aller aktiven Uniforms), das Zurücklesen komprimierter Stufen beantwortet
+  der Client aus einer Kopie der hochgeladenen Daten. `d3d9occlmany` (ohne Wine-Protokoll): 341 → 381 Bilder/s,
+  66 → 3 Antworten je Bild, gleiche Ergebnisse; `d3d9link`: 2193 → 3 `GetUniformLocation` (alle Positionen gegen den
+  Server geprüft: gleich); `d3d9srgbstream`: alle 90 Rückleseaufrufe im Client, Ausgabe gleich wie vorher. Dazu gehen
+  unveränderte `glVertexAttribDivisor`/`glBindSampler` nicht mehr hinaus (Outlast: 5600/1400 je Bild), und der Client
+  meldet seine Wartezeiten mit jedem Bild (Zeile „Client je Bild“ in der Laufstatistik).

@@ -1906,6 +1906,17 @@ void gd_handle_glGetQueryObjectuiv(GLContext* context) {
         gl_send(context->clientRing, REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, reply, sizeof(reply));
         return;
     }
+    if (pname == GLADIO_QUERY_AVAILABLE_AND_RESULTS) {
+        GLuint reply[4 + 2 * GLADIO_MAX_COLLECTED_QUERIES]; /* 8 KB, je Verbindung ein eigener Thread */
+        GLint available = 0, result = 0;
+        GLQuery_getObjectParamsv(id, GL_QUERY_RESULT_AVAILABLE, &available);
+        if (available) GLQuery_getObjectParamsv(id, GL_QUERY_RESULT, &result);
+        reply[0] = available;
+        reply[1] = result;
+        reply[3] = GLQuery_collectResults(reply + 4, GLADIO_MAX_COLLECTED_QUERIES, &reply[2]);
+        gl_send(context->clientRing, REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, reply, (4 + 2 * reply[3]) * sizeof(GLuint));
+        return;
+    }
 
     GLint params = 0;
     GLQuery_getObjectParamsv(id, pname, &params);
@@ -2089,9 +2100,73 @@ void gd_handle_glGetUniformIndices(GLContext* context) {
     println(MSG_DEBUG_UNIMPLEMENTED_FUNC, "glGetUniformIndices");
 }
 
+/* Positionen aller aktiven Uniforms eines Programms auf einmal (Client: Name beginnt mit
+ * GLADIO_UNIFORM_TABLE_PREFIX). Antwort: GLADIO_UNIFORM_TABLE_MAGIC, Bindestatus, Zahl der Einträge, je Eintrag
+ * Namenslänge, Arraygröße (0: kein Array), Name ohne "[0]" (auf 4 Byte aufgefüllt), Positionen (eine bzw. je
+ * Element eine). Uniforms in Blöcken haben keine Position (-1), ebenso alles, was nicht aktiv ist. */
+static void sendUniformTable(GLContext* context, GLuint program) {
+    ArrayBuffer* out = &context->outputBuffer;
+    ArrayBuffer_rewind(out);
+    GLint linkStatus = GL_FALSE, count = 0, maxLength = 0;
+    if (glIsProgram(program)) {
+        glGetProgramiv(program, GL_LINK_STATUS, &linkStatus);
+        if (linkStatus) {
+            glGetProgramiv(program, GL_ACTIVE_UNIFORMS, &count);
+            glGetProgramiv(program, GL_ACTIVE_UNIFORM_MAX_LENGTH, &maxLength);
+        }
+    }
+    if (maxLength < 1 || maxLength > 4096) maxLength = 256;
+    ArrayBuffer_putInt(out, GLADIO_UNIFORM_TABLE_MAGIC);
+    ArrayBuffer_putInt(out, linkStatus);
+    int countPosition = out->size;
+    ArrayBuffer_putInt(out, 0);
+    int entries = 0;
+    char name[maxLength + 16];
+    for (GLint i = 0; i < count; i++) {
+        GLsizei length = 0;
+        GLint size = 0;
+        GLenum type = 0;
+        name[0] = 0;
+        glGetActiveUniform(program, i, maxLength, &length, &size, &type, name);
+        if (length <= 0 || length >= maxLength) continue;
+        name[length] = 0;
+        /* Arrays meldet GL als name[0]; ein Treiber ohne das Anhängsel nennt wenigstens die Größe */
+        bool isArray = length > 3 && strcmp(name + length - 3, "[0]") == 0;
+        if (isArray) {
+            length -= 3;
+            name[length] = 0;
+        }
+        else if (size > 1 && name[length - 1] != ']') isArray = true;
+        else size = 0;
+        if (size < 0 || size > 65536) continue;
+        ArrayBuffer_putInt(out, length);
+        ArrayBuffer_putInt(out, size);
+        char padded[(length + 3) & ~3];
+        memset(padded, 0, sizeof(padded));
+        memcpy(padded, name, length);
+        ArrayBuffer_putBytes(out, padded, sizeof(padded));
+        if (!isArray) ArrayBuffer_putInt(out, glGetUniformLocation(program, name));
+        else {
+            for (GLint j = 0; j < size; j++) {
+                snprintf(name + length, 16, "[%d]", j);
+                ArrayBuffer_putInt(out, glGetUniformLocation(program, name));
+            }
+            name[length] = 0;
+        }
+        entries++;
+    }
+    memcpy((char*)out->buffer + countPosition, &entries, sizeof(int));
+    gl_send(context->clientRing, REQUEST_CODE_GL_GET_UNIFORM_LOCATION, out->buffer, out->size);
+}
+
 void gd_handle_glGetUniformLocation(GLContext* context) {
     GLuint program = ArrayBuffer_getInt(&context->inputBuffer);
     GLchar* name = context->inputBuffer.buffer + context->inputBuffer.position;
+
+    if (name[0] == GLADIO_UNIFORM_TABLE_PREFIX) {
+        sendUniformTable(context, program);
+        return;
+    }
 
     GLint result = glGetUniformLocation(program, name);
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_UNIFORM_LOCATION, &result, sizeof(GLint));
