@@ -83,6 +83,10 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   Adresse "Versatz im Puffer")
 - glBufferData mit GL_STREAM_DRAW legt den Speicher mit GL_CLIENT_STORAGE_BIT an: der Server der armv7-App
   zeichnet solche Puffer über ES 2.0 aus einer eigenen Kopie (Mali-400, gl_es2.c)
+- glGetQueryObjectuiv(GL_QUERY_RESULT_AVAILABLE) für Verdeckungsabfragen und glClientWaitSync beantwortet der Client
+  ohne Rundreise, wo die Reihenfolge es erlaubt: Die GPU arbeitet Abfragen und Fences in der Reihenfolge ab, in der
+  sie enden – ist eine fertig, sind es die früheren auch; ist eine nicht fertig, sind es die späteren auch (das gilt
+  1 ms). wined3d fragt mit CSMT alle 100 Befehle jede offene Abfrage ab (Outlast: ~2000 Rundreisen je Bild)
 """
 import pathlib
 import shutil
@@ -1186,6 +1190,158 @@ sub("src/gl_calls.c",
     "        buffer->usage = usage;\n"
     "        GL_CALL_UNLOCK();\n"
     "        return;\n")
+
+# Verdeckungsabfragen und Fences: „fertig?“ ohne Rundreise beantworten. wined3d fragt mit CSMT alle 100 Befehle jede
+# offene Abfrage und jeden Fence ab (Outlast: ~2000 Rundreisen je Bild, jede mit Warten auf den Server). Die GPU arbeitet
+# sie in der Reihenfolge ab, in der sie enden: Ist eine fertig, sind es die früher beendeten auch; ist eine nicht fertig,
+# sind es die später beendeten auch – das gilt 1 ms lang, danach fragt der Client wieder. Ergebnisse holt er weiter beim
+# Server (falls eine Annahme doch nicht stimmt, wartet der dort kurz).
+sub("src/gl_calls.c", "void glBeginQuery(GLenum target, GLuint id) {\n    GL_CALL_LOCK();\n",
+    "/* ---- Verdeckungsabfragen und Fences: fertig/nicht fertig ohne Rundreise (patch-gladio-client.py) ---- */\n"
+    "#include <time.h>\n"
+    "#ifndef GL_ANY_SAMPLES_PASSED_CONSERVATIVE\n"
+    "#define GL_ANY_SAMPLES_PASSED_CONSERVATIVE 0x8D6A\n"
+    "#endif\n"
+    "#define GLADIO_POLL_SLOTS 4096\n"
+    "#define GLADIO_POLL_VALID_NS 1000000LL\n"
+    "typedef struct GladioPollState {\n"
+    "    uint32_t counter;      /* Nummern in der Reihenfolge, in der die GPU abarbeitet (Ende der Abfrage, Fence) */\n"
+    "    uint32_t knownDone;    /* alle mit Nummer <= knownDone sind fertig */\n"
+    "    uint32_t knownPending; /* alle mit Nummer >= knownPending waren zu pendingTime nicht fertig (0: nichts bekannt) */\n"
+    "    int64_t pendingTime;\n"
+    "} GladioPollState;\n"
+    "static GladioPollState gladioQueryPoll, gladioFencePoll;\n"
+    "static struct { GLuint id; uint32_t seq; } gladioQuerySeqs[GLADIO_POLL_SLOTS];\n"
+    "static struct { uintptr_t sync; uint32_t seq; } gladioFenceSeqs[GLADIO_POLL_SLOTS];\n"
+    "static GLuint gladioActiveQueries[3];\n"
+    "\n"
+    "static int64_t gladioPollNow(void) {\n"
+    "    struct timespec ts;\n"
+    "    clock_gettime(CLOCK_MONOTONIC, &ts);\n"
+    "    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;\n"
+    "}\n"
+    "\n"
+    "static int gladioOcclusionSlot(GLenum target) {\n"
+    "    return target == GL_SAMPLES_PASSED ? 0 : target == GL_ANY_SAMPLES_PASSED ? 1 : target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE ? 2 : -1;\n"
+    "}\n"
+    "\n"
+    "/* 1 = fertig, 0 = nicht fertig, -1 = beim Server fragen */\n"
+    "static int gladioPollKnown(GladioPollState* state, uint32_t seq) {\n"
+    "    if (!seq) return -1;\n"
+    "    if (seq <= state->knownDone) return 1;\n"
+    "    if (state->knownPending && seq >= state->knownPending && gladioPollNow() - state->pendingTime < GLADIO_POLL_VALID_NS) return 0;\n"
+    "    return -1;\n"
+    "}\n"
+    "\n"
+    "static void gladioPollLearn(GladioPollState* state, uint32_t seq, int done) {\n"
+    "    if (!seq) return;\n"
+    "    if (done) {\n"
+    "        if (seq > state->knownDone) state->knownDone = seq;\n"
+    "        if (state->knownPending && state->knownPending <= seq) state->knownPending = 0;\n"
+    "        return;\n"
+    "    }\n"
+    "    int64_t now = gladioPollNow();\n"
+    "    if (!state->knownPending || now - state->pendingTime >= GLADIO_POLL_VALID_NS || seq < state->knownPending) {\n"
+    "        state->knownPending = seq;\n"
+    "        state->pendingTime = now;\n"
+    "    }\n"
+    "}\n"
+    "\n"
+    "static void gladioNoteBeginQuery(GLenum target, GLuint id) {\n"
+    "    int slot = gladioOcclusionSlot(target);\n"
+    "    if (slot >= 0) gladioActiveQueries[slot] = id;\n"
+    "}\n"
+    "\n"
+    "static void gladioNoteEndQuery(GLenum target) {\n"
+    "    int slot = gladioOcclusionSlot(target);\n"
+    "    if (slot < 0 || !gladioActiveQueries[slot]) return;\n"
+    "    GLuint id = gladioActiveQueries[slot];\n"
+    "    gladioActiveQueries[slot] = 0;\n"
+    "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].id = id;\n"
+    "    gladioQuerySeqs[id % GLADIO_POLL_SLOTS].seq = ++gladioQueryPoll.counter;\n"
+    "}\n"
+    "\n"
+    "static uint32_t gladioQuerySeqOf(GLuint id) {\n"
+    "    return gladioQuerySeqs[id % GLADIO_POLL_SLOTS].id == id ? gladioQuerySeqs[id % GLADIO_POLL_SLOTS].seq : 0;\n"
+    "}\n"
+    "\n"
+    "static uint32_t gladioFenceSlot(GLsync sync) {\n"
+    "    uintptr_t key = (uintptr_t)sync;\n"
+    "    return (uint32_t)((key ^ (key >> 4) ^ (key >> 13)) % GLADIO_POLL_SLOTS);\n"
+    "}\n"
+    "\n"
+    "static void gladioNoteFence(GLsync sync) {\n"
+    "    if (!sync) return;\n"
+    "    uint32_t slot = gladioFenceSlot(sync);\n"
+    "    gladioFenceSeqs[slot].sync = (uintptr_t)sync;\n"
+    "    gladioFenceSeqs[slot].seq = ++gladioFencePoll.counter;\n"
+    "}\n"
+    "\n"
+    "static uint32_t gladioFenceSeqOf(GLsync sync) {\n"
+    "    uint32_t slot = gladioFenceSlot(sync);\n"
+    "    return sync && gladioFenceSeqs[slot].sync == (uintptr_t)sync ? gladioFenceSeqs[slot].seq : 0;\n"
+    "}\n"
+    "\n"
+    "static void gladioForgetFence(GLsync sync) {\n"
+    "    uint32_t slot = gladioFenceSlot(sync);\n"
+    "    if (sync && gladioFenceSeqs[slot].sync == (uintptr_t)sync) gladioFenceSeqs[slot].sync = 0;\n"
+    "}\n"
+    "\n"
+    "void glBeginQuery(GLenum target, GLuint id) {\n    GL_CALL_LOCK();\n    gladioNoteBeginQuery(target, id);\n")
+sub("src/gl_calls.c",
+    "void glEndQuery(GLenum target) {\n    GL_CALL_LOCK();\n    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_END_QUERY, &target, sizeof(GLenum));\n",
+    "void glEndQuery(GLenum target) {\n    GL_CALL_LOCK();\n    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_END_QUERY, &target, sizeof(GLenum));\n    gladioNoteEndQuery(target);\n")
+sub("src/gl_calls.c",
+    "void glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    ArrayBuffer_rewind(&outputBuffer);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, id);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, pname);\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, outputBuffer.buffer, outputBuffer.size);\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(params, inputBuffer.buffer, inputBuffer.size);\n"
+    "    GL_CALL_UNLOCK();\n"
+    "}\n",
+    "void glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    uint32_t querySeq = pname == GL_QUERY_RESULT_AVAILABLE ? gladioQuerySeqOf(id) : 0;\n"
+    "    int known = gladioPollKnown(&gladioQueryPoll, querySeq);\n"
+    "    if (known >= 0) {\n"
+    "        *params = known ? GL_TRUE : GL_FALSE;\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n"
+    "    ArrayBuffer_rewind(&outputBuffer);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, id);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, pname);\n"
+    "    GL_SEND_CHECKED(REQUEST_CODE_GL_GET_QUERY_OBJECTUIV, outputBuffer.buffer, outputBuffer.size);\n"
+    "    GL_RECV_CHECKED();\n"
+    "    memcpy(params, inputBuffer.buffer, inputBuffer.size);\n"
+    "    if (querySeq) gladioPollLearn(&gladioQueryPoll, querySeq, *params != GL_FALSE);\n"
+    "    GL_CALL_UNLOCK();\n"
+    "}\n")
+sub("src/gl_calls.c",
+    "    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);\n    GL_CALL_UNLOCK();\n    return sync;\n}",
+    "    GLsync sync = (GLsync)(intptr_t)ArrayBuffer_getLong(&inputBuffer);\n    gladioNoteFence(sync);\n    GL_CALL_UNLOCK();\n    return sync;\n}")
+sub("src/gl_calls.c",
+    "GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {\n    GL_CALL_LOCK();\n    ArrayBuffer_rewind(&outputBuffer);\n",
+    "GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    uint32_t fenceSeq = gladioFenceSeqOf(sync);\n"
+    "    int known = gladioPollKnown(&gladioFencePoll, fenceSeq);\n"
+    "    if (known > 0 || (known == 0 && timeout == 0)) {\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return known ? GL_ALREADY_SIGNALED : GL_TIMEOUT_EXPIRED;\n"
+    "    }\n"
+    "    ArrayBuffer_rewind(&outputBuffer);\n")
+sub("src/gl_calls.c",
+    "    GLenum result = ArrayBuffer_getInt(&inputBuffer);\n    GL_CALL_UNLOCK();\n    return result;\n}\n\nvoid glClipPlane",
+    "    GLenum result = ArrayBuffer_getInt(&inputBuffer);\n"
+    "    if (result == GL_ALREADY_SIGNALED || result == GL_CONDITION_SATISFIED) gladioPollLearn(&gladioFencePoll, fenceSeq, 1);\n"
+    "    else if (result == GL_TIMEOUT_EXPIRED) gladioPollLearn(&gladioFencePoll, fenceSeq, 0);\n"
+    "    GL_CALL_UNLOCK();\n    return result;\n}\n\nvoid glClipPlane")
+sub("src/gl_calls.c", "void glDeleteSync(GLsync sync) {\n    GL_CALL_LOCK();\n",
+    "void glDeleteSync(GLsync sync) {\n    GL_CALL_LOCK();\n    gladioForgetFence(sync);\n")
 
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",

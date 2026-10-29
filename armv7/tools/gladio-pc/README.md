@@ -166,6 +166,10 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9inst.c` – Instanzen mit `SetStreamSourceFreq` (geometrische Instanzen, Basis-Eckpunkt 4): Versatz
   und D3DCOLOR je Instanz aus einem zweiten Strom, dazu ein Aufruf ohne Instanzen; erwartet rot/grün/blau/gelb
   und weiß in der Mitte. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9inst.exe d3d9inst.c -ld3d9 -luser32`.
+* `d3d9occlmany.c` – 64 Verdeckungsabfragen je Bild, Ergebnisse drei Bilder später mit `GetData(D3DGETDATA_FLUSH)`
+  abgeholt (wie die Unreal Engine 3); gibt Bilder/s aus, die Rundreisen je Bild stehen in der Server-Statistik
+  (`wine d3d9occlmany.exe [sekunden] [ausgabe.txt]`). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9occlmany.exe
+  d3d9occlmany.c -ld3d9 -luser32`.
 * `d3d9link.c` – ein Vertex-Shader (vs_3_0) mit drei Pixel-Shadern (ps_3_0), die verschiedene Ausgaben lesen
   (TEXCOORD0/1/2); erwartet rot/grün/blau. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9link.exe d3d9link.c -ld3d9
   -luser32`.
@@ -398,4 +402,9 @@ Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
   der Pixelposition die Clip-Koordinaten und tastete für alle Pixel dieselbe Ecke ab. Jetzt bekommt jedes
   Programm eine eigene Fassung aus dem unveränderten Quelltext des Hauptshaders und seinen Hilfs-Shadern (gleiche
   Hilfs-Shader teilen sich eine Fassung). `d3d9link` vorher: rot/rot/rot, jetzt rot/grün/blau.
+* Abfragen und Fences (Outlast: ~2000 Rundreisen je Bild für `GetQueryObjectuiv`, dazu `ClientWaitSync`): wined3d
+  fragt mit CSMT alle 100 Befehle jede offene Abfrage und jeden Fence ab, jede Frage wartet auf den Server. Der
+  Client beantwortet „fertig?“ jetzt selbst, wo die Reihenfolge es erlaubt (GPU arbeitet sie in der Reihenfolge
+  ihres Endes ab; „nicht fertig“ gilt 1 ms), Ergebnisse holt er weiter beim Server. `d3d9occlmany` am PC: 289 statt
+  185 Bilder/s, 129 statt 205 Antworten je Bild, gleiche Ergebnisse (51 % sichtbar).
 
