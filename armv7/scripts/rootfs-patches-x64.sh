@@ -53,7 +53,7 @@ done
 $MINGW-windres -I"$WFM/include" -I"$WFM/include/libcdio" -I"$WFM/res" -i "$WFM/res/resource.rc" -o "$TMP/obj/resource.o"
 # ld linkt PE-DLLs auch ohne Importbibliothek
 $MINGW-gcc -o "$TMP/wfm.exe" "$TMP"/obj/*.o -s -lcomctl32 -lgdi32 -lole32 -luuid \
-    "$WINDIR/libcdio.dll" -Wl,--subsystem,windows -static-libgcc
+    "$WINDIR/libcdio.dll" -Wl,--subsystem,windows -Wl,--no-insert-timestamp -static-libgcc
 
 $MINGW-objdump -f "$TMP/wfm.exe" | grep -q 'file format pei-x86-64' || { echo "wfm.exe ist kein x86-64-Programm"; exit 1; }
 # nur DLLs, die Wine mitbringt (und libcdio.dll aus dem Archiv) – keine MinGW-Laufzeit-DLLs
@@ -76,9 +76,13 @@ if [ -n "$TREE" ]; then
     cp -a "$TREE/." "$TMP/patches/"
 fi
 
+# Reproduzierbar packen (feste Zeit für alles Neue, eine Kompressionsrunde): gleicher Inhalt gibt
+# dieselbe Datei und damit dieselbe rootfs_patches.id, sonst entpackten die Container nach jedem
+# Bau alles neu
 log "rootfs_patches neu packen (zstd -$LEVEL)"
-tar -C "$TMP/patches" --owner=0 --group=0 --numeric-owner --sort=name -cf - . |
-    zstd -"$LEVEL" -T0 -q -f -o "$ARCHIVE.neu"
+tar -C "$TMP/patches" --owner=0 --group=0 --numeric-owner --sort=name \
+    --mtime=@"${SOURCE_DATE_EPOCH:-1767225600}" --clamp-mtime -cf - . |
+    zstd -"$LEVEL" -T1 -q -f -o "$ARCHIVE.neu"
 mv -f "$ARCHIVE.neu" "$ARCHIVE"
 mkdir -p "$TMP/check" && zstd -dc "$ARCHIVE" | tar -C "$TMP/check" -xf -
 cmp "$TMP/check/home/xuser/.wine/drive_c/windows/wfm.exe" "$TMP/wfm.exe"
