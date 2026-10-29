@@ -59,7 +59,19 @@ typedef struct ShaderObject {
     bool attached;
     bool deleted;
     char compileStatus;
+    /* Quelltext wie vom Programm übergeben (die Stücke von glShaderSource hintereinander), für
+     * programmspezifische Fassungen (variants): Desktop-GL bindet mehrere Shader derselben Stufe in ein
+     * Programm (wined3d: je Programm ein eigener Vertex-Shader mit setup_vs_output() zum gemeinsamen
+     * Haupt-Vertex-Shader), ES nur einen – der Server fügt sie je Programm zu einer Fassung zusammen. */
+    char* source;
+    IntArray sourceSizes;
+    ArrayList variants; /* ShaderVariant* */
 } ShaderObject;
+
+typedef struct ShaderVariant {
+    char* key; /* Quelltexte der Hilfs-Shader des Programms (ohne main) */
+    ShaderObject* shader;
+} ShaderVariant;
 
 typedef struct ShaderProgram {
     GLuint id;

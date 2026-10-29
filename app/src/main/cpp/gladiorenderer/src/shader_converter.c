@@ -1517,10 +1517,25 @@ static void injectBuiltinVariables(ShaderProgram* program, ShaderObject* shader)
 
 static void destroyShaderObject(GLClientState* clientState, ShaderObject* shader) {
     if (!shader) return;
-    for (int i = 0; i < clientState->programs->size; i++) {
-        ShaderProgram* program = clientState->programs->entries[i].value;
-        ArrayList_remove(&program->attachedShaders, shader);
+    if (clientState) {
+        for (int i = 0; i < clientState->programs->size; i++) {
+            ShaderProgram* program = clientState->programs->entries[i].value;
+            ArrayList_remove(&program->attachedShaders, shader);
+        }
     }
+
+    /* programmspezifische Fassungen: GL gibt sie frei, sobald kein Programm sie mehr angehängt hat */
+    for (int i = 0; i < shader->variants.size; i++) {
+        ShaderVariant* variant = shader->variants.elements[i];
+        glDeleteShader(variant->shader->id);
+        destroyShaderObject(NULL, variant->shader);
+        MEMFREE(variant->key);
+        free(variant);
+    }
+    ArrayList_free(&shader->variants, false);
+    MEMFREE(shader->source);
+    IntArray_clear(&shader->sourceSizes);
+    MEMFREE(shader->sourceSizes.values);
 
     for (int i = 0; i < shader->code.functions.size; i++) {
         ShaderFunction* function = shader->code.functions.elements[i];
@@ -1565,9 +1580,20 @@ void ShaderConverter_setShaderSource(GLuint shaderId, GLsizei count, ArrayBuffer
         return;
     }
 
+    MEMFREE(shader->source);
+    IntArray_clear(&shader->sourceSizes);
+    int total = 0;
     for (int i = 0; i < count; i++) {
         int size = ArrayBuffer_getInt(inputBuffer);
         char* code = ArrayBuffer_getBytes(inputBuffer, size);
+        /* unverändert merken (für programmspezifische Fassungen), bevor das Zerlegen ihn anfasst */
+        char* source = realloc(shader->source, total + size);
+        if (source) {
+            memcpy(source + total, code, size);
+            shader->source = source;
+            IntArray_add(&shader->sourceSizes, size);
+            total += size;
+        }
 
         iterateShaderSource(shader, code, size);
     }
@@ -1823,6 +1849,74 @@ static void linkShaderProgram(ShaderProgram* program) {
     }
 }
 
+/* hängen an diesem Programm Shader derselben Stufe ohne main (nur Funktionen/Variablen für mainShader)? */
+static bool hasHelperShaders(ShaderProgram* program, ShaderObject* mainShader) {
+    for (int i = 0; i < program->attachedShaders.size; i++) {
+        ShaderObject* shader = program->attachedShaders.elements[i];
+        if (shader != mainShader && shader->type == mainShader->type && countMainFunctions(shader) == 0) return true;
+    }
+    return false;
+}
+
+/* Hauptshader mit den Hilfs-Shadern dieses Programms zu einem eigenen GL-Shader zusammengefügt. Vorher wurden
+ * sie in den Hauptshader selbst eingefügt und der einmal übersetzt: wined3d hängt an seinen gemeinsamen
+ * Vertex-Shader je Programm einen eigenen setup_vs_output() (ordnet die Ausgaben nach den Eingängen des
+ * Pixel-Shaders) – alle weiteren Programme mit diesem Vertex-Shader bekamen die Zuordnung des ersten. Bei
+ * Outlast las die letzte Nachbearbeitung so statt der Pixelposition die Clip-Koordinaten, und das ganze Bild
+ * bekam die Farbe eines Eckpixels (braun, beim Bewegen orange flackernd). Gleiche Hilfs-Shader (wined3d
+ * erzeugt sie je Programm neu, aber mit gleichem Text) teilen sich eine Fassung. */
+static ShaderObject* getProgramVariant(ShaderProgram* program, ShaderObject* mainShader) {
+    ArrayBuffer key = {0};
+    for (int i = 0; i < program->attachedShaders.size; i++) {
+        ShaderObject* shader = program->attachedShaders.elements[i];
+        if (shader == mainShader || shader->type != mainShader->type || countMainFunctions(shader) > 0) continue;
+        /* ohne Nullbytes (die Stücke enden oft mit einem), damit der Schlüssel als Zeichenkette vergleichbar bleibt */
+        int total = 0;
+        for (int j = 0; j < shader->sourceSizes.size; j++) total += shader->sourceSizes.values[j];
+        for (int j = 0; j < total; j++) {
+            if (shader->source[j] != '\0') ArrayBuffer_put(&key, shader->source[j]);
+        }
+        ArrayBuffer_put(&key, '\1');
+    }
+    /* ES 2.0: die Größe von gd_TexCoord[] hängt am ganzen Programm (ShaderConverterES2_texCoordArraySize) */
+    if (GLES2) ArrayBuffer_putString(&key, "texcoords=%d", ShaderConverterES2_texCoordArraySize(program));
+    ArrayBuffer_put(&key, '\0');
+
+    for (int i = 0; i < mainShader->variants.size; i++) {
+        ShaderVariant* variant = mainShader->variants.elements[i];
+        if (strcmp(variant->key, key.buffer) == 0) {
+            ArrayBuffer_free(&key);
+            return variant->shader;
+        }
+    }
+
+    ShaderObject* shader = calloc(1, sizeof(ShaderObject));
+    shader->id = glCreateShader(mainShader->type);
+    shader->type = mainShader->type;
+    shader->compileStatus = COMPILE_STATUS_PENDING;
+    int offset = 0;
+    for (int j = 0; j < mainShader->sourceSizes.size; j++) {
+        int size = mainShader->sourceSizes.values[j];
+        char* code = malloc(size > 0 ? size : 1);
+        memcpy(code, mainShader->source + offset, size);
+        iterateShaderSource(shader, code, size);
+        free(code);
+        offset += size;
+    }
+    removeReservedBuiltinNames(shader);
+    injectVariableDecorations(shader);
+    mergeSeparateShaders(program, shader);
+    injectBuiltinVariables(program, shader);
+    compileShaderObject(program, shader);
+
+    ShaderVariant* variant = calloc(1, sizeof(ShaderVariant));
+    variant->key = strdup(key.buffer);
+    variant->shader = shader;
+    ArrayList_add(&mainShader->variants, variant);
+    ArrayBuffer_free(&key);
+    return shader;
+}
+
 void ShaderConverter_linkProgram(GLuint programId) {
     gladio_statsPrograms++;
     GLX_CONTEXT_LOCK();
@@ -1832,16 +1926,38 @@ void ShaderConverter_linkProgram(GLuint programId) {
         return;
     }
 
-    for (int i = 0; i < program->attachedShaders.size; i++) {
+    /* die GL-Shader dieses Programms: je Hauptshader (mit main) er selbst oder, wenn das Programm Hilfs-Shader
+     * derselben Stufe hat, die Fassung mit ihnen; Hilfs-Shader selbst gehen nicht an GL */
+    int count = program->attachedShaders.size;
+    GLuint linked[count > 0 ? count : 1];
+    int linkedCount = 0;
+    for (int i = 0; i < count; i++) {
         ShaderObject* shader = program->attachedShaders.elements[i];
+        if (countMainFunctions(shader) == 0) continue;
 
-        if (shader->compileStatus == COMPILE_STATUS_PENDING && countMainFunctions(shader) > 0) {
+        ShaderObject* target = shader;
+        if (hasHelperShaders(program, shader) && shader->source) target = getProgramVariant(program, shader);
+        else if (shader->compileStatus == COMPILE_STATUS_PENDING) {
             mergeSeparateShaders(program, shader);
             injectBuiltinVariables(program, shader);
             compileShaderObject(program, shader);
         }
+        if (target && target->compileStatus == COMPILE_STATUS_SUCCESS) linked[linkedCount++] = target->id;
+    }
 
-        if (shader->compileStatus == COMPILE_STATUS_SUCCESS) glAttachShader(programId, shader->id);
+    /* beim erneuten Binden: GL-Shader eines früheren Stands (andere Fassung) lösen */
+    GLuint attached[32];
+    GLsizei attachedCount = 0;
+    glGetAttachedShaders(programId, 32, &attachedCount, attached);
+    for (int i = 0; i < attachedCount; i++) {
+        bool keep = false;
+        for (int j = 0; j < linkedCount && !keep; j++) keep = linked[j] == attached[i];
+        if (!keep) glDetachShader(programId, attached[i]);
+    }
+    for (int j = 0; j < linkedCount; j++) {
+        bool present = false;
+        for (int i = 0; i < attachedCount && !present; i++) present = attached[i] == linked[j];
+        if (!present) glAttachShader(programId, linked[j]);
     }
 
     linkShaderProgram(program);

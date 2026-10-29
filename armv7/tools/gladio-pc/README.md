@@ -166,6 +166,9 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9inst.c` – Instanzen mit `SetStreamSourceFreq` (geometrische Instanzen, Basis-Eckpunkt 4): Versatz
   und D3DCOLOR je Instanz aus einem zweiten Strom, dazu ein Aufruf ohne Instanzen; erwartet rot/grün/blau/gelb
   und weiß in der Mitte. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9inst.exe d3d9inst.c -ld3d9 -luser32`.
+* `d3d9link.c` – ein Vertex-Shader (vs_3_0) mit drei Pixel-Shadern (ps_3_0), die verschiedene Ausgaben lesen
+  (TEXCOORD0/1/2); erwartet rot/grün/blau. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9link.exe d3d9link.c -ld3d9
+  -luser32`.
 * `d3d9depth.c` – Tiefe aus einer INTZ-Textur lesen (Tiefenpuffer-Textur, die die Unreal Engine 3 und andere
   abtasten), mit Punktfilter und bilinear; erwartet 64/191. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9depth.exe
   d3d9depth.c -ld3d9 -luser32`.
@@ -385,3 +388,14 @@ Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
 * Diagnose: siehe „Bild aufzeichnen“. Nebenbefund beim Start von wined3d (einmalig, harmlos):
   `glTexImage2D(GL_TEXTURE_1D_ARRAY)` (ES kennt keine 1D-Texturen) und `glEnable(GL_MULTISAMPLE)` melden
   `GL_INVALID_ENUM`; GL_MULTISAMPLE & Co. verwirft der Server jetzt still.
+* Mehrere Shader einer Stufe in einem Programm (Outlast: nach dem Hauptmenü statt der Szene ein gleichmäßig
+  brauner bzw. orange flackernder Bildschirm): wined3d übersetzt einen Vertex-Shader einmal und hängt je
+  Programm einen kleinen zweiten Vertex-Shader mit `setup_vs_output()` an, der die Ausgaben nach den Eingängen
+  des jeweiligen Pixel-Shaders ordnet (Desktop-GL bindet mehrere Shader derselben Stufe, ES nur einen). Der
+  Server fügte den zweiten in den gemeinsamen Vertex-Shader selbst ein und übersetzte den nur einmal – jedes
+  weitere Programm mit diesem Vertex-Shader bekam die Zuordnung des ersten. Die Bildaufzeichnung am Gerät zeigte
+  die Szene im Gleitkomma-Szenenbild korrekt, erst die letzte Nachbearbeitung (Tonwerte, Farbkorrektur) las statt
+  der Pixelposition die Clip-Koordinaten und tastete für alle Pixel dieselbe Ecke ab. Jetzt bekommt jedes
+  Programm eine eigene Fassung aus dem unveränderten Quelltext des Hauptshaders und seinen Hilfs-Shadern (gleiche
+  Hilfs-Shader teilen sich eine Fassung). `d3d9link` vorher: rot/rot/rot, jetzt rot/grün/blau.
+

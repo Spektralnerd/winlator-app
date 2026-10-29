@@ -1042,6 +1042,7 @@ static void writeImage(int width, int height, bool isFloat, const char* fileName
     const float* pixels = capture.pixels;
     float minimum[4] = {INFINITY, INFINITY, INFINITY, INFINITY}, maximum[4] = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
     double sum[4] = {0};
+    size_t finite[4] = {0}, nans[4] = {0}, positiveInf[4] = {0}, negativeInf[4] = {0};
     size_t invalid = 0, count = (size_t)width * height;
     for (size_t p = 0; p < count; p++) {
         const float* px = pixels + p * 4;
@@ -1050,22 +1051,34 @@ static void writeImage(int width, int height, bool isFloat, const char* fileName
             float v = px[c];
             if (!isfinite(v)) {
                 bad = true;
+                if (isnan(v)) nans[c]++;
+                else if (v > 0) positiveInf[c]++;
+                else negativeInf[c]++;
                 continue;
             }
             if (v < minimum[c]) minimum[c] = v;
             if (v > maximum[c]) maximum[c] = v;
             sum[c] += v;
+            finite[c]++;
         }
         if (bad) invalid++;
     }
     static const char channels[] = "RGBA";
-    char text[512];
+    char text[640];
     int pos = 0;
     for (int c = 0; c < 4; c++) {
+        /* Mittel über die endlichen Werte des Kanals */
         if (minimum[c] > maximum[c]) appendf(text, sizeof(text), &pos, " %c -", channels[c]);
-        else appendf(text, sizeof(text), &pos, " %c %.4g..%.4g (Mittel %.4g)", channels[c], minimum[c], maximum[c], sum[c] / count);
+        else appendf(text, sizeof(text), &pos, " %c %.4g..%.4g (Mittel %.4g)", channels[c], minimum[c], maximum[c], sum[c] / (finite[c] ? finite[c] : 1));
     }
-    if (invalid) appendf(text, sizeof(text), &pos, "; %zu Pixel NaN/unendlich", invalid);
+    if (invalid) {
+        appendf(text, sizeof(text), &pos, "; %zu Pixel NaN/unendlich:", invalid);
+        for (int c = 0; c < 4; c++) {
+            if (nans[c]) appendf(text, sizeof(text), &pos, " %c %zu NaN", channels[c], nans[c]);
+            if (positiveInf[c]) appendf(text, sizeof(text), &pos, " %c %zu +unendlich", channels[c], positiveInf[c]);
+            if (negativeInf[c]) appendf(text, sizeof(text), &pos, " %c %zu -unendlich", channels[c], negativeInf[c]);
+        }
+    }
     fprintf(capture.trace, "   %s%s → %s\n", isFloat ? "Gleitkomma:" : "", text, fileName);
 
     int scale = (width + CAPTURE_IMAGE_WIDTH - 1) / CAPTURE_IMAGE_WIDTH;
