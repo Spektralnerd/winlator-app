@@ -552,8 +552,77 @@ static void restoreAttrib(GLuint index, const SavedAttrib* a) {
     else glDisableVertexAttribArray(index);
 }
 
+/* Farbanhang, aus dem gelesen bzw. in den gezeichnet wird (Index nach GL_READ_BUFFER/GL_DRAW_BUFFER0) */
+static FBAttachmentInfo* activeColorAttachment(GLenum target) {
+    GLuint id = currentRenderer->clientState.framebuffer[indexOfGLTarget(target)];
+    GLFramebuffer* framebuffer = SparseArray_get(currentRenderer->clientState.framebuffers, id);
+    if (!framebuffer) return NULL;
+    GLint buffer = GL_NONE;
+    glGetIntegerv(target == GL_READ_FRAMEBUFFER ? GL_READ_BUFFER : GL_DRAW_BUFFER0, &buffer);
+    if (buffer < GL_COLOR_ATTACHMENT0 || buffer >= GL_COLOR_ATTACHMENT0 + MAX_FB_COLOR_ATTACHMENTS) return NULL;
+    return &framebuffer->colorAttachment[buffer - GL_COLOR_ATTACHMENT0];
+}
+
+/* ES 3: ungestreckter Farb-Blit aus einem linearen Anhang in eine sRGB-Textur. wined3d füllt so die sRGB-Fassung
+ * einer Textur (D3DSAMP_SRGBTEXTURE); Desktop-GL kopiert dabei roh (GL_FRAMEBUFFER_SRGB aus). ES wandelt beim
+ * Schreiben in ein sRGB-Ziel immer um – die Bytes wären verändert und das Lesen mit sRGB brächte wieder den linearen
+ * Wert (D3D9-Test d3d9srgb: A8R8G8B8 131 statt 59). Deshalb roh über glReadPixels und glTexSubImage2D; der Treiber
+ * stellt BGRA-Speicher dabei auf RGBA um. */
+static bool blitRawToSrgbTexture(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask) {
+    if (mask != GL_COLOR_BUFFER_BIT) return false;
+    int width = srcX1 - srcX0, height = srcY1 - srcY0;
+    if (width <= 0 || height <= 0 || dstX1 - dstX0 != width || dstY1 - dstY0 != height || srcX0 < 0 || srcY0 < 0 || dstX0 < 0 || dstY0 < 0) return false;
+    FBAttachmentInfo* dst = activeColorAttachment(GL_DRAW_FRAMEBUFFER);
+    if (!dst || dst->type != GL_TEXTURE_2D || !dst->texture || !dst->id || !isSrgbTextureFormat(dst->texture->originFormat)) return false;
+    FBAttachmentInfo* src = activeColorAttachment(GL_READ_FRAMEBUFFER);
+    if (!src || (src->texture && isSrgbTextureFormat(src->texture->originFormat))) return false; /* sRGB nach sRGB: Blit bleibt roh */
+    if ((int64_t)width * height > 4096 * 4096) return false;
+
+    void* pixels = malloc((size_t)width * height * 4);
+    if (!pixels) return false;
+
+    GLint packRowLength = 0, packSkipRows = 0, packSkipPixels = 0, packAlignment = 4, packBuffer = 0;
+    glGetIntegerv(GL_PACK_ROW_LENGTH, &packRowLength);
+    glGetIntegerv(GL_PACK_SKIP_ROWS, &packSkipRows);
+    glGetIntegerv(GL_PACK_SKIP_PIXELS, &packSkipPixels);
+    glGetIntegerv(GL_PACK_ALIGNMENT, &packAlignment);
+    glGetIntegerv(GL_PIXEL_PACK_BUFFER_BINDING, &packBuffer);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+    glReadPixels(srcX0, srcY0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (packBuffer) glBindBuffer(GL_PIXEL_PACK_BUFFER, packBuffer);
+    glPixelStorei(GL_PACK_ROW_LENGTH, packRowLength);
+    glPixelStorei(GL_PACK_SKIP_ROWS, packSkipRows);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, packSkipPixels);
+    glPixelStorei(GL_PACK_ALIGNMENT, packAlignment);
+
+    GLint unpackRowLength = 0, unpackSkipRows = 0, unpackSkipPixels = 0, unpackAlignment = 4, boundTexture = 0;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &unpackRowLength);
+    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &unpackSkipRows);
+    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &unpackSkipPixels);
+    glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackAlignment);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &boundTexture);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glBindTexture(GL_TEXTURE_2D, dst->id);
+    glTexSubImage2D(GL_TEXTURE_2D, dst->level, dstX0, dstY0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, boundTexture);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, unpackRowLength);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, unpackSkipRows);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, unpackSkipPixels);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, unpackAlignment);
+    free(pixels);
+    return true;
+}
+
 void GLFramebuffer_blit(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) {
     if (!GLES2) {
+        if (blitRawToSrgbTexture(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask)) return;
         glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
         return;
     }

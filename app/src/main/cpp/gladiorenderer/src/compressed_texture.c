@@ -6,6 +6,7 @@
 
 void compressTexImage2D(uint32_t format, int width, int height, void* imageData, void* compressedData) {
     static const uint8_t offsets[16][2] = {{0, 0}, {1, 0}, {2, 0}, {3, 0}, {0, 1}, {1, 1}, {2, 1}, {3, 1}, {0, 2}, {1, 2}, {2, 2}, {3, 2}, {0, 3}, {1, 3}, {2, 3}, {3, 3}};
+    format = linearCompressedFormat(format); /* sRGB-DXT: gleiche Blöcke, die Bytes bleiben roh */
     int blockSize = format == GL_COMPRESSED_RGB_S3TC_DXT1_EXT || format == GL_COMPRESSED_RGBA_S3TC_DXT1_EXT ? 8 : 16;
     int alpha = (format != GL_COMPRESSED_RGB_S3TC_DXT1_EXT && blockSize == 16) ? 1 : 0;
 
@@ -24,6 +25,7 @@ void compressTexImage2D(uint32_t format, int width, int height, void* imageData,
 
 void* decompressTexImage2D(uint32_t format, int width, int height, void* imageData, ThreadPool* threadPool) {
     int bcN = 0;
+    format = linearCompressedFormat(format); /* sRGB-DXT: gleiche Blöcke; das Tauschen nach RGBA macht der Aufrufer */
     bool isNoAlphaU = format == GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
 
     switch (format) {
@@ -39,7 +41,14 @@ void* decompressTexImage2D(uint32_t format, int width, int height, void* imageDa
             break;
     }
 
-    void* decompressedData = malloc(width * height * 4);
+    if (width <= 0 || height <= 0) return NULL;
+    void* decompressedData = malloc((size_t)width * height * 4);
+    if (!decompressedData) return NULL;
+    if (bcN == 0) {
+        /* unbekanntes Format: schwarz statt Speicherinhalt */
+        memset(decompressedData, 0, (size_t)width * height * 4);
+        return decompressedData;
+    }
     BCDecoder_decode(imageData, decompressedData, width, height, bcN, isNoAlphaU, threadPool);
     return decompressedData;
 }

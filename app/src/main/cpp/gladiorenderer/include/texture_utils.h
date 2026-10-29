@@ -179,6 +179,10 @@ static inline int computeTexImageDataSize(uint32_t format, uint32_t type, uint32
 }
 
 #if defined(__ANDROID__) || defined(GL_SERVER) /* Serverseite, auch beim PC-Bau (armv7/tools/gladio-pc) */
+static inline bool isSrgbCompressedFormat(GLenum format) {
+    return format >= GL_COMPRESSED_SRGB_S3TC_DXT1_EXT && format <= GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
+}
+
 static inline bool isCompressedFormat(GLenum format) {
     switch (format) {
         case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
@@ -187,7 +191,55 @@ static inline bool isCompressedFormat(GLenum format) {
         case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
             return true;
         default:
-            return false;
+            return isSrgbCompressedFormat(format);
+    }
+}
+
+/* ---- sRGB-Texturen ----------------------------------------------------------------------------------------
+ * D3D9-Spiele lesen Farbtexturen mit D3DSAMP_SRGBTEXTURE (die Unreal Engine 3 alle Farbtexturen, sie rechnet
+ * linear). wined3d legt dafür ohne GL_EXT_texture_sRGB_decode eine zweite GL-Textur im sRGB-Format an. ES kennt
+ * sRGB nur als GL_SRGB8_ALPHA8 (und GL_SRGB8) mit Daten in RGBA; der Server legt alle sRGB-Formate so an und
+ * tauscht BGRA-Daten, DXT packt er wie sonst aus. Vorher wurde jede BGRA-Übertragung zu einer linearen
+ * BGRA-Textur (Farben unentschlüsselt: dunkle Töne bis 13-mal zu hell) und DXT kannte kein sRGB. */
+static inline GLenum linearCompressedFormat(GLenum format) {
+    switch (format) {
+        case GL_COMPRESSED_SRGB_S3TC_DXT1_EXT: return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
+        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT: return GL_COMPRESSED_RGBA_S3TC_DXT1_EXT;
+        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT: return GL_COMPRESSED_RGBA_S3TC_DXT3_EXT;
+        case GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT: return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+        default: return format;
+    }
+}
+
+static inline bool isSrgbTextureFormat(GLenum internalformat) {
+    switch (internalformat) {
+        case GL_SRGB:
+        case GL_SRGB8:
+        case GL_SRGB_ALPHA:
+        case GL_SRGB8_ALPHA8:
+        case GL_COMPRESSED_SRGB:
+        case GL_COMPRESSED_SRGB_ALPHA:
+            return true;
+        default:
+            return isSrgbCompressedFormat(internalformat);
+    }
+}
+
+/* sRGB ohne Alpha (D3DFMT_X8R8G8B8, DXT1 ohne Alpha): angelegt als GL_SRGB8_ALPHA8, Alpha beim Lesen 1 */
+static inline bool isSrgbOpaqueFormat(GLenum internalformat) {
+    return internalformat == GL_SRGB || internalformat == GL_SRGB8 || internalformat == GL_COMPRESSED_SRGB ||
+           internalformat == GL_COMPRESSED_SRGB_S3TC_DXT1_EXT;
+}
+
+/* 4-Byte-Pixel B G R A -> R G B A (auch an nicht ausgerichteten Adressen, auch an Ort und Stelle) */
+static inline void bgraToRgba(void* dstData, const void* srcData, size_t pixels) {
+    uint8_t* dst = dstData;
+    const uint8_t* src = srcData;
+    for (size_t i = 0; i < pixels; i++, src += 4, dst += 4) {
+        uint32_t c;
+        memcpy(&c, src, 4);
+        c = (c & 0xff00ff00u) | ((c >> 16) & 0xffu) | ((c & 0xffu) << 16);
+        memcpy(dst, &c, 4);
     }
 }
 

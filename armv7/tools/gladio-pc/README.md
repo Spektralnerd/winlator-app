@@ -176,6 +176,9 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9depth.c` – Tiefe aus einer INTZ-Textur lesen (Tiefenpuffer-Textur, die die Unreal Engine 3 und andere
   abtasten), mit Punktfilter und bilinear; erwartet 64/191. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9depth.exe
   d3d9depth.c -ld3d9 -luser32`.
+* `d3d9srgb.c` – sRGB-Lesen (`D3DSAMP_SRGBTEXTURE`) mit DXT1/3/5, A8R8G8B8 und X8R8G8B8: Fähigkeiten, Grau 0x84
+  ohne sRGB (~132) und mit (~59), danach eine nur mit sRGB benutzte Textur zurücklesen (Bytes unverändert).
+  Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9srgb.exe d3d9srgb.c -ld3d9 -luser32`.
 
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
@@ -407,4 +410,12 @@ Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
   Client beantwortet „fertig?“ jetzt selbst, wo die Reihenfolge es erlaubt (GPU arbeitet sie in der Reihenfolge
   ihres Endes ab; „nicht fertig“ gilt 1 ms), Ergebnisse holt er weiter beim Server. `d3d9occlmany` am PC: 289 statt
   185 Bilder/s, 129 statt 205 Antworten je Bild, gleiche Ergebnisse (51 % sichtbar).
+* sRGB-Texturen (Outlast: Texturen zu hell, vermutlich daher auch das grünliche Armaturenbrett im Auto): die Unreal
+  Engine 3 liest Farbtexturen mit `D3DSAMP_SRGBTEXTURE` und rechnet linear. DXT meldete kein sRGB-Lesen, wined3d las
+  sie also linear (dunkle Töne bis 13-mal zu hell); A8R8G8B8 meldete es, der Server legte die sRGB-Fassung aber als
+  lineare BGRA-Textur an, und wined3ds Blit in die sRGB-Fassung wandelte unter ES um. Jetzt: alle sRGB-Formate als
+  `GL_SRGB8_ALPHA8` (BGRA-Daten getauscht, DXT ausgepackt), sRGB-DXT gemeldet, ungestreckte Farb-Blits in eine
+  sRGB-Textur roh über `glReadPixels`/`glTexSubImage2D`. Dabei behoben: `glGetTexImage`/`glGetCompressedTexImage` lasen
+  immer Stufe 0 in deren Größe (eine kleinere Stufe schrieb über das Pufferende) und konnten aus dem Lesecache das
+  Bild einer anderen Textur liefern. `d3d9srgb`: vorher alles 132, jetzt 132/59.
 

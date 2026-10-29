@@ -84,6 +84,71 @@ static int pixelBufferUploadSize(GLBuffer* buffer, uint64_t pointer, GLenum form
     return (int)size;
 }
 
+/* ---- sRGB-Texturen (texture_utils.h): angelegt als GL_SRGB8_ALPHA8, Daten in RGBA -------------------------- */
+
+/* sRGB-Format der gebundenen Textur (für glTexSubImage2D und Co.), sonst 0 */
+static GLenum boundSrgbFormat(GLenum target) {
+    if (GLES2) return 0;
+    GLTexture* texture = GLTexture_getBound(target);
+    return texture && isSrgbTextureFormat(texture->originFormat) ? texture->originFormat : 0;
+}
+
+/* Bytes, die ES 3 mit den aktuellen GL_UNPACK_*-Werten für ein 4-Byte-Bild liest */
+static int64_t unpackSize4(GLsizei width, GLsizei height) {
+    GLint rowLength = 0, skipRows = 0, skipPixels = 0;
+    glGetIntegerv(GL_UNPACK_ROW_LENGTH, &rowLength);
+    glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skipRows);
+    glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skipPixels);
+    int64_t stride = (int64_t)(rowLength > 0 ? rowLength : width) * 4;
+    return ((int64_t)skipRows + height - 1) * stride + ((int64_t)skipPixels + width) * 4;
+}
+
+/* glTexImage2D (sub = false) bzw. glTexSubImage2D in eine sRGB-Textur. data zeigt in den Ring (wird an Ort und
+ * Stelle getauscht) oder ist NULL; mit gebundenem Pixelpuffer ist pointer der Versatz in dessen geteiltem
+ * Speicher (GL_PIXEL_UNPACK_BUFFER bleibt im Treiber ungebunden, gl_buffer.c). false: Daten in einem Format, das
+ * hier nicht umgestellt wird – dann der bisherige Weg (linear gelesen, wie vorher). */
+static bool srgbTexImage2D(GLenum target, GLint level, GLenum srgbFormat, bool sub, GLint xoffset, GLint yoffset,
+                           GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type,
+                           void* data, int dataSize, GLBuffer* pixelUnpackBuffer, uint64_t pointer) {
+    bool bytes = type == GL_UNSIGNED_BYTE || type == GL_UNSIGNED_INT_8_8_8_8_REV;
+    bool hasData = pixelUnpackBuffer || (data && dataSize > 0);
+    bool bgra = format == GL_BGRA && bytes;
+    bool rgba = format == GL_RGBA && bytes;
+    if (hasData && !bgra && !rgba) return false;
+    if (!hasData && sub) return true;
+
+    void* upload = NULL;
+    void* owned = NULL;
+    if (hasData && pixelUnpackBuffer) {
+        int64_t size = unpackSize4(width, height);
+        if (!pixelUnpackBuffer->mappedData || size <= 0 || pointer + (uint64_t)size > (uint64_t)pixelUnpackBuffer->size) return false;
+        const uint8_t* src = (const uint8_t*)pixelUnpackBuffer->mappedData + pointer;
+        if (rgba) upload = (void*)src;
+        else {
+            /* nicht im geteilten Speicher tauschen: der gehört dem Programm */
+            owned = malloc((size_t)size);
+            if (!owned) return false;
+            bgraToRgba(owned, src, (size_t)size / 4);
+            upload = owned;
+        }
+    }
+    else if (hasData) {
+        if (bgra) bgraToRgba(data, data, (size_t)dataSize / 4);
+        upload = data;
+    }
+
+    if (sub) glTexSubImage2D(target, level, xoffset, yoffset, width, height, GL_RGBA, GL_UNSIGNED_BYTE, upload);
+    else {
+        if (level == 0 && isSrgbOpaqueFormat(srgbFormat)) {
+            GLenum paramTarget = target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z ? GL_TEXTURE_CUBE_MAP : target;
+            glTexParameteri(paramTarget, GL_TEXTURE_SWIZZLE_A, GL_ONE);
+        }
+        glTexImage2D(target, level, GL_SRGB8_ALPHA8, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, upload);
+    }
+    free(owned);
+    return true;
+}
+
 void gd_handle_glAccum(GLContext* context) {
     GLenum op = ArrayBuffer_getInt(&context->inputBuffer);
     GLfloat value = ArrayBuffer_getFloat(&context->inputBuffer);
@@ -624,6 +689,11 @@ void gd_handle_glCompressedTexImage2D(GLContext* context) {
     if (GLES2) {
         GLES_texImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData, width * height * 4, true);
     }
+    else if (isSrgbCompressedFormat(internalformat)) {
+        /* sRGB-DXT: ausgepackt (BGRA) nach RGBA, als GL_SRGB8_ALPHA8 */
+        if (decompressedData) bgraToRgba(decompressedData, decompressedData, (size_t)width * height);
+        glTexImage2D(target, level, GL_SRGB8_ALPHA8, width, height, border, GL_RGBA, GL_UNSIGNED_BYTE, decompressedData);
+    }
     else glTexImage2D(target, level, GL_BGRA, width, height, border, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
     MEMFREE(decompressedData);
 
@@ -664,6 +734,11 @@ void gd_handle_glCompressedTexSubImage2D(GLContext* context) {
 
     if (GLES2) {
         GLES_texSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData, width * height * 4, true);
+    }
+    else if (boundSrgbFormat(parseTexTarget(target))) {
+        /* in eine sRGB-Textur (GL_SRGB8_ALPHA8): Daten in RGBA */
+        if (decompressedData) bgraToRgba(decompressedData, decompressedData, (size_t)width * height);
+        glTexSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_RGBA, GL_UNSIGNED_BYTE, decompressedData);
     }
     else glTexSubImage2D(parseTexTarget(target), level, xoffset, yoffset, width, height, GL_BGRA, GL_UNSIGNED_BYTE, decompressedData);
     MEMFREE(decompressedData);
@@ -2985,8 +3060,11 @@ void gd_handle_glTexImage2D(GLContext* context) {
         }
         else {
             gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);
-            convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
-            glTexImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+            if (!isSrgbTextureFormat(internalformat) ||
+                !srgbTexImage2D(target, level, internalformat, false, 0, 0, width, height, border, format, type, NULL, 0, pixelUnpackBuffer, pointer)) {
+                convertTexImageFormat(target, &internalformat, &format, &type, NULL, 0);
+                glTexImage2D(target, level, internalformat, width, height, border, format, type, pixelUnpackBuffer->mappedData + pointer);
+            }
         }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_IMAGE2D, NULL, 0);
     }
@@ -2999,8 +3077,11 @@ void gd_handle_glTexImage2D(GLContext* context) {
         }
         else {
             gladio_statsTexBytes += imageSize;
-            convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
-            glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
+            if (!isSrgbTextureFormat(internalformat) ||
+                !srgbTexImage2D(target, level, internalformat, false, 0, 0, width, height, border, format, type, imageData, imageSize, NULL, 0)) {
+                convertTexImageFormat(target, &internalformat, &format, &type, &imageData, imageSize);
+                glTexImage2D(target, level, internalformat, width, height, border, format, type, imageData);
+            }
         }
         RING_READ_END(context->serverRing);
     }
@@ -3109,6 +3190,7 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
     GLint imageSize = ArrayBuffer_getInt(&context->inputBuffer);
 
     target = parseTexTarget(target);
+    GLenum srgbFormat = boundSrgbFormat(target);
     GLBuffer* pixelUnpackBuffer = GLBuffer_getBound(GL_PIXEL_UNPACK_BUFFER);
     if (pixelUnpackBuffer) {
         uint64_t pointer = ArrayBuffer_getInt(&context->inputBuffer);
@@ -3118,8 +3200,11 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
         }
         else {
             gladio_statsTexBytes += computeTexImageDataSize(format, type, width, height, 1);
-            convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
-            glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer);
+            if (!srgbFormat ||
+                !srgbTexImage2D(target, level, srgbFormat, true, xoffset, yoffset, width, height, 0, format, type, NULL, 0, pixelUnpackBuffer, pointer)) {
+                convertTexImageFormat(target, NULL, &format, &type, NULL, 0);
+                glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixelUnpackBuffer->mappedData + pointer);
+            }
         }
         gl_send(context->clientRing, REQUEST_CODE_GL_TEX_SUB_IMAGE2D, NULL, 0);
     }
@@ -3131,8 +3216,11 @@ void gd_handle_glTexSubImage2D(GLContext* context) {
         }
         else {
             gladio_statsTexBytes += imageSize;
-            convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
-            glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData);
+            if (!srgbFormat ||
+                !srgbTexImage2D(target, level, srgbFormat, true, xoffset, yoffset, width, height, 0, format, type, imageData, imageSize, NULL, 0)) {
+                convertTexImageFormat(target, NULL, &format, &type, &imageData, imageSize);
+                glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, imageData);
+            }
         }
         RING_READ_END(context->serverRing);
     }

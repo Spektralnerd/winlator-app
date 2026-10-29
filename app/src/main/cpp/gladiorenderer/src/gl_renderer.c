@@ -1750,22 +1750,38 @@ void GLRenderer_getTexParameter(GLRenderer* renderer, GLenum target, GLint level
     }
 }
 
+static void freePixelReadCache(GLRenderer* renderer);
+
+/* Stufe level der gebundenen Textur lesen. Vorher wurde immer Stufe 0 in deren Größe gelesen (glGetCompressedTexImage
+ * einer kleineren Stufe schrieb dann über das Ende des Puffers), und der Lesecache von GLRenderer_readPixels
+ * (Schlüssel: das Lese-FBO des Programms, nicht die Textur) lieferte bei gleicher Größe binnen drei Bildern das
+ * Bild einer anderen Textur. wined3d lädt so Texturen herunter, z. B. bevor es sie in die sRGB-Fassung kopiert. */
 void* GLRenderer_getTexImage(GLRenderer* renderer, GLenum target, GLint level, GLenum format, GLenum type, int* imageSize) {
     target = parseTexTarget(target);
     GLTexture* texture = GLTexture_getBound(target);
-    *imageSize = texture ? computeTexImageDataSize(format, type, texture->width, texture->height, 1) : 0;
+    *imageSize = 0;
+    if (!texture || level < 0 || level > 15) return NULL;
+    int width = TEXLEVEL(texture->width, level), height = TEXLEVEL(texture->height, level);
+    *imageSize = computeTexImageDataSize(format, type, width, height, 1);
     if (*imageSize == 0) return NULL;
+    if (GLES2 && level > 0) {
+        /* ES 2.0 hängt nur Stufe 0 an ein FBO: schwarz in der richtigen Größe statt Speicherinhalt */
+        return calloc(1, *imageSize);
+    }
 
     GLuint framebuffer;
     glGenFramebuffers(1, &framebuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
 
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, texture->id, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, target, texture->id, level);
 
     void* pixels = malloc(*imageSize);
-    GLRenderer_readPixels(renderer, 0, 0, texture->width, texture->height, format, type, pixels);
+    freePixelReadCache(renderer);
+    GLRenderer_readPixels(renderer, 0, 0, width, height, format, type, pixels);
+    freePixelReadCache(renderer);
 
-    glBindFramebuffer(GL_FRAMEBUFFER, renderer->clientState.framebuffer[indexOfGLTarget(GL_FRAMEBUFFER)]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, renderer->clientState.framebuffer[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)]);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, renderer->clientState.framebuffer[indexOfGLTarget(GL_READ_FRAMEBUFFER)]);
     glDeleteFramebuffers(1, &framebuffer);
     return pixels;
 }
@@ -1773,14 +1789,18 @@ void* GLRenderer_getTexImage(GLRenderer* renderer, GLenum target, GLint level, G
 void* GLRenderer_getCompressedTexImage(GLRenderer* renderer, GLenum target, GLint level, int* compressedSize) {
     target = parseTexTarget(target);
     GLTexture* texture = GLTexture_getBound(target);
-    *compressedSize = texture ? getCompressedImageSize(texture->originFormat, texture->width, texture->height, level) : 0;
+    *compressedSize = texture && level >= 0 && level <= 15 ? getCompressedImageSize(texture->originFormat, texture->width, texture->height, level) : 0;
     if (*compressedSize == 0) return NULL;
 
     int imageSize;
     void* imageData = GLRenderer_getTexImage(renderer, target, level, GL_RGBA, GL_UNSIGNED_BYTE, &imageSize);
+    if (!imageData) {
+        *compressedSize = 0;
+        return NULL;
+    }
 
     void* compressedData = malloc(*compressedSize);
-    compressTexImage2D(texture->originFormat, texture->width, texture->height, imageData, compressedData);
+    compressTexImage2D(texture->originFormat, TEXLEVEL(texture->width, level), TEXLEVEL(texture->height, level), imageData, compressedData);
     free(imageData);
     return compressedData;
 }

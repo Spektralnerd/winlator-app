@@ -227,6 +227,11 @@ GLFormatInfo* GLFormats_queryInternalformat(GLenum target, GLenum internalformat
             case GL_FILTER:
                 result = GL_FULL_SUPPORT;
                 break;
+            case GL_SRGB_READ:
+                /* sRGB-DXT: ausgepackt in GL_SRGB8_ALPHA8 (texture_utils.h); ohne das liest wined3d DXT-Farbtexturen
+                 * auch mit D3DSAMP_SRGBTEXTURE linear (Unreal Engine 3: dunkle Töne viel zu hell) */
+                result = isSrgbCompressedFormat(internalformat) && !GLES2 ? GL_FULL_SUPPORT : GL_NONE;
+                break;
             default:
                 result = GL_NONE;
                 break;
