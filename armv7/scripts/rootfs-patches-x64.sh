@@ -1,19 +1,26 @@
 #!/usr/bin/env bash
-# wfm.exe (Winlator File Manager, brunodev85/wfm) als x86-64-Programm mit den Korrekturen aus
-# patches/wfm, für die 64-Bit-Root-FS (arm64, armv7hybrid): ersetzt die wfm.exe des Originals in
-# rootfs_patches.tzst. Gelinkt wird direkt gegen die libcdio.dll aus demselben Archiv, die
-# unverändert bleibt.
+# rootfs_patches.tzst der 64-Bit-Root-FS (arm64, armv7hybrid) mit den Korrekturen:
+#   - wfm.exe (Winlator File Manager, brunodev85/wfm) als x86-64-Programm mit patches/wfm, statt
+#     der wfm.exe des Originals; gelinkt direkt gegen die libcdio.dll aus demselben Archiv, die
+#     unverändert bleibt
+#   - optional ein Dateibaum ab Root-FS, der dazukommt bzw. Gleichnamiges ersetzt (die neu gebauten
+#     Wine-DLLs aus wine-dlls-x64.sh: opt/wine/lib/wine/...)
 #
-#   wfm-x64.sh <rootfs_patches.tzst>
+#   rootfs-patches-x64.sh <rootfs_patches.tzst> [baum]
 #
 # Benötigt: git, x86_64-w64-mingw32-gcc/-windres/-objdump (gcc-mingw-w64-x86-64), zstd, tar.
-# (Absichtlich nicht build-*.sh: das Skript gehört nicht zum 32-Bit-Unterbau und soll dessen
-# Schlüssel im CI nicht verändern.)
+# (Absichtlich weder build-*.sh noch patch-*.sh: das Skript gehört nicht zum 32-Bit-Unterbau und
+# soll dessen Schlüssel im CI nicht verändern.)
 set -euo pipefail
 . "$(dirname "$0")/env.sh"
 
-[ $# -eq 1 ] && [ -f "$1" ] || { echo "Aufruf: $0 <rootfs_patches.tzst>"; exit 2; }
+[ $# -ge 1 ] && [ $# -le 2 ] && [ -f "$1" ] || { echo "Aufruf: $0 <rootfs_patches.tzst> [baum]"; exit 2; }
 ARCHIVE="$(realpath "$1")"
+TREE=""
+if [ $# -eq 2 ]; then
+    [ -d "$2" ] || { echo "kein Ordner: $2"; exit 2; }
+    TREE="$(realpath "$2")"
+fi
 MINGW=x86_64-w64-mingw32
 LEVEL="${ZSTD_LEVEL:-19}"
 TMP="$BUILD_DIR/wfm-x64"
@@ -59,12 +66,23 @@ for d in $IMPORTS; do
     esac
 done
 
-log "rootfs_patches neu packen (zstd -$LEVEL)"
 OLD_SIZE=$(stat -c %s "$WINDIR/wfm.exe")
 install -m 644 "$TMP/wfm.exe" "$WINDIR/wfm.exe"
+echo "wfm.exe: $OLD_SIZE -> $(stat -c %s "$TMP/wfm.exe") Byte, sha256 $(sha256sum "$TMP/wfm.exe" | cut -c1-16)"
+if [ -n "$TREE" ]; then
+    log "Dateien aus $TREE"
+    (cd "$TREE" && find . -type f | sort) > "$TMP/tree.lst"
+    while read -r f; do echo "  $f ($(stat -c %s "$TREE/$f") Byte)"; done < "$TMP/tree.lst"
+    cp -a "$TREE/." "$TMP/patches/"
+fi
+
+log "rootfs_patches neu packen (zstd -$LEVEL)"
 tar -C "$TMP/patches" --owner=0 --group=0 --numeric-owner --sort=name -cf - . |
     zstd -"$LEVEL" -T0 -q -f -o "$ARCHIVE.neu"
 mv -f "$ARCHIVE.neu" "$ARCHIVE"
-zstd -dc "$ARCHIVE" | tar -xOf - ./home/xuser/.wine/drive_c/windows/wfm.exe | cmp - "$TMP/wfm.exe"
-echo "wfm.exe: $OLD_SIZE -> $(stat -c %s "$TMP/wfm.exe") Byte, sha256 $(sha256sum "$TMP/wfm.exe" | cut -c1-16)"
+mkdir -p "$TMP/check" && zstd -dc "$ARCHIVE" | tar -C "$TMP/check" -xf -
+cmp "$TMP/check/home/xuser/.wine/drive_c/windows/wfm.exe" "$TMP/wfm.exe"
+if [ -n "$TREE" ]; then
+    while read -r f; do cmp "$TMP/check/$f" "$TREE/$f"; done < "$TMP/tree.lst"
+fi
 echo "$(basename "$ARCHIVE"): $(stat -c %s "$ARCHIVE") Byte, $(zstd -dc "$ARCHIVE" | tar -tf - | wc -l) Einträge"

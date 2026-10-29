@@ -12,6 +12,8 @@ name: Winlator armv7
 #   assemble  Assets zusammenstellen -> Release "armv7-rootfs" (armv7-assets.tar)
 #   llvmpipe64  OpenGL-Treiber „Software“ (Mesa llvmpipe) für die 64-Bit-Root-FS, nativ auf arm64;
 #             zwischengespeichert, solange sich Skript, Patch und Mesa-Stand nicht ändern
+#   wine64dlls  korrigierte Wine-DLLs (dbghelp, shell32) für das originale 64-Bit-Wine (WoW64),
+#             zwischengespeichert wie llvmpipe64
 #   apk       APKs bauen -> Release "armv7-apk" (Vorabversion)
 #   logs      bei Fehlern die Protokolle -> Release "armv7-ci-logs"
 
@@ -243,9 +245,55 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  wine64dlls:
+    # einzelne DLLs des originalen 64-Bit-Wine (WoW64: x86_64 und i386) mit Korrekturen, für arm64
+    # und armv7hybrid; zwischengespeichert, solange sich Skript, Patches und Wine-Stand nicht ändern
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Zwischenspeicher
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: out/wine64dlls
+          key: wine64dlls-${{ hashFiles('armv7/scripts/wine-dlls-x64.sh', 'armv7/patches-x64/wine/*.patch', 'armv7/patches/wine/0003-shell32-drive-root-target.patch', 'armv7/scripts/env.sh') }}
+
+      - name: Wine-DLLs bauen
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq > /dev/null
+          sudo apt-get install -y -qq --no-install-recommends gcc-mingw-w64-x86-64 gcc-mingw-w64-i686 \
+            binutils-mingw-w64-x86-64 binutils-mingw-w64-i686 flex bison gettext > /dev/null
+          mkdir -p out
+          bash armv7/scripts/wine-dlls-x64.sh out/wine64dlls 2>&1 | tee out/wine64dlls.log
+
+      - name: Fehlerbericht
+        if: failure()
+        run: bash armv7/scripts/ci-report.sh out/wine64dlls.log "Wine-DLLs (64 Bit)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine64dlls
+          path: out/wine64dlls/
+          retention-days: 3
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-wine64dlls
+          path: |
+            out/wine64dlls.log
+            armv7/work/build/wine-x64/configure.log
+            armv7/work/build/wine-x64/make.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   apk:
-    # llvmpipe64 zählt hier nicht: ohne das Paket haben die 64-Bit-APKs nur keinen Software-Treiber
-    needs: [plan, armhf, wine, assemble, llvmpipe64]
+    # llvmpipe64 und wine64dlls zählen hier nicht: ohne sie fehlen den 64-Bit-APKs nur der
+    # Software-Treiber bzw. die korrigierten Wine-DLLs
+    needs: [plan, armhf, wine, assemble, llvmpipe64, wine64dlls]
     if: >-
       always() && needs.plan.result == 'success' &&
       needs.armhf.result != 'failure' && needs.armhf.result != 'cancelled' &&
@@ -299,13 +347,27 @@ jobs:
             echo "::warning::Kein llvmpipe-Paket: die 64-Bit-APKs haben keinen Software-Treiber"
           fi
 
-      - name: wfm.exe (x86-64) mit den Korrekturen für die 64-Bit-Root-FS
+      - name: Korrigierte Wine-DLLs für die 64-Bit-Root-FS holen
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: wine64dlls
+          path: out/wine64dlls
+
+      - name: rootfs_patches der 64-Bit-Root-FS (wfm.exe x86-64, Wine-DLLs)
         run: |
-          # ersetzt Brunos wfm.exe in rootfs_patches.tzst (armv7hybrid und arm64; das armv7-APK
-          # bringt seine eigene rootfs_patches.tzst aus dem Release armv7-rootfs mit)
+          # ersetzt Brunos wfm.exe in rootfs_patches.tzst und legt die neu gebauten Wine-DLLs dazu
+          # (armv7hybrid und arm64; das armv7-APK bringt seine eigene rootfs_patches.tzst aus dem
+          # Release armv7-rootfs mit)
           mkdir -p out
           sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 zstd > /dev/null
-          bash armv7/scripts/wfm-x64.sh app/src/main/assets/rootfs_patches.tzst 2>&1 | tee out/wfm-x64.log
+          TREE=""
+          if [ -d out/wine64dlls/opt ]; then
+            TREE=out/wine64dlls
+          else
+            echo "::warning::Keine korrigierten Wine-DLLs: die 64-Bit-APKs behalten Brunos dbghelp/shell32"
+          fi
+          bash armv7/scripts/rootfs-patches-x64.sh app/src/main/assets/rootfs_patches.tzst $TREE 2>&1 | tee out/rootfs-patches-x64.log
           # Kennung: bestehende Container entpacken eine geänderte rootfs_patches.tzst auch ohne
           # neue Versionsnummer (XServerDisplayActivity.setupWineSystemFiles)
           sha256sum app/src/main/assets/rootfs_patches.tzst | cut -c1-16 > app/src/main/assets/rootfs_patches.id
@@ -413,7 +475,7 @@ jobs:
           if-no-files-found: ignore
 
   logs:
-    needs: [armhf, wine, assemble, llvmpipe64, apk]
+    needs: [armhf, wine, assemble, llvmpipe64, wine64dlls, apk]
     if: always() && contains(needs.*.result, 'failure')
     runs-on: ubuntu-24.04
     steps:

@@ -1,0 +1,21 @@
+diff --git a/dlls/dbghelp/minidump.c b/dlls/dbghelp/minidump.c
+index f8d3e9e..f8bed8a 100755
+--- a/dlls/dbghelp/minidump.c
++++ b/dlls/dbghelp/minidump.c
+@@ -1041,6 +1041,16 @@ BOOL WINAPI MiniDumpWriteDump(HANDLE hProcess, DWORD pid, HANDLE hFile,
+             return FALSE;
+         }
+         dc.process = process_find_by_handle(hProcess);
++        if (!dc.process)
++        {
++            /* Winlator: SymInitializeW() ignores the pseudo handle of the current process
++             * (GetCurrentProcess() == INVALID_HANDLE_VALUE) and returns TRUE without registering
++             * it; write_minidump() then dereferenced a NULL process and the crash handler of
++             * the application (Unreal Engine 3 and others) died before it could report anything */
++            WARN("no process information for %p, not writing a minidump\n", hProcess);
++            SetLastError(ERROR_INVALID_HANDLE);
++            return FALSE;
++        }
+     }
+ 
+     if (DumpType & MiniDumpWithDataSegs)

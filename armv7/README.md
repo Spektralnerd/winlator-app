@@ -111,12 +111,32 @@ Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
   aus `do_copy`). `wfm/0001-paste-into-drive-root.patch` gibt `C:\` weiter;
   `wine/0003-shell32-drive-root-target.patch` nimmt ein bloßes `C:` als Wurzel und lässt die
   beiden Felder nie mehr leer. Gilt genauso im Original (gleiche wfm- und Wine-Quellen): für
-  armv7hybrid und arm64 baut `scripts/wfm-x64.sh` im CI wfm.exe mit `patches/wfm` als
+  armv7hybrid und arm64 baut `scripts/rootfs-patches-x64.sh` im CI wfm.exe mit `patches/wfm` als
   x86-64-Programm (gegen die libcdio.dll des Originals) und tauscht es in
   `rootfs_patches.tzst` aus. `rootfs_patches.id` (Prüfsumme) lässt bestehende Container die
   geänderte Datei auch ohne neue Versionsnummer entpacken. Brunos x86-64-wfm.exe übergibt
   `wcstok` außerdem einen Nullzeiger als drittes Argument (neuere MinGW-Laufzeit): eingetippte
   Pfade im Adressfeld landeten dort immer bei „Computer“; der Neubau hat das nicht.
+
+### Korrigierte DLLs für das originale 64-Bit-Wine (arm64, armv7hybrid)
+
+Das 64-Bit-Wine der Originalvariante bleibt Brunos Bau; einzelne DLLs daraus baut
+`scripts/wine-dlls-x64.sh` (CI-Job `wine64dlls`, zwischengespeichert) aus denselben Quellen
+(`WINE_REPO`/`WINE_COMMIT`) mit Korrekturen neu, jeweils als x86_64- und i386-PE (WoW64), und
+`rootfs-patches-x64.sh` legt sie unter `opt/wine/lib/wine/...` in `rootfs_patches.tzst`:
+
+- `dbghelp.dll`, `patches-x64/wine/0001-dbghelp-minidump-pseudo-handle.patch`: Brunos Wine lässt
+  `SymInitialize(GetCurrentProcess(), ...)` absichtlich leer laufen (der Pseudo-Handle ist
+  `INVALID_HANDLE_VALUE`), `MiniDumpWriteDump` griff danach auf einen Nullzeiger zu. Damit starb
+  die Absturzbehandlung jedes Programms, das einen Minidump schreibt (Unreal Engine 3, Unity …),
+  bevor es seine Fehlermeldung ausgeben konnte (0-Byte-`.dmp`, leeres Log; Outlast). Jetzt
+  liefert `MiniDumpWriteDump` dort FALSE, und das Programm meldet seinen Fehler selbst.
+  Für das 32-Bit-Wine (armv7) steht der Patch noch aus (er würde den Unterbau neu bauen).
+- `shell32.dll` mit `patches/wine/0003-shell32-drive-root-target.patch` (siehe oben), damit auch
+  andere Programme als wfm in eine Laufwerkswurzel kopieren können.
+
+Auf dem PC mit Winlators x86_64-Wine geprüft (Exporte, Importe und Ressourcen wie im Original;
+gettext muss beim Bauen da sein, sonst fehlen die Übersetzungen in den Ressourcen).
 
 Schlägt ein Schritt fehl, stehen die letzten Protokollzeilen als Annotation am Lauf und die
 vollständigen Protokolle im Release `armv7-ci-logs`.
