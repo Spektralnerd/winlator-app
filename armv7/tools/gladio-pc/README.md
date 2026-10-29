@@ -163,8 +163,27 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   `GetData(D3DGETDATA_FLUSH)`. `wine d3d9occl.exe out.txt` (ES 3) bzw. `out.txt es2` (unter ES 2 ist alles
   sichtbar). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9occl.exe d3d9occl.c -ld3d9 -luser32`.
 
+* `d3d9inst.c` – Instanzen mit `SetStreamSourceFreq` (geometrische Instanzen, Basis-Eckpunkt 4): Versatz
+  und D3DCOLOR je Instanz aus einem zweiten Strom, dazu ein Aufruf ohne Instanzen; erwartet rot/grün/blau/gelb
+  und weiß in der Mitte. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9inst.exe d3d9inst.c -ld3d9 -luser32`.
+* `d3d9depth.c` – Tiefe aus einer INTZ-Textur lesen (Tiefenpuffer-Textur, die die Unreal Engine 3 und andere
+  abtasten), mit Punktfilter und bilinear; erwartet 64/191. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9depth.exe
+  d3d9depth.c -ld3d9 -luser32`.
+
 Vergleich zweier PPM-Bilder: `python3 ppmdiff.py a.ppm b.ppm` (größte Abweichung je
 Kanal und Anteil abweichender Pixel).
+
+## Bild aufzeichnen
+
+`GLADIO_PC_CAPTURE_AT=N` (Umgebung des Servers) zeichnet das Bild nach Bild N auf, nach
+`GLADIO_PC_CAPTURE_DIR` (sonst ins Ablageverzeichnis bzw. `/tmp`), genau wie der Menüpunkt „Bild
+aufzeichnen (Gladio)“ in der App (`app/src/main/cpp/gladiorenderer/src/gl_diag.c`): Ordner
+`gladio-JJJJMMTT-HHMMSS` mit `anfragen.txt` (jede Anfrage mit Argumenten und GL-Fehlern, zu
+jedem Zeichenaufruf Zustand, Sampler, Attribute und Uniforms), `bild-NNN.png` (Ergebnis jedes
+Durchgangs, links Farbe, rechts Alpha) und `shader.txt`. Mit `make BUILD=build-rel DEBUG_MODE=0
+GLADIO_SRC=build/gladio-src build-rel/gladio-pc-server` entsteht ein Server wie in der App (ohne
+`glGetError` nach jeder Anfrage); dessen Diagnose (GL-Fehler nach Zeichenaufrufen, unvollständige
+Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
 
 ## Stand
 
@@ -353,3 +372,16 @@ Kanal und Anteil abweichender Pixel).
   `GL_ANY_SAMPLES_PASSED`: 0 oder 255, ES 2: immer 255). `GL_QUERY_RESULT_AVAILABLE` fragt unter ES 3 den
   Treiber, statt immer „fertig“ zu melden (sonst wartet jedes Ergebnis auf die GPU). `d3d9occl` liefert über
   ES 3 (64 und 32 Bit) 0/255/0, über ES 2 255/255/255; vorher `D3DERR_NOTAVAILABLE`.
+
+* Instanzen und D3DCOLOR (Outlast: wined3d zeichnet jedes `DrawIndexedPrimitive` als
+  `glDrawElementsInstancedBaseVertex`, Instanzzahl = Strom-Frequenz): Die Umstellung der BGRA-Farben las
+  auch Attribute mit Teiler (`glVertexAttribDivisor`) im Eckpunktbereich des Aufrufs statt in den
+  Instanzen 0 … (Anzahl − 1)/Teiler. `d3d9inst` zeigte die vier Instanzen an der richtigen Stelle, aber
+  schwarz/schwarz/weiß/weiß statt rot/grün/blau/gelb; jetzt stimmen alle fünf Farben. Instanzierte
+  Zeichenaufrufe mit Basis-Eckpunkt zählen jetzt auch in der Statistik als Zeichenaufrufe (vorher
+  „4 Zeichenaufrufe“ je Bild bei Outlast).
+* Tiefentexturen (`GL_DEPTH_TEXTURE_MODE` alter Kontexte): INTENSITY lieferte unter ES (D,0,0,1) statt
+  (D,D,D,D), ALPHA (0,0,0,1) statt (0,0,0,D); jetzt per Swizzle wie GL, und nur für Tiefenformate.
+* Diagnose: siehe „Bild aufzeichnen“. Nebenbefund beim Start von wined3d (einmalig, harmlos):
+  `glTexImage2D(GL_TEXTURE_1D_ARRAY)` (ES kennt keine 1D-Texturen) und `glEnable(GL_MULTISAMPLE)` melden
+  `GL_INVALID_ENUM`; GL_MULTISAMPLE & Co. verwirft der Server jetzt still.

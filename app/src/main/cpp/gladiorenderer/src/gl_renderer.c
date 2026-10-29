@@ -638,6 +638,22 @@ void GLRenderer_addArrayElement(GLRenderer* renderer, int index) {
     }
 }
 
+static bool isDepthFormat(GLint format) {
+    switch (format) {
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return true;
+        default:
+            return false;
+    }
+}
+
 void GLRenderer_setCapabilityState(GLRenderer* renderer, GLenum cap, bool state, int index) {
     switch (cap) {
         case GL_LIGHTING:
@@ -676,6 +692,13 @@ void GLRenderer_setCapabilityState(GLRenderer* renderer, GLenum cap, bool state,
         case GL_NORMALIZE:
         case GL_TEXTURE_CUBE_MAP_SEAMLESS:
         case GL_DEPTH_CLAMP:
+        /* kennt ES nicht (Multisampling gilt bei Multisample-Puffern immer); wined3d schaltet GL_MULTISAMPLE
+         * beim Start ein, der Treiber meldete GL_INVALID_ENUM */
+        case GL_MULTISAMPLE:
+        case GL_SAMPLE_ALPHA_TO_ONE:
+        case GL_POLYGON_SMOOTH:
+        case GL_POLYGON_OFFSET_POINT:
+        case GL_COLOR_LOGIC_OP:
             break;
         case GL_VERTEX_PROGRAM_ARB:
         case GL_FRAGMENT_PROGRAM_ARB:
@@ -1592,28 +1615,27 @@ void GLRenderer_setTexParameter(GLRenderer* renderer, GLenum target, GLenum pnam
             glTexParameterfv(target, pname, params);
             break;
         case GL_DEPTH_TEXTURE_MODE: {
+            /* Altes GL: wie eine Tiefentextur ohne Vergleich gelesen wird – LUMINANCE (D,D,D,1), INTENSITY
+             * (D,D,D,D), ALPHA (0,0,0,D), RED (D,0,0,1). ES liest Tiefe immer als (D,0,0,1); nachgebildet
+             * mit Swizzle, nur für Tiefenformate (sonst würden Farbtexturen umgestellt). Vorher war INTENSITY
+             * (R,G,B,A) – in ES also (D,0,0,1) statt (D,D,D,D), ALPHA (0,0,0,1). */
             if (GLES2) break;
+            GLTexture* texture = GLTexture_getBound(target);
+            if (texture && !isDepthFormat(texture->originFormat)) break;
             GLint mode = (GLint)*params;
+            GLint swizzle[4];
             switch (mode) {
-                case GL_LUMINANCE:
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, GL_RED);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, GL_BLUE);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, GL_ONE);
-                    break;
-                case GL_INTENSITY:
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, GL_RED);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, GL_BLUE);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
-                    break;
-                case GL_ALPHA:
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, GL_ZERO);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
-                    glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
-                    break;
+                case GL_LUMINANCE: swizzle[0] = swizzle[1] = swizzle[2] = GL_RED; swizzle[3] = GL_ONE; break;
+                case GL_INTENSITY: swizzle[0] = swizzle[1] = swizzle[2] = swizzle[3] = GL_RED; break;
+                case GL_ALPHA: swizzle[0] = swizzle[1] = swizzle[2] = GL_ZERO; swizzle[3] = GL_RED; break;
+                case GL_RED: swizzle[0] = GL_RED; swizzle[1] = swizzle[2] = GL_ZERO; swizzle[3] = GL_ONE; break;
+                default: swizzle[0] = -1; break;
             }
+            if (swizzle[0] == -1) break;
+            glTexParameteri(target, GL_TEXTURE_SWIZZLE_R, swizzle[0]);
+            glTexParameteri(target, GL_TEXTURE_SWIZZLE_G, swizzle[1]);
+            glTexParameteri(target, GL_TEXTURE_SWIZZLE_B, swizzle[2]);
+            glTexParameteri(target, GL_TEXTURE_SWIZZLE_A, swizzle[3]);
             break;
         }
     }

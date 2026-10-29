@@ -26,6 +26,7 @@ typedef struct GLVertexAttrib {
 #ifdef GL_SERVER
     bool normalized;
     bool bgraBuffer; /* GL_BGRA aus boundArrayBuffer (VERTEX_ATTRIB_BGRA_BUFFER), auch während abgeschaltet */
+    GLuint divisor;  /* glVertexAttribDivisor: > 0 = je Instanz statt je Eckpunkt (für die BGRA-Umstellung) */
     int type;
     GLuint boundArrayBuffer;
     int size;

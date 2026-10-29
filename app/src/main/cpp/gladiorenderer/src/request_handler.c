@@ -5,6 +5,7 @@
 #include "attrib_stack.h"
 #include "gl_query.h"
 #include "arb_program.h"
+#include "gl_diag.h"
 
 #define MSG_DEBUG_UNIMPLEMENTED_FUNC "%s not implemented yet"
 
@@ -985,7 +986,7 @@ void gd_handle_glDrawArrays(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArrays(first, count);
+    GLContext_prepareBgraArrays(first, count, 0);
     glDrawArrays(mode, first, count);
     GLES_finishStreamingArrays();
 }
@@ -999,7 +1000,7 @@ void gd_handle_glDrawArraysInstanced(GLContext* context) {
     ShaderConverter_updateBoundProgram();
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArrays(first, count);
+    GLContext_prepareBgraArrays(first, count, instancecount);
     if (GLES2) {
         glDrawArrays(mode, first, count);
         GLES_finishStreamingArrays();
@@ -1031,7 +1032,7 @@ void gd_handle_glDrawElements(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         GLES_finishStreamingArrays();
@@ -1051,7 +1052,7 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         GLES_finishStreamingArrays();
@@ -1071,7 +1072,7 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0, instancecount);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         GLES_finishStreamingArrays();
@@ -1092,7 +1093,7 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, instancecount);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         GLES_finishStreamingArrays();
@@ -1126,7 +1127,7 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, 0);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, 0, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, 0);
         GLES_finishStreamingArrays();
@@ -1148,7 +1149,7 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, &indices, type)) return;
     mode &= ~GLADIO_DRAW_RANGED;
     GLES_prepareStreamingArrays();
-    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex);
+    GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, 0);
     if (GLES2) {
         GLES_drawElements(mode, count, type, indices, basevertex);
         GLES_finishStreamingArrays();
@@ -1628,7 +1629,9 @@ void gd_handle_glGetCompressedTexImage(GLContext* context) {
 }
 
 void gd_handle_glGetError(GLContext* context) {
-    GLenum error = glGetError();
+    /* zuerst ein Fehler, den die Diagnose (nach Zeichenaufrufen) schon beim Treiber abgeholt hat */
+    GLenum error = GladioDiag_takePendingError(context);
+    if (error == GL_NO_ERROR) error = glGetError();
 
     gl_send(context->clientRing, REQUEST_CODE_GL_GET_ERROR, &error, sizeof(GLenum));
 }
@@ -3595,6 +3598,7 @@ void gd_handle_glVertexAttribDivisor(GLContext* context) {
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint divisor = ArrayBuffer_getInt(&context->inputBuffer);
 
+    if (index < VERTEX_ATTRIB_COUNT) currentRenderer->clientState.vao->attribs[index].divisor = divisor;
     if (GLES2) return;
     glVertexAttribDivisor(index, divisor);
 }

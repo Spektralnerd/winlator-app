@@ -415,4 +415,11 @@ public class GLXExtension extends Extension {
     private native long createGLXContext(int contextId, long sharedContextPtr);
 
     private native void destroyGLXContext(long contextPtr);
+
+    /** Ordner für Diagnosedateien des Gladio-Servers (Quelltexte nicht übersetzter Shader, Bildaufzeichnungen) */
+    public static native void setDiagnosticsDir(String dir);
+
+    /** Das nächste vollständige Bild des Gladio-Servers aufzeichnen (Menü „Bild aufzeichnen (Gladio)“):
+     *  jede Anfrage, Zustand je Zeichenaufruf, das Ergebnis jedes Durchgangs als PNG, nach dir/gladio-Zeit */
+    public static native void requestFrameCapture(String dir);
 }

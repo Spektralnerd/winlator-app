@@ -63,6 +63,11 @@ public final class StartLog {
 
     private StartLog() {}
 
+    /** Ordner der Diagnosedateien (für den Gladio-Server: Shader-Fehler, Bildaufzeichnungen) */
+    public static File getLogDir(Context context) {
+        return getDir(context);
+    }
+
     /** Documents/Winlator, solange die Speicherberechtigung fehlt Android/data/com.winlator/files */
     private static synchronized File getDir(Context context) {
         if (logDir != null) return logDir;

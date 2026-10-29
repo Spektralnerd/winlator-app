@@ -48,6 +48,7 @@ import com.winlator.contentdialog.VKD3DConfigDialog;
 import com.winlator.contentdialog.VirGLConfigDialog;
 import com.winlator.contentdialog.WineD3DConfigDialog;
 import com.winlator.core.StartLog;
+import com.winlator.xserver.extensions.GLXExtension;
 import com.winlator.core.AppUtils;
 import com.winlator.core.Arch;
 import com.winlator.core.GPUHelper;
@@ -245,6 +246,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 this.graphicsDriver[1] = GraphicsDrivers.DEFAULT_OPENGL_DRIVER;
             }
             warnIfOpenGLDriverNeedsES3(this.graphicsDriver[1]);
+            if (this.graphicsDriver[1].equals(GraphicsDrivers.GLADIO)) {
+                /* Gladio legt Quelltexte nicht übersetzter Shader und Bildaufzeichnungen neben start.txt ab */
+                GLXExtension.setDiagnosticsDir(StartLog.getLogDir(this).getAbsolutePath());
+                menu.findItem(R.id.menu_item_capture_frame).setVisible(true);
+            }
             this.dxwrapper = DXWrappers.parseIdentifier(dxwrapper);
             this.dxwrapperConfig = DXWrappers.parseConfigs(dxwrapper, dxwrapperConfig);
         }
@@ -449,6 +455,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 debugDialog.show();
                 drawerLayout.closeDrawers();
                 break;
+            case R.id.menu_item_capture_frame: {
+                File dir = StartLog.getLogDir(this);
+                GLXExtension.requestFrameCapture(dir.getAbsolutePath());
+                Toast.makeText(this, "Gladio zeichnet das nächste Bild auf (" + dir.getName() + "/gladio-…, dauert einige Sekunden)", Toast.LENGTH_LONG).show();
+                drawerLayout.closeDrawers();
+                break;
+            }
             case R.id.menu_item_touchpad_help:
                 showTouchpadHelpDialog();
                 break;

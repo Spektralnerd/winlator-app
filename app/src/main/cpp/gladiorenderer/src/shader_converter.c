@@ -8,6 +8,7 @@
 
 #if DEBUG_MODE
 #include "debug_utils.h"
+#include "gl_diag.h"
 #endif
 
 #define GL_VOID 0XFF01
@@ -1698,19 +1699,18 @@ static void compileShaderObject(ShaderProgram* program, ShaderObject* shader) {
 
     glShaderSource(shader->id, 1, (const GLchar* const*)&shaderSource.buffer, NULL);
     glCompileShader(shader->id);
-    ArrayBuffer_free(&shaderSource);
 
     GLint compileStatus;
     glGetShaderiv(shader->id, GL_COMPILE_STATUS, &compileStatus);
     shader->compileStatus = compileStatus ? COMPILE_STATUS_SUCCESS : COMPILE_STATUS_ERROR;
 
+    /* Fehlertext ins Protokoll, Quelltext in den Diagnoseordner (auch im Freigabe-Bau; vorher erfuhr man
+     * dort nichts: der Zeichenaufruf mit dem Programm fiel einfach aus) */
+    if (!compileStatus) GladioDiag_shaderCompileFailed(shader, program->id, shaderSource.buffer);
+    ArrayBuffer_free(&shaderSource);
+
 #if IS_DEBUG_ENABLED(DEBUG_MODE_SHADER_INFO)
-    if (!compileStatus) {
-        GLchar infoLog[512];
-        glGetShaderInfoLog(shader->id, 512, NULL, infoLog);
-        println("gladio: %s:%d compile error \n%s\n", glEnumToString(shader->type), shader->id, infoLog);
-        exit(1);
-    }
+    if (!compileStatus) exit(1);
 #endif
 }
 
@@ -1762,22 +1762,14 @@ static void mergeSeparateShaders(ShaderProgram* program, ShaderObject* mainShade
 static void linkShaderProgram(ShaderProgram* program) {
     glLinkProgram(program->id);
 
-#if IS_DEBUG_ENABLED(DEBUG_MODE_SHADER_INFO)
-    GLint linkStatus;
+    GLint linkStatus = GL_FALSE;
     glGetProgramiv(program->id, GL_LINK_STATUS, &linkStatus);
-
     if (!linkStatus) {
-        GLchar infoLog[512];
-        glGetProgramInfoLog(program->id, 512, NULL, infoLog);
-        char attachedShaders[64] = {0};
-        for (int i = 0; i < program->attachedShaders.size; i++) {
-            ShaderObject* shader = program->attachedShaders.elements[i];
-            sprintf(attachedShaders, "%s%s%d", attachedShaders, i > 0 ? "," : "", shader->id);
-        }
-        println("gladio: program %d link error [shaders: %s] \n%s\n", program->id, attachedShaders, infoLog);
+        GladioDiag_programLinkFailed(program);
+#if IS_DEBUG_ENABLED(DEBUG_MODE_SHADER_INFO)
         exit(1);
-    }
 #endif
+    }
 
     bool hasBuiltinAttributes = false;
     bool hasBuiltinUniforms = false;

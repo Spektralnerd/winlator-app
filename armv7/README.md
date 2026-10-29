@@ -438,6 +438,23 @@ nach `start.txt`; mit Box86s Vergrößerung stehen dort knapp 8 MB, ohne sie etw
    auch wenn das Programm einen Handler hat. `WINLATOR_DIAG=0` schaltet den Fortschritt und den
    Signalabfang ab.
 
+   Mit dem OpenGL-Treiber **Gladio** meldet der Server (alle Varianten, auch arm64) in
+   `logcat.txt`, was das Programm selbst nie erfährt: Shader, die der Treiber nicht übersetzt,
+   und Programme, die er nicht bindet (Fehlertext; der Quelltext nach der Umsetzung für OpenGL ES
+   landet als `gladio-shaderfehler-N.txt` bzw. `gladio-bindefehler-N.txt` neben `start.txt`),
+   GL-Fehler (geprüft nach jedem Zeichenaufruf und beim Bildwechsel; nach einem Fund zwei Bilder
+   lang nach jeder Anfrage, dann mit der auslösenden Anfrage und ihren Argumenten) und
+   unvollständige Zeichenziele (FBO mit Anhängen, Formaten und Größen). Die 5-s-Statistik zählt
+   diese Fehler mit. Fehlt etwas im Bild, zeichnet der Menüpunkt **„Bild aufzeichnen (Gladio)“**
+   (seitliches Menü im laufenden Container) das nächste vollständige Bild nach
+   `Documents/Winlator/gladio-JJJJMMTT-HHMMSS/` auf: `anfragen.txt` mit jeder Anfrage samt
+   Argumenten und GL-Fehlern, zu jedem Zeichenaufruf Programm, Sampler mit Textur, Format und
+   Filter, Vertexattribute, Zustand (Mischen, Masken, Tiefe, Stencil, Ausschnitt) und Uniforms;
+   `bild-NNN.png` mit dem Ergebnis jedes Durchgangs (links Farbe, rechts Alpha, bei Werten über 1
+   logarithmisch; Wertebereiche je Kanal in `anfragen.txt`); `shader.txt` mit den Quelltexten der
+   benutzten Programme. Das ersetzt am Gerät ein Werkzeug wie RenderDoc; am PC dasselbe mit
+   `GLADIO_PC_CAPTURE_AT` (`tools/gladio-pc/README.md`).
+
 Bildreste beim Scrollen (Einstellungen auf Android 9): Das Original setzt den Fensterhintergrund
 auf `?attr/colorPrimarySurface`, eine reine Farbe. Android bis 9 liest `android:windowBackground`
 nur als Ressourcen-ID und bekommt dann gar keinen Hintergrund; das Fenster gilt trotzdem als

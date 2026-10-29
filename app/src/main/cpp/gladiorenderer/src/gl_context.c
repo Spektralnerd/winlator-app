@@ -5,6 +5,7 @@
 #include "request_handler.h"
 #include "gl_es2.h"
 #include "crash_report.h"
+#include "gl_diag.h"
 
 extern EGLContext globalEGLContext;
 static void makeGLXContextCurrent(EGLDisplay eglDisplay, GLXContext* context);
@@ -44,7 +45,9 @@ static bool isDrawRequest(short requestCode) {
         case REQUEST_CODE_GL_DRAW_ELEMENTS:
         case REQUEST_CODE_GL_DRAW_ELEMENTS_BASE_VERTEX:
         case REQUEST_CODE_GL_DRAW_ELEMENTS_INSTANCED:
+        case REQUEST_CODE_GL_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX: /* wined3d: jedes DrawIndexedPrimitive (Instanzen = Strom-Frequenz, meist 1) */
         case REQUEST_CODE_GL_DRAW_RANGE_ELEMENTS:
+        case REQUEST_CODE_GL_DRAW_RANGE_ELEMENTS_BASE_VERTEX:
         case REQUEST_CODE_GL_MULTI_DRAW_ELEMENTS_BASE_VERTEX:
         case REQUEST_CODE_GL_END:
             return true;
@@ -115,6 +118,7 @@ static void printStats(GLContext* context, int64_t now) {
     printTopRequestCodes("Antworten je Bild außer SWAP", gladio_statsReplyCodes, 4, frames);
     printTopRequestCodes("häufigste Anfragen je Bild", requestCodeCounts, 8, frames);
     printTopRequestCodes("Stapel ausgegeben vor", flushCodeCounts, 6, frames);
+    GladioDiag_printStats();
 }
 
 static void resetStats(GLContext* context, int64_t now) {
@@ -607,6 +611,8 @@ static void* requestHandlerThread(void* param) {
             drawStart = 0;
         }
 
+        GladioDiag_beforeRequest(context, requestCode, drawing);
+
         switch (requestCode) {
             case REQUEST_CODE_SET_CURRENT_RENDER_WINDOW: {
                 int windowId = ArrayBuffer_getInt(&context->inputBuffer);
@@ -665,13 +671,12 @@ static void* requestHandlerThread(void* param) {
 
         if (drawStart) context->stats.drawNs += nowNs() - drawStart;
 
-#if IS_DEBUG_ENABLED(DEBUG_MODE_GL_ERROR)
-        GLenum error = glGetError();
-        if (error != GL_NO_ERROR) println("gladio: glError %s %x", requestCodeToString(requestCode), error);
-#endif
+        /* GL-Fehler, Zeichenziel, Aufzeichnung (gl_diag.c; im Bau mit DEBUG_MODE_GL_ERROR nach jeder Anfrage) */
+        GladioDiag_afterRequest(context, requestCode, drawing);
     }
 
     printLastRequests(context);
+    GladioDiag_endContext(context);
     GladioCrash_setPhase("Ende der Verbindung");
     destroyDisplayBuffer();
     destroyDisplayBufAttachment(context);
@@ -1247,7 +1252,7 @@ static void convertBgraColors(uint8_t* dst, const uint8_t* src, int stride, int 
     }
 }
 
-static void prepareBgraArrays(GLClientState* clientState, int64_t first, int64_t last) {
+static void prepareBgraArrays(GLClientState* clientState, int64_t first, int64_t last, GLsizei instancecount) {
     static bool warned = false;
     GLRenderer* renderer = currentRenderer;
     GLVertexArrayObject* vao = clientState->vao;
@@ -1269,15 +1274,24 @@ static void prepareBgraArrays(GLClientState* clientState, int64_t first, int64_t
 
         int stride = attrib->stride > 0 ? attrib->stride : 4;
         uint64_t offset = (uint64_t)attrib->pointer;
+        /* Attribute je Instanz (Teiler > 0) lesen die Instanzen 0 .. (Anzahl-1)/Teiler, ohne Basis-
+         * Eckpunkt; die Eckpunkte des Zeichenaufrufs gelten nur für Attribute je Eckpunkt. Vorher
+         * wurde auch hier der Eckpunktbereich umgestellt, die Instanzfarben (D3DCOLOR aus
+         * SetStreamSourceFreq) kamen aus dem falschen Bereich. */
+        int64_t attribFirst = first, attribLast = last;
+        if (attrib->divisor > 0) {
+            attribFirst = 0;
+            attribLast = instancecount > 1 ? (instancecount - 1) / attrib->divisor : 0;
+        }
         /* Bereich auf den Puffer begrenzen (Neustart-Index, falsche Bereiche) */
         int64_t maxVertex = ((int64_t)source->size - (int64_t)offset - 4) / stride;
-        int64_t lo = MAX(first, 0), hi = MIN(last, maxVertex);
+        int64_t lo = MAX(attribFirst, 0), hi = MIN(attribLast, maxVertex);
 
         if (!source->mappedData || attrib->type != GL_UNSIGNED_BYTE || hi < lo || (hi + 1) * 4 > BGRA_STREAM_MAX_SIZE / 2) {
             /* Notbehelf: Puffer unverändert (Rot und Blau vertauscht) */
             if (!warned) {
                 println("gladio: GL_BGRA-Attribut %d nicht umstellbar (Puffer %u, Typ %s, Eckpunkte %lld-%lld) – Farben unverändert",
-                        i, attrib->boundArrayBuffer, glEnumToString(attrib->type), (long long)first, (long long)last);
+                        i, attrib->boundArrayBuffer, glEnumToString(attrib->type), (long long)attribFirst, (long long)attribLast);
                 warned = true;
             }
             glBindBuffer(GL_ARRAY_BUFFER, source->id);
@@ -1338,13 +1352,13 @@ static void prepareBgraArrays(GLClientState* clientState, int64_t first, int64_t
     restoreArrayBufferBinding();
 }
 
-void GLContext_prepareBgraArrays(GLint first, GLsizei count) {
+void GLContext_prepareBgraArrays(GLint first, GLsizei count, GLsizei instancecount) {
     GLClientState* clientState = &currentRenderer->clientState;
     if (count <= 0 || !hasBgraBufferArrays(clientState)) return;
-    prepareBgraArrays(clientState, first, (int64_t)first + count - 1);
+    prepareBgraArrays(clientState, first, (int64_t)first + count - 1, instancecount);
 }
 
-void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex) {
+void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex, GLsizei instancecount) {
     GLClientState* clientState = &currentRenderer->clientState;
     if (count <= 0 || !hasBgraBufferArrays(clientState)) return;
 
@@ -1384,7 +1398,7 @@ void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* 
     }
     #undef SCAN_INDICES
     if (minIndex > maxIndex) return;
-    prepareBgraArrays(clientState, (int64_t)minIndex + basevertex, (int64_t)maxIndex + basevertex);
+    prepareBgraArrays(clientState, (int64_t)minIndex + basevertex, (int64_t)maxIndex + basevertex, instancecount);
 }
 
 const char* getGLExtensions(int* outNumExtensions) {

@@ -69,6 +69,16 @@ typedef struct GLContext {
         int size[64];
         uint32_t count;
     } lastRequests;
+
+    /* Diagnose (gl_diag.c) */
+    struct {
+        GLenum pendingError;     /* vom Server gelesener Treiberfehler, für das nächste glGetError des Programms */
+        uint32_t frames;
+        uint32_t huntUntilFrame; /* bis dahin nach jeder Anfrage auf GL-Fehler prüfen */
+        uint32_t lastHuntFrame;
+        bool hunted;
+        bool framebufferDirty;   /* Zeichenziel beim nächsten Zeichenaufruf prüfen */
+    } diag;
 } GLContext;
 
 /* Zähler über alle Kontexte (Antworten an den Client, Texturdaten, gelinkte Programme) */
@@ -85,8 +95,9 @@ extern void readCommandBuffer(GLContext* context);
 extern void readVertexArrayElement(GLContext* context, int arrayIdx, int elementIdx);
 extern bool readUnboundVertexArrays(GLContext* context, GLenum drawMode, int drawCount, void** outIndices, GLenum indexType);
 /* GL_BGRA-Attribute aus Puffern vor dem Zeichnen umstellen (Eckpunkte [first, first + count) bzw. die Indizes) */
-extern void GLContext_prepareBgraArrays(GLint first, GLsizei count);
-extern void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex);
+/* instancecount: 0 bei Zeichenaufrufen ohne Instanzen (Attribute mit Teiler lesen dann Instanz 0) */
+extern void GLContext_prepareBgraArrays(GLint first, GLsizei count, GLsizei instancecount);
+extern void GLContext_prepareBgraArraysIndexed(GLsizei count, GLenum type, const void* indices, GLint basevertex, GLsizei instancecount);
 extern const char* getGLExtensions(int* numExtensions);
 
 extern pthread_mutex_t glx_context_mutex;

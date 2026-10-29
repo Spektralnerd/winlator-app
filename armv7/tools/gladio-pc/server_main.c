@@ -321,6 +321,14 @@ static jboolean stub_CallBooleanMethod(JNIEnv* env, jobject obj, jmethodID mid, 
         else {
             client->frames++;
             if (wantDump(client->frames)) dumpFrame(client, width, height, flipY, texture);
+            { /* GLADIO_PC_CAPTURE_AT=N: das Bild nach Bild N aufzeichnen (gl_diag.c), nach GLADIO_PC_CAPTURE_DIR bzw. ins Ablageverzeichnis */
+                const char* at = getenv("GLADIO_PC_CAPTURE_AT");
+                if (at && atoi(at) == client->frames) {
+                    extern void GladioDiag_requestCapture(const char* dir);
+                    const char* dir = getenv("GLADIO_PC_CAPTURE_DIR");
+                    GladioDiag_requestCapture(dir ? dir : dumpDir ? dumpDir : "/tmp");
+                }
+            }
 
             struct timeval now;
             gettimeofday(&now, NULL);

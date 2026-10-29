@@ -23,7 +23,7 @@ SERVER_OBJS := $(patsubst $(CPP_DIR)/%.c,$(BUILD)/server/%.o,$(SERVER_SRCS)) $(B
 SERVER_CFLAGS := -O1 -g -fPIC -std=gnu11 -w -MMD -MP -DGL_SERVER=1 -D__ANDROID_API__=28 "-DDEBUG_MODE=$(DEBUG_MODE)" \
                  -Ishim -I$(JNI_INCLUDE) -I$(JNI_INCLUDE)/linux \
                  -I$(CPP_DIR)/gladiorenderer/include -I$(CPP_DIR)/winlator/include -I$(CPP_DIR)/vortekrenderer/include
-SERVER_LIBS := -lEGL -lGLESv2 -lX11 -lpthread -lm
+SERVER_LIBS := -lEGL -lGLESv2 -lX11 -lpthread -lm -lz
 
 CLIENT_SRCS := main.c gl_calls.c glx_calls.c arrays.c ring_buffer.c gl_buffer.c gl_vao.c
 CLIENT_CFLAGS := -O2 -g -fPIC -std=gnu11 -w -DGL_GLEXT_PROTOTYPES
