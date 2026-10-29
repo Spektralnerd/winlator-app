@@ -3694,7 +3694,14 @@ void gd_handle_glVertexAttribDivisor(GLContext* context) {
     GLuint index = ArrayBuffer_getInt(&context->inputBuffer);
     GLuint divisor = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (index < VERTEX_ATTRIB_COUNT) currentRenderer->clientState.vao->attribs[index].divisor = divisor;
+    if (index < VERTEX_ATTRIB_COUNT) {
+        /* wined3d setzt den Teiler bei jedem Laden der Vertexdaten für jedes Attribut neu (Outlast: 3000–7800 je
+         * Bild, fast alle unverändert). Der Server führt ihn je VAO mit (nur dieser Aufruf ändert ihn im Treiber,
+         * neue VAOs beginnen wie im Treiber bei 0) und ruft den Treiber nur bei einer Änderung. */
+        GLVertexAttrib* attrib = &currentRenderer->clientState.vao->attribs[index];
+        if (attrib->divisor == divisor) return;
+        attrib->divisor = divisor;
+    }
     if (GLES2) return;
     glVertexAttribDivisor(index, divisor);
 }
