@@ -117,6 +117,13 @@ Eigene Patches liegen in `armv7/patches` (werden beim Bauen angewendet):
   geänderte Datei auch ohne neue Versionsnummer entpacken. Brunos x86-64-wfm.exe übergibt
   `wcstok` außerdem einen Nullzeiger als drittes Argument (neuere MinGW-Laufzeit): eingetippte
   Pfade im Adressfeld landeten dort immer bei „Computer“; der Neubau hat das nicht.
+- `wfm/0002-iso-extract-chunks-progress-cancel.patch`: „Load ISO image“ entpackte das Abbild in
+  2-KB-Blöcken (je Block ein Aufruf in libcdio und ein `fwrite`) und zeigte dabei nur das
+  Wartesymbol; ließ sich das Abbild nicht öffnen (NULL aus `iso9660_open_ext`), blieb der Dialog
+  endlos stehen, und „Cancel“ wirkte beim Entpacken nicht. Jetzt 128-KB-Stücke, Dateiname und
+  bisher entpackte Menge im Dialog, Abbrechen wirkt, und ein nicht lesbares Abbild gibt die
+  Meldung „ungültiges ISO-Abbild“ statt zu hängen. Am PC (Winlators x86-64-Wine, 161-MB-Abbild):
+  gleicher Inhalt wie vorher, 2 s.
 
 ### Korrigierte DLLs für das originale 64-Bit-Wine (arm64, armv7hybrid)
 
@@ -131,7 +138,8 @@ Das 64-Bit-Wine der Originalvariante bleibt Brunos Bau; einzelne DLLs daraus bau
   die Absturzbehandlung jedes Programms, das einen Minidump schreibt (Unreal Engine 3, Unity …),
   bevor es seine Fehlermeldung ausgeben konnte (0-Byte-`.dmp`, leeres Log; Outlast). Jetzt
   liefert `MiniDumpWriteDump` dort FALSE, und das Programm meldet seinen Fehler selbst.
-  Für das 32-Bit-Wine (armv7) steht der Patch noch aus (er würde den Unterbau neu bauen).
+  Für das 32-Bit-Wine (armv7) liegt derselbe Patch als `patches/wine/0004-dbghelp-minidump-pseudo-handle.patch`
+  bei und geht mit dem nächsten Bau des Unterbaus hinein.
 - `shell32.dll` mit `patches/wine/0003-shell32-drive-root-target.patch` (siehe oben), damit auch
   andere Programme als wfm in eine Laufwerkswurzel kopieren können.
 
