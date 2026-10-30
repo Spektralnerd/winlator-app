@@ -327,6 +327,16 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   (`swapDisplayBuffers`) ebenso aus seiner Buchführung. Das PC-Geschirr führt die Fenstertextur
   seither wie das Gerät (`server_main.c`), Testprogramm `d3d9units.c` (drei Sampler wie der
   YUV-Shader, erwartet jedes Bild Rot).
+- Objekte, die ein Bild lang verschwinden (Outlast: Torflügel, Mauern): Die Unreal Engine 3 lässt
+  ein Objekt weg, wenn seine Verdeckungsabfrage des vorigen Bilds 0 Abtastwerte meldet. Zum
+  Eingrenzen zwei Schalter im Client (Umgebungsvariablen des Containers):
+  `GLADIO_QUERY_ALWAYS_VISIBLE=1` beantwortet Verdeckungsabfragen ohne Rundreise mit „fertig, 255“
+  (die Engine hält alles für sichtbar – verschwinden Objekte trotzdem, liegt es nicht an den
+  Abfragen), `GLADIO_NO_QUERY_SHORTCUT=1` schickt jede Abfrage und jede Fence als Rundreise zum
+  Server wie vor den Abkürzungen (verschwinden sie dann nicht mehr, steckt es in der Abkürzung).
+  Der Server sieht vor `GL_QUERY_RESULT` jetzt selbst nach, ob das Ergebnis vorliegt (höchstens
+  50 ms), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch aktiv, fremder
+  Kontext), gilt als sichtbar statt als 0.
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens

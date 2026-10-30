@@ -1,5 +1,6 @@
 #include "gl_context.h"
 #include "gl_es2.h"
+#include <unistd.h>
 
 static GLuint maxQueryId = 1;
 static GLQuery nullQuery = {0};
@@ -83,9 +84,24 @@ static void rememberEndedQuery(GLRenderer* renderer, GLQuery* query) {
     fifo->count++;
 }
 
+/* Ergebnis einer beendeten Verdeckungsabfrage. GL_QUERY_RESULT wartet laut Spezifikation, bis es vorliegt; sicherheits-
+ * halber vorher nachsehen (höchstens ~50 ms), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch
+ * aktiv, fremder Kontext – params bleibt unverändert), gilt als „sichtbar“: ein zu Unrecht sichtbares Objekt fällt nicht
+ * auf, ein zu Unrecht unsichtbares verschwindet ein Bild lang (Outlast: Tore, Mauern). */
 static uint32_t occlusionResult(GLQuery* query) {
-    GLuint result = GL_FALSE;
-    glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
+    GLuint result = UINT32_MAX;
+    bool readable = !query->active && query->id > 0 && query->ownerId == currentRenderer->contextId;
+    if (readable) {
+        GLuint available = GL_FALSE;
+        for (int i = 0; i < 500; i++) {
+            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
+            if (available) break;
+            if (i == 0) glFlush();
+            usleep(100);
+        }
+        glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
+    }
+    if (result == UINT32_MAX) result = GL_TRUE;
     query->counter = result == GL_TRUE && query->target == GL_SAMPLES_PASSED ? UINT8_MAX : result;
     return query->counter;
 }

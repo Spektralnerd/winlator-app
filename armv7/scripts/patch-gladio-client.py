@@ -112,7 +112,9 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   hat, gehen mit jedem glXSwapBuffers an den Server (dessen Laufstatistik zeigt sie; ein älterer Server liest nur die
   Kennung des Fensters)
 - Zum Vergleichen am Gerät lassen sich die Neuerungen über Umgebungsvariablen abschalten: GLADIO_NO_QUERY_BATCH=1,
-  GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1, GLADIO_NO_UNIFORM_DIFF=1
+  GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1, GLADIO_NO_UNIFORM_DIFF=1; zur Fehlersuche
+  bei Verdeckungsabfragen GLADIO_NO_QUERY_SHORTCUT=1 (jede Abfrage und Fence als Rundreise, wie vor den Abkürzungen) und
+  GLADIO_QUERY_ALWAYS_VISIBLE=1 (Abfragen gelten ohne Rundreise als fertig und sichtbar)
 - Weitere unveränderte Zustände gehen nicht hinaus (Outlast: 38 % der 41500 Anfragen je Bild setzten den schon gültigen
   Zustand): glBindTexture je Einheit, glVertexAttribPointer aus einem Puffer je Vertex-Array-Objekt, glEnable/glDisable(i),
   glColorMask(i), glVertexAttrib4f/4Nubv. Unbekannt werden sie durch glPopAttrib/glPopClientAttrib, gelöschte Objekte
@@ -1271,6 +1273,15 @@ sub("src/gl_calls.c", "void glBeginQuery(GLenum target, GLuint id) {\n    GL_CAL
     "    return target == GL_SAMPLES_PASSED ? 0 : target == GL_ANY_SAMPLES_PASSED ? 1 : target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE ? 2 : -1;\n"
     "}\n"
     "\n"
+    "/* Fehlersuche: GLADIO_NO_QUERY_SHORTCUT=1 – jede Abfrage und jede Fence als Rundreise beim Server (wie vor den\n"
+    " * Abkürzungen); GLADIO_QUERY_ALWAYS_VISIBLE=1 – Verdeckungsabfragen gelten ohne Rundreise als fertig mit 255\n"
+    " * Abtastwerten, die Engine hält dann alles für sichtbar (verschwinden Objekte trotzdem, liegt es nicht an den Abfragen) */\n"
+    "static int gladioQueryMode(void) {\n"
+    "    static int mode = -1;\n"
+    "    if (mode < 0) mode = gladio_envFlag(\"GLADIO_QUERY_ALWAYS_VISIBLE\") ? 2 : gladio_envFlag(\"GLADIO_NO_QUERY_SHORTCUT\") ? 1 : 0;\n"
+    "    return mode;\n"
+    "}\n"
+    "\n"
     "/* 1 = fertig, 0 = nicht fertig, -1 = beim Server fragen */\n"
     "static int gladioPollKnown(GladioPollState* state, uint32_t seq) {\n"
     "    if (!seq) return -1;\n"
@@ -1357,8 +1368,15 @@ sub("src/gl_calls.c",
     "}\n",
     r'''void glGetQueryObjectuiv(GLuint id, GLenum pname, GLuint* params) {
     GL_CALL_LOCK();
-    uint32_t querySeq = gladioQuerySeqOf(id);
+    int gladioMode = gladioQueryMode();
+    uint32_t querySeq = gladioMode == 0 ? gladioQuerySeqOf(id) : 0;
     if (pname != GL_QUERY_RESULT_AVAILABLE && pname != GL_QUERY_RESULT) querySeq = 0;
+    if (gladioMode == 2 && (pname == GL_QUERY_RESULT_AVAILABLE || pname == GL_QUERY_RESULT) && gladioQuerySeqOf(id)) {
+        *params = pname == GL_QUERY_RESULT ? 255 : GL_TRUE;
+        gladio_clientStats.localQueries++;
+        GL_CALL_UNLOCK();
+        return;
+    }
     int slot = id % GLADIO_POLL_SLOTS;
     if (querySeq && gladioQuerySeqs[slot].hasResult) {
         /* mit einer früheren Antwort gekommen */
@@ -1449,7 +1467,7 @@ sub("src/gl_calls.c",
     "GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {\n    GL_CALL_LOCK();\n    ArrayBuffer_rewind(&outputBuffer);\n",
     "GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {\n"
     "    GL_CALL_LOCK();\n"
-    "    uint32_t fenceSeq = gladioFenceSeqOf(sync);\n"
+    "    uint32_t fenceSeq = gladioQueryMode() == 0 ? gladioFenceSeqOf(sync) : 0;\n"
     "    int known = gladioPollKnown(&gladioFencePoll, fenceSeq);\n"
     "    if (known > 0 || (known == 0 && timeout == 0)) {\n"
     "        GL_CALL_UNLOCK();\n"
