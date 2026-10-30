@@ -100,6 +100,11 @@ static uint32_t occlusionResult(GLQuery* query) {
             usleep(100);
         }
         glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
+        if (result == 0) {
+            /* Null ist das einzige schädliche Ergebnis: gleich noch einmal lesen, falls der Treiber „fertig“ meldete,
+             * bevor der Wert für den Prozessor sichtbar war (eine Pause dazwischen kostete auf dem PC 3 ms je Bild) */
+            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
+        }
     }
     if (result == UINT32_MAX) result = GL_TRUE;
     query->counter = result == GL_TRUE && query->target == GL_SAMPLES_PASSED ? UINT8_MAX : result;
