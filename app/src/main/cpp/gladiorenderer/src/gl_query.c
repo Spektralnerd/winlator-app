@@ -85,14 +85,12 @@ static void rememberEndedQuery(GLRenderer* renderer, GLQuery* query) {
     fifo->count++;
 }
 
-/* Mali-G615 (CMF Phone 1): meldet der Treiber eine Abfrage als fertig und der Server liest das Ergebnis sofort, kommt
- * ab und zu 0 statt des echten Werts – die Unreal Engine 3 lässt das Objekt dann ein Bild lang weg (Outlast: Torflügel,
- * Mauern, der Scheinwerfer des Wagens). Mit einer Rundreise Abstand zwischen „fertig?“ und dem Lesen (wie vor den
- * gesammelten Antworten) passierte es viel seltener, aber noch. Deshalb gilt ein Ergebnis erst diese Zeit, nachdem der
- * Treiber es zuerst als fertig meldete, als lesbar; bis dahin heißt es „noch nicht fertig“ (der Client fragt ~1 ms
- * später wieder). Das kostet je Bild etwa diese Zeit einmal, nicht je Abfrage: die Abfragen eines Durchgangs werden
- * zusammen fertig. */
-#define OCCLUSION_RESULT_GRACE_NS 2000000ULL
+/* Mali-G615 (CMF Phone 1): Ein Ergebnis gilt erst diese Zeit, nachdem der Treiber es zuerst als fertig meldete, als
+ * lesbar; bis dahin heißt es „noch nicht fertig“ (der Client fragt ~1 ms später wieder). Vorsichtsmaßnahme gegen ein
+ * zu früh gelesenes Ergebnis (mit Einzelrundreisen, also einer Rundreise Abstand zwischen „fertig?“ und dem Lesen,
+ * ging einmal kurz der Scheinwerfer des Wagens aus). Kostet je Bild etwa diese Zeit einmal, nicht je Abfrage: die
+ * Abfragen eines Durchgangs werden zusammen fertig. */
+#define OCCLUSION_RESULT_GRACE_NS 1000000ULL
 
 static bool queryReadable(GLQuery* query) {
     return !query->active && query->id > 0 && query->ownerId == currentRenderer->contextId;
@@ -112,11 +110,15 @@ static bool occlusionAvailable(GLQuery* query, bool* driverAvailable) {
     return now - query->availableSinceNs >= OCCLUSION_RESULT_GRACE_NS;
 }
 
-/* Ergebnis einer beendeten Verdeckungsabfrage: erst lesen, wenn es nach obiger Regel lesbar ist (höchstens ~50 ms
- * warten), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch aktiv, fremder Kontext – params bleibt
- * unverändert), gilt als „sichtbar“: ein zu Unrecht sichtbares Objekt fällt nicht auf, ein zu Unrecht unsichtbares
- * verschwindet ein Bild lang. */
+/* Ergebnis einer beendeten Verdeckungsabfrage – je Ende genau einmal vom Treiber gelesen, danach aus counter. Die
+ * gesammelte Antwort las dasselbe Ergebnis zweimal (einmal für die gefragte Abfrage, einmal beim Einsammeln der
+ * fertigen), und das zweite Lesen lieferte auf dem Mali-G615 offenbar 0: mit Einzelrundreisen (jedes Ergebnis einmal
+ * gelesen) verschwanden die Objekte nicht mehr. Gelesen wird erst, wenn es nach obiger Regel lesbar ist (höchstens
+ * ~50 ms warten); ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch aktiv, fremder Kontext – params
+ * bleibt unverändert), gilt als „sichtbar“: ein zu Unrecht sichtbares Objekt fällt nicht auf, ein zu Unrecht
+ * unsichtbares verschwindet ein Bild lang. */
 static uint32_t occlusionResult(GLQuery* query) {
+    if (query->endSerial && query->resultSerial == query->endSerial) return query->counter;
     GLuint result = UINT32_MAX;
     if (queryReadable(query)) {
         for (int i = 0; i < 500; i++) {
@@ -125,14 +127,10 @@ static uint32_t occlusionResult(GLQuery* query) {
             usleep(100);
         }
         glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
-        if (result == 0) {
-            /* Null ist das einzige schädliche Ergebnis: gleich noch einmal lesen, falls der Treiber „fertig“ meldete,
-             * bevor der Wert für den Prozessor sichtbar war (eine Pause dazwischen kostete auf dem PC 3 ms je Bild) */
-            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT, &result);
-        }
     }
     if (result == UINT32_MAX) result = GL_TRUE;
     query->counter = result == GL_TRUE && query->target == GL_SAMPLES_PASSED ? UINT8_MAX : result;
+    query->resultSerial = query->endSerial;
     return query->counter;
 }
 
@@ -182,6 +180,7 @@ void GLQuery_begin(GLenum target, GLuint id) {
     query->counter = 0;
     query->endSerial = 0; /* ein gemerktes früheres Ende gilt nicht mehr */
     query->availableSinceNs = 0;
+    query->resultSerial = 0;
     currentRenderer->activeQuery = query;
 
     switch(target) {
