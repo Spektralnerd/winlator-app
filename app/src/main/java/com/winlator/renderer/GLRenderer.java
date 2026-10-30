@@ -291,6 +291,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
             else XForm.set(tmpXForm1, x, y, drawable.width, drawable.height);
 
             XForm.multiply(tmpXForm1, tmpXForm1, tmpXForm2);
+            texture.waitForCopy();
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture.getTextureId());
             windowMaterial.setUniformInt(windowMaterial.uniforms.texture, 0);
@@ -519,6 +520,7 @@ public class GLRenderer implements GLSurfaceView.Renderer, WindowManager.OnWindo
                 material.setUniformBool(material.uniforms.flipY, texture.isFlipY());
                 quadVertices.bind(material.programId);
 
+                texture.waitForCopy();
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texture.getTextureId());
                 material.setUniformInt(material.uniforms.screenTexture, 0);

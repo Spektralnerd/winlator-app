@@ -9,6 +9,7 @@ import android.util.SparseLongArray;
 import androidx.annotation.Keep;
 
 import com.winlator.core.Callback;
+import com.winlator.renderer.GLRenderer;
 import com.winlator.renderer.Texture;
 import com.winlator.xconnector.XInputStream;
 import com.winlator.xconnector.XOutputStream;
@@ -340,7 +341,7 @@ public class GLXExtension extends Extension {
             drawable.setData(null);
             Texture texture = drawable.getTexture();
             texture.setFlipY(flipY);
-            texture.copyFromReadBuffer(width, height);
+            texture.copyFromReadBuffer(width, height, GLRenderer.glesVersion >= 3);
             Runnable onDrawListener = drawable.getOnDrawListener();
             if (onDrawListener != null) onDrawListener.run();
         }
