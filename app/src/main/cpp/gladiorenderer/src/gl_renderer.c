@@ -1812,8 +1812,10 @@ void GLRenderer_setDrawBuffer(GLRenderer* renderer, GLenum drawBuffer) {
     if (drawBuffer == GL_NONE || (drawBuffer >= GL_COLOR_ATTACHMENT0 && drawBuffer <= GL_COLOR_ATTACHMENT31)) {
         GLFramebuffer_setDrawBuffers(1, &drawBuffer);
     }
-    else if (renderer->displayBuffer != renderer->clientState.framebuffer[indexOfGLTarget(GL_FRAMEBUFFER)]) {
-        GLFramebuffer_bind(GL_FRAMEBUFFER, renderer->displayBuffer);
+    else if (renderer->displayBuffer != renderer->clientState.framebuffer[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)]) {
+        /* GL_BACK/GL_FRONT gibt es nur am Fenster: dorthin zeichnen, die Lesebindung bleibt (wined3d merkt sich
+         * Lese- und Zeichenbindung getrennt und bindet nicht neu, was es für gebunden hält) */
+        GLFramebuffer_bind(GLES2 ? GL_FRAMEBUFFER : GL_DRAW_FRAMEBUFFER, renderer->displayBuffer);
     }
 }
 

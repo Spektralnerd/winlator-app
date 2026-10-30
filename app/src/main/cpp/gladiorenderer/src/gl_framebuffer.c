@@ -239,7 +239,12 @@ void GLFramebuffer_bind(GLenum target, GLuint id) {
     if (target == GL_FRAMEBUFFER) {
         ARRAYS_FILL(slots, MAX_FRAMEBUFFER_TARGETS, id);
     }
-    else if (target == GL_DRAW_FRAMEBUFFER || target == GL_READ_FRAMEBUFFER) slots[indexOfGLTarget(target)] = id;
+    else if (target == GL_DRAW_FRAMEBUFFER) {
+        /* GL_FRAMEBUFFER meint bei Anhängen und Statusabfragen das Zeichen-FBO */
+        slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)] = id;
+        slots[indexOfGLTarget(GL_FRAMEBUFFER)] = id;
+    }
+    else if (target == GL_READ_FRAMEBUFFER) slots[indexOfGLTarget(target)] = id;
     else {
         /* unbekanntes Ziel: indexOfGLTarget liefert 255 (vorher Schreibzugriff hinter clientState.framebuffer) */
         GLX_CONTEXT_UNLOCK();
@@ -328,11 +333,13 @@ void GLFramebuffer_setAttachment(GLenum target, GLenum attachment, GLenum object
 }
 
 void GLFramebuffer_delete(GLuint id) {
-    for (int i = 0; i < MAX_FRAMEBUFFER_TARGETS; i++) {
-        if (id == currentRenderer->clientState.framebuffer[i]) {
-            GLFramebuffer_bind(GL_FRAMEBUFFER, 0);
-        }
-    }
+    /* wie GL: ein gebundenes FBO löst sich beim Löschen nur von den Zielen, an denen es hängt */
+    GLuint* slots = currentRenderer->clientState.framebuffer;
+    bool boundDraw = id == slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)] || id == slots[indexOfGLTarget(GL_FRAMEBUFFER)];
+    bool boundRead = id == slots[indexOfGLTarget(GL_READ_FRAMEBUFFER)];
+    if (boundDraw && boundRead) GLFramebuffer_bind(GL_FRAMEBUFFER, 0);
+    else if (boundDraw) GLFramebuffer_bind(GLES2 ? GL_FRAMEBUFFER : GL_DRAW_FRAMEBUFFER, 0);
+    else if (boundRead) GLFramebuffer_bind(GL_READ_FRAMEBUFFER, 0);
 
     GLX_CONTEXT_LOCK();
     GLFramebuffer* framebuffer = SparseArray_get(currentRenderer->clientState.framebuffers, id);
@@ -346,7 +353,8 @@ void GLFramebuffer_delete(GLuint id) {
 }
 
 void GLFramebuffer_setReadBuffer(GLenum src) {
-    GLFramebuffer* framebuffer = GLFramebuffer_getBound(GL_FRAMEBUFFER);
+    GLFramebuffer* framebuffer = GLFramebuffer_getBound(GL_READ_FRAMEBUFFER);
+    if (!framebuffer) return;
     BITMASK_UNSET(framebuffer->flags, FLAG_READ_BUFFER_NONE);
 
     for (int i = 0, j = GETEXP(FLAG_READ_BUFFER_COLOR_ATTACHMENT); i < MAX_FB_COLOR_ATTACHMENTS; i++, j++) {
@@ -368,7 +376,8 @@ void GLFramebuffer_setReadBuffer(GLenum src) {
 }
 
 void GLFramebuffer_setDrawBuffers(GLuint count, GLenum* dst) {
-    GLFramebuffer* framebuffer = GLFramebuffer_getBound(GL_FRAMEBUFFER);
+    GLFramebuffer* framebuffer = GLFramebuffer_getBound(GL_DRAW_FRAMEBUFFER);
+    if (!framebuffer) return;
     BITMASK_UNSET(framebuffer->flags, FLAG_DRAW_BUFFER_NONE);
 
     for (int i = 0, j = GETEXP(FLAG_DRAW_BUFFER_COLOR_ATTACHMENT); i < MAX_FB_COLOR_ATTACHMENTS; i++, j++) {

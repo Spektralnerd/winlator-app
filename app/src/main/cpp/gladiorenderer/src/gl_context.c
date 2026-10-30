@@ -295,7 +295,8 @@ static void setCurrentRenderWindow(GLContext* context, int windowId) {
     createDisplayBufAttachment(context);
     createDisplayBuffer(context);
 
-    ARRAYS_FILL(currentRenderer->clientState.framebuffer, MAX_FRAMEBUFFER_TARGETS, 0);
+    /* createDisplayBuffer hat die Anzeige an alle Ziele gebunden; wer die Bindungen des Programms braucht, stellt
+     * sie danach wieder her (swapDisplayBuffers) */
     GLRenderer_setDrawBuffer(currentRenderer, GL_BACK);
 
     GLTexture* texture = GLTexture_getBound(GL_TEXTURE_2D);
@@ -340,12 +341,40 @@ static void swapDisplayBuffers(GLContext* context, int drawableId) {
         result = presentDisplayTexture(context, drawableId);
     }
     else {
-        GLuint framebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_FRAMEBUFFER)];
-        GLuint drawFramebuffer = currentRenderer->clientState.framebuffer[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)];
-        if (framebuffer != drawFramebuffer) GLFramebuffer_bind(GL_FRAMEBUFFER, drawFramebuffer);
+        /* Das Fenster bekommt den Anzeigepuffer (die Java-Seite kopiert aus dem Lesepuffer), unabhängig davon, was das
+         * Programm gerade gebunden hat. Danach gelten wieder dessen Bindungen – getrennt für Lesen und Zeichnen, denn
+         * wined3d merkt sich beide und bindet nicht neu, was es für gebunden hält (DirectDraw-Spiele: jedes Bild ein
+         * glBlitFramebuffer aus demselben Lese-FBO ins Fenster; vorher las der Blit ab dem zweiten Bild aus dem
+         * Fenster selbst, GL_INVALID_OPERATION, Bild schwarz). Beim Neuanlegen der Anzeige (Fenstergröße) bekommt
+         * die Bindung „Fenster“ den neuen Anzeigepuffer. */
+        GLuint* slots = currentRenderer->clientState.framebuffer;
+        GLuint savedRead = slots[indexOfGLTarget(GL_READ_FRAMEBUFFER)];
+        GLuint savedDraw = slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)];
+        GLuint oldDisplay = currentRenderer->displayBuffer;
+        if (savedRead != oldDisplay) GLFramebuffer_bind(GL_READ_FRAMEBUFFER, oldDisplay);
 
         JMethods* jmethods = &context->jmethods;
         result = (*jmethods->env)->CallBooleanMethod(jmethods->env, jmethods->obj, jmethods->updateWindowContent, drawableId, currentRenderer->displaySize[0], currentRenderer->displaySize[1], JNI_TRUE);
+        if (!result) {
+            destroyDisplayBuffer();
+            destroyDisplayBufAttachment(context);
+            setCurrentRenderWindow(context, drawableId);
+        }
+        GLuint newDisplay = currentRenderer->displayBuffer;
+        GLuint read = savedRead == oldDisplay || savedRead == 0 ? newDisplay : savedRead;
+        GLuint draw = savedDraw == oldDisplay || savedDraw == 0 ? newDisplay : savedDraw;
+        if (read == draw) {
+            if (slots[indexOfGLTarget(GL_READ_FRAMEBUFFER)] != read || slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)] != draw) GLFramebuffer_bind(GL_FRAMEBUFFER, read);
+        }
+        else {
+            if (slots[indexOfGLTarget(GL_DRAW_FRAMEBUFFER)] != draw) GLFramebuffer_bind(GL_DRAW_FRAMEBUFFER, draw);
+            if (slots[indexOfGLTarget(GL_READ_FRAMEBUFFER)] != read) GLFramebuffer_bind(GL_READ_FRAMEBUFFER, read);
+        }
+        if (result) {
+            GLTexture* texture = GLTexture_getBound(GL_TEXTURE_2D);
+            glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);
+        }
+        return;
     }
 
     if (result) {
