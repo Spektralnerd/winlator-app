@@ -20,7 +20,7 @@ typedef struct GLClientState {
 
 #ifdef GL_SERVER
     ShaderProgram* program;
-    GLTexture* texture[MAX_TEXTURES][MAX_TEXTURE_TARGETS];
+    GLTexture* texture[MAX_TEXTURE_UNITS][MAX_TEXTURE_TARGETS];
     GLuint framebuffer[MAX_FRAMEBUFFER_TARGETS];
     ARBProgram* arbProgram[MAX_ARB_PROGRAM_TARGETS];
     GLuint renderbuffer;

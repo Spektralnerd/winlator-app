@@ -292,6 +292,29 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   sofort hinaus). Spiele, die Vsync selbst abschalten, bleiben ungebremst. PC-Geschirr: Direct3D-9-
   Testprogramm mit `D3DPRESENT_INTERVAL_ONE` 60 Bilder/s (30 mit `GLADIO_REFRESH_HZ=30`, 209 mit
   `GLADIO_NO_VSYNC=1`), mit `INTERVAL_IMMEDIATE` unverändert 200+; Regressionslauf gleich.
+- Unveränderte Zustände und Uniform-Werte (Outlast): Von 41500 Anfragen je Bild setzten 38 % nur den
+  schon gültigen Zustand (wined3d bindet vor jedem Zeichenaufruf Texturen, Sampler, Zeiger und
+  Schalter neu), und `glUniform4fv` trug 6,5 MB je Bild – wined3d lädt bei jedem Zeichenaufruf die
+  Shader-Konstanten vom kleinsten bis zum größten seit dem letzten Laden gesetzten Register am
+  Stück (118 bzw. 244 vec4), auch wenn sich fast nichts geändert hat. Der Client
+  (`patch-gladio-client.py`) lässt jetzt auch `glBindTexture` je Einheit, `glVertexAttribPointer`
+  aus einem Puffer je Vertex-Array-Objekt, `glEnable/glDisable(i)`, `glColorMask(i)` und
+  `glVertexAttrib4f/4Nubv` mit unverändertem Wert weg und vergleicht `glUniform*`-Werte je
+  Programm mit den zuletzt gesendeten: nur die geänderten Läufe gehen hinaus (PC-Testprogramm
+  `d3d9const.c`, 100 Zeichenaufrufe mit je 118+96 Konstanten: 3 statt 334 KB je Bild). Die
+  Arraygrenzen kennt er aus der Uniform-Tabelle (GL ignoriert Werte dahinter); `glLinkProgram` und
+  Löschen verwerfen die Werte. Unbekannt werden die Zustände, wo der Server sie anders ändern kann:
+  `glPopAttrib`/`glPopClientAttrib`, gelöschte Objekte (Zähler, auch für andere Kontexte der
+  Gruppe), Arrays des festen Funktionsmodells und Direktmodus (dafür setzt der Server beim Zeichnen
+  selbst Treiberattribute). `GLADIO_NO_STATE_FILTER=1` bzw. `GLADIO_NO_UNIFORM_DIFF=1` in den
+  Umgebungsvariablen des Containers schalten das ab; die Laufstatistik zeigt „Client je Bild: …
+  gleiche Zustände nicht gesendet; Uniforms: … verglichen, davon … gesendet“. Testprogramm
+  `statetest.c` (PC-Geschirr): 50 Zellen, die je einen Filter und seine Ungültigmachung prüfen –
+  gleiches Bild mit und ohne Filter und wie Mesa nativ. Dazu im Server: Texturbindungen werden für
+  32 statt 8 Einheiten geführt (`MAX_TEXTURE_UNITS`; vorher teilten sich alle Einheiten ab 7 den
+  Platz 7, ein DSA-Aufruf oder `glDeleteTextures` konnte dort die falsche Textur zurückbinden), und
+  Ansicht/Schere stehen nach einem Kontextwechsel nicht mehr auf dem ganzen Fenster (der
+  Anzeigepuffer wird dann neu angelegt; in GL gelten die Werte des Programms weiter).
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens

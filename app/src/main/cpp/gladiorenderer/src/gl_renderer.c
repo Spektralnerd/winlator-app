@@ -670,7 +670,7 @@ void GLRenderer_setCapabilityState(GLRenderer* renderer, GLenum cap, bool state,
         case GL_TEXTURE_3D:
         case GL_TEXTURE_CUBE_MAP:
         case GL_TEXTURE_RECTANGLE: {
-            uint8_t activeTexture = renderer->clientState.activeTexture;
+            uint8_t activeTexture = MIN(renderer->clientState.activeTexture, MAX_TEXTURES-1);
             if (state) BITMASK_SET(renderer->state.enabledTextures[activeTexture], getTexTargetFlag(cap));
             else BITMASK_UNSET(renderer->state.enabledTextures[activeTexture], getTexTargetFlag(cap));
             break;
@@ -832,7 +832,7 @@ void GLRenderer_setLightModelParams(GLRenderer* renderer, GLenum pname, GLfloat*
 }
 
 void GLRenderer_setTexEnvParams(GLRenderer* renderer, GLenum target, GLenum pname, float* params) {
-    int activeTexture = renderer->clientState.activeTexture;
+    int activeTexture = MIN(renderer->clientState.activeTexture, MAX_TEXTURES-1);
     TexEnv* texEnv = &renderer->state.texEnv[activeTexture];
     switch (pname) {
         case GL_TEXTURE_ENV_MODE: {
@@ -1200,7 +1200,7 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
         case GL_TEXTURE_3D:
         case GL_TEXTURE_CUBE_MAP:
         case GL_TEXTURE_RECTANGLE: {
-            uint8_t flags = renderer->state.enabledTextures[renderer->clientState.activeTexture];
+            uint8_t flags = renderer->state.enabledTextures[MIN(renderer->clientState.activeTexture, MAX_TEXTURES-1)];
             putParami(params, type, 0, (flags & getTexTargetFlag(pname)) ? GL_TRUE : GL_FALSE);
             break;
         }

@@ -578,7 +578,7 @@ void gd_handle_glClearStencil(GLContext* context) {
 void gd_handle_glClientActiveTexture(GLContext* context) {
     GLenum texture = ArrayBuffer_getInt(&context->inputBuffer);
 
-    currentRenderer->clientState.activeTexCoord = texture - GL_TEXTURE0;
+    currentRenderer->clientState.activeTexCoord = MIN(texture - GL_TEXTURE0, MAX_TEXTURES-1);
 }
 
 void gd_handle_glClientWaitSync(GLContext* context) {

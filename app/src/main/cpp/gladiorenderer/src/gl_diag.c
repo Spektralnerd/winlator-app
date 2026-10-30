@@ -704,7 +704,7 @@ static void captureSamplers(ProgramInfo* info, char* out, int size) {
     for (int i = 0; i < info->samplerCount; i++) {
         GLint unit = -1;
         if (info->samplers[i].location >= 0) glGetUniformiv(info->id, info->samplers[i].location, &unit);
-        if (unit < 0 || unit >= MAX_TEXTURES) {
+        if (unit < 0 || unit >= MAX_TEXTURE_UNITS) {
             appendf(out, size, &pos, " %s=E%d", info->samplers[i].name, unit);
             continue;
         }

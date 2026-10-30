@@ -75,7 +75,7 @@ void GLTexture_bind(GLenum target, GLuint id) {
 }
 
 void GLTexture_setActiveUnit(GLenum unit) {
-    currentRenderer->clientState.activeTexture = MIN(unit - GL_TEXTURE0, MAX_TEXTURES-1);
+    currentRenderer->clientState.activeTexture = MIN(unit - GL_TEXTURE0, MAX_TEXTURE_UNITS-1);
     glActiveTexture(unit);
 }
 
@@ -91,7 +91,7 @@ void GLTexture_delete(GLuint id) {
     GLClientState* clientState = &currentRenderer->clientState;
     GLTexture* texture = SparseArray_get(clientState->textures, id);
     if (texture) {
-        for (int i = 0, j; i < MAX_TEXTURES; i++) {
+        for (int i = 0, j; i < MAX_TEXTURE_UNITS; i++) {
             for (j = 0; j < MAX_TEXTURE_TARGETS; j++) {
                 if (texture == clientState->texture[i][j]) clientState->texture[i][j] = NULL;
             }

@@ -111,8 +111,17 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
 - Wartezeiten des Clients (auf Antworten, auf Platz im Ring, auf das vorige Bild) und was er ohne Rundreise beantwortet
   hat, gehen mit jedem glXSwapBuffers an den Server (dessen Laufstatistik zeigt sie; ein älterer Server liest nur die
   Kennung des Fensters)
-- Zum Vergleichen am Gerät lassen sich die vier Neuerungen über Umgebungsvariablen abschalten: GLADIO_NO_QUERY_BATCH=1,
-  GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1
+- Zum Vergleichen am Gerät lassen sich die Neuerungen über Umgebungsvariablen abschalten: GLADIO_NO_QUERY_BATCH=1,
+  GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1, GLADIO_NO_UNIFORM_DIFF=1
+- Weitere unveränderte Zustände gehen nicht hinaus (Outlast: 38 % der 41500 Anfragen je Bild setzten den schon gültigen
+  Zustand): glBindTexture je Einheit, glVertexAttribPointer aus einem Puffer je Vertex-Array-Objekt, glEnable/glDisable(i),
+  glColorMask(i), glVertexAttrib4f/4Nubv. Unbekannt werden sie durch glPopAttrib/glPopClientAttrib, gelöschte Objekte
+  (auch aus anderen Kontexten der Gruppe), Arrays des festen Funktionsmodells und Direktmodus (der Server setzt dann beim
+  Zeichnen selbst Treiberattribute)
+- glUniform*-Werte vergleicht der Client je Programm mit den zuletzt gesendeten und schickt nur die geänderten Läufe:
+  wined3d lädt bei jedem Zeichenaufruf die Konstanten vom kleinsten bis zum größten seit dem letzten Laden gesetzten
+  Register am Stück (Outlast: 118 bzw. 244 vec4, 6,5 MB je Bild), auch wenn sich fast nichts geändert hat. Die
+  Arraygrenzen kennt er aus der Uniform-Tabelle; glLinkProgram und Löschen verwerfen die Werte
 - Bildwechsel-Takt (GLX_EXT_swap_control, GLX_SGI_swap_control, GLX_MESA_swap_control): Wine gibt jedem Fenster
   Intervall 1 vor (Vsync an), wined3d setzt 0 nur bei D3DPRESENT_INTERVAL_IMMEDIATE. Ohne die Erweiterung sah winex11
   keinen Weg, das weiterzugeben, und jedes Bild ging sofort hinaus – 2D-Spiele, die je Bild weiterzählen, liefen so
@@ -121,6 +130,7 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   Der Server (Java, GLXExtension) muss die Erweiterungen dazu in seiner GLX-Liste nennen.
 """
 import pathlib
+import re
 import shutil
 import sys
 
@@ -2315,6 +2325,704 @@ sub("src/glx_calls.c",
     "        if (!held) pthread_mutex_unlock(&gl_call_mutex);\n"
     "    }\n"
     "    GLX_CALL_LOCK();\n")
+
+# ---- weitere unveränderte Zustände nicht senden; Uniform-Werte vergleichen ----
+# Outlast (wined3d, Bildaufzeichnung): von 41500 Anfragen je Bild setzten 38 % nur den schon gültigen Zustand –
+# glVertexAttribPointer (45 % gleich), glBindTexture (60 %), glVertexAttrib4Nubv (48 %), glEnable/glDisable(i) (60–94 %),
+# glColorMaski (70 %) – und glUniform4fv trug 6,5 MB je Bild: wined3d lädt bei jedem Zeichenaufruf die Konstanten vom
+# kleinsten bis zum größten seit dem letzten Laden dieses Programms gesetzten Register in einem Stück hoch (118 bzw.
+# 244 vec4), auch wenn sich fast nichts geändert hat. Der Client merkt sich je Programm die zuletzt gesendeten Werte
+# und schickt nur die geänderten Läufe (höchstens GLADIO_UNIFORM_GAP unveränderte Elemente dazwischen bleiben in
+# einem Lauf). Das Ende eines Arrays kennt er aus der Uniform-Tabelle (GL ignoriert Werte dahinter); ohne Tabelle
+# vergleicht er nur Aufrufe mit einem Element. Neu binden (glLinkProgram) oder löschen verwirft die Werte.
+# Die Zustandsfilter arbeiten je Kontext (Schalter, Farbmasken, Attributwerte, Texturbindungen je Einheit) bzw. je
+# Vertex-Array-Objekt (Zeiger) und werden unbekannt, wo der Server den Zustand anders ändern kann: glPopAttrib /
+# glPopClientAttrib, gelöschte Objekte (Zähler, auch für andere Kontexte derselben Gruppe), Arrays des festen
+# Funktionsmodells und Direktmodus (dafür setzt der Server beim Zeichnen selbst Treiberattribute).
+# GLADIO_NO_STATE_FILTER=1 schaltet alle Zustandsfilter ab, GLADIO_NO_UNIFORM_DIFF=1 den Wertevergleich.
+
+
+def hook(rel, pattern, line, count=None):
+    """fügt line hinter dem ersten GL_CALL_LOCK() jeder Funktion ein, deren Kopf auf pattern passt"""
+    p = dst / rel
+    s = p.read_text()
+    regex = re.compile(r"^(void (?:" + pattern + r")\([^\n]*\) \{\n    GL_CALL_LOCK\(\);\n)", re.M)
+    s, n = regex.subn(lambda m: m.group(1) + "    " + line + "\n", s)
+    if n == 0 or (count is not None and n != count):
+        raise SystemExit(f"{rel}: Muster {pattern!r} {n}x gefunden (erwartet {count})")
+    p.write_text(s)
+
+
+# Laufstatistik: nicht gesendete Zustände und der Wertevergleich (ein älterer Server liest nur den Anfang)
+sub("include/gladio.h",
+    "    uint32_t deferredQueries;\n} GladioClientStats;\n",
+    "    uint32_t deferredQueries;\n"
+    "    uint32_t stateFiltered;    /* unveränderte Zustandsanfragen nicht gesendet */\n"
+    "    uint32_t uniformCalls;     /* glUniform*-Aufrufe mit Wertevergleich ... */\n"
+    "    uint32_t uniformCallsSent; /* ... davon gesendet (als Läufe) */\n"
+    "    uint32_t uniformBytes;     /* Wertebytes der Aufrufe ... */\n"
+    "    uint32_t uniformBytesSent; /* ... davon gesendet */\n"
+    "} GladioClientStats;\n")
+sub("src/gl_calls.c",
+    "        if ((gladioVao->gladioDivisorKnown & (1u << index)) && gladioVao->gladioDivisor[index] == divisor) {\n"
+    "            GL_CALL_UNLOCK();\n",
+    "        if ((gladioVao->gladioDivisorKnown & (1u << index)) && gladioVao->gladioDivisor[index] == divisor) {\n"
+    "            gladio_clientStats.stateFiltered++;\n"
+    "            GL_CALL_UNLOCK();\n")
+sub("src/gl_calls.c",
+    "        if ((gladioSamplerShadow->samplerKnown[unit / 32] & bit) && gladioSamplerShadow->sampler[unit] == sampler) {\n"
+    "            GL_CALL_UNLOCK();\n",
+    "        if ((gladioSamplerShadow->samplerKnown[unit / 32] & bit) && gladioSamplerShadow->sampler[unit] == sampler) {\n"
+    "            gladio_clientStats.stateFiltered++;\n"
+    "            GL_CALL_UNLOCK();\n")
+
+# Schatten des Kontexts auch ohne Matrixverfolgung (broken): Texturbindungen, Sampler und die neuen Filter hängen
+# nicht an den Matrizen. Zähler gelöschter Objekte: ein anderer Kontext der Gruppe erfährt vom Löschen nichts, seine
+# Bindungen gelten bis zum nächsten Vergleich mit dem Zähler als unbekannt
+sub("src/gl_calls.c", "#define GLADIO_TEX_UNKNOWN 0xffffffffu\n",
+    "#define GLADIO_TEX_UNKNOWN 0xffffffffu\n"
+    "#define GLADIO_TEX_FILTER_UNITS 32 /* Einheiten mit eigener Buchführung im Server (MAX_TEXTURE_UNITS) */\n"
+    "#define GLADIO_CAP_SLOTS 48\n"
+    "#define GLADIO_MASK_SLOTS 16\n"
+    "static uint32_t gladio_texGeneration = 1;     /* wächst mit jedem glDeleteTextures */\n"
+    "static uint32_t gladio_samplerGeneration = 1; /* glDeleteSamplers */\n"
+    "uint32_t gladio_bufferGeneration = 1;         /* glDeleteBuffers und alles, was Treiberattribute hinter dem Rücken des Clients setzt */\n")
+sub("src/gl_calls.c",
+    "    GLuint boundCube[GLADIO_TEX_UNITS];\n} GladioShadow;\n",
+    "    GLuint boundCube[GLADIO_TEX_UNITS];\n"
+    "    /* patch-gladio-client.py: weitere zuletzt gesendete Zustände */\n"
+    "    uint32_t texGeneration;     /* Stand der Zähler, zu dem die Bindungen galten */\n"
+    "    uint32_t samplerGeneration;\n"
+    "    bool immediatePending;      /* Direktmodus (glEnd), Rasterbild: der Server setzt beim nächsten Ausgeben Treiberattribute */\n"
+    "    int capCount;\n"
+    "    int capIndexedCount;\n"
+    "    struct { GLenum cap; uint8_t state; } caps[GLADIO_CAP_SLOTS];\n"
+    "    struct { GLenum cap; uint8_t index; uint8_t state; } capsIndexed[GLADIO_CAP_SLOTS];\n"
+    "    uint8_t colorMask;          /* Bits r g b a, für alle Zeichenpuffer */\n"
+    "    uint8_t colorMaskKnown;\n"
+    "    uint8_t colorMaskIndexed[GLADIO_MASK_SLOTS];\n"
+    "    uint32_t colorMaskIndexedKnown;\n"
+    "    uint8_t attribTag[32];      /* 0 unbekannt, 1 glVertexAttrib4f, 2 glVertexAttrib4Nubv */\n"
+    "    float attribValue[32][4];\n"
+    "} GladioShadow;\n")
+sub("src/gl_calls.c",
+    "static GladioShadow* gladioShadow(void) {\n"
+    "    GLClientState* clientState = currentGLContext ? currentGLContext->clientState : NULL;\n",
+    "static GladioShadow* gladioShadowRaw(void) {\n"
+    "    GLClientState* clientState = currentGLContext ? currentGLContext->clientState : NULL;\n")
+sub("src/gl_calls.c",
+    "        clientState->shadow = shadow;\n"
+    "    }\n"
+    "    return shadow->broken ? NULL : shadow;\n"
+    "}\n",
+    "        clientState->shadow = shadow;\n"
+    "    }\n"
+    "    return shadow;\n"
+    "}\n"
+    "\n"
+    "/* nur, solange die Matrixverfolgung stimmt */\n"
+    "static GladioShadow* gladioShadow(void) {\n"
+    "    GladioShadow* shadow = gladioShadowRaw();\n"
+    "    return shadow && !shadow->broken ? shadow : NULL;\n"
+    "}\n"
+    "\n"
+    "/* Texturbindungen eines Schattens, der das Löschen in einem anderen Kontext verpasst hat: alle unbekannt */\n"
+    "static void gladioTexCheckGeneration(GladioShadow* shadow) {\n"
+    "    if (shadow->texGeneration == gladio_texGeneration) return;\n"
+    "    for (int i = 0; i < GLADIO_TEX_UNITS; i++) shadow->bound2D[i] = shadow->boundCube[i] = GLADIO_TEX_UNKNOWN;\n"
+    "    shadow->texGeneration = gladio_texGeneration;\n"
+    "}\n")
+# Texturbindungen: immer mitführen (auch ohne Texturkopien), 1D und Rechteck bindet der Server als GL_TEXTURE_2D
+sub("src/gl_calls.c",
+    "    if (gladioTexDisabled) return;\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    if (!shadow) {\n"
+    "        /* ohne Zustand keine Zuordnung mehr: ganz abschalten */\n"
+    "        gladioTexDropEverything();\n"
+    "        gladioTexDisabled = true;\n"
+    "        return;\n"
+    "    }\n"
+    "    int unit = gladio_dsaUnit >= 0 ? gladio_dsaUnit : currentGLContext->clientState->activeTexture;\n"
+    "    if (unit < 0 || unit >= GLADIO_TEX_UNITS) return;\n"
+    "    if (target == GL_TEXTURE_2D) shadow->bound2D[unit] = texture;\n"
+    "    else if (target == GL_TEXTURE_CUBE_MAP) shadow->boundCube[unit] = texture;\n",
+    "    GladioShadow* shadow = gladioShadowRaw();\n"
+    "    if (!shadow) {\n"
+    "        /* ohne Zustand keine Zuordnung mehr: Kopien ganz abschalten */\n"
+    "        if (!gladioTexDisabled) gladioTexDropEverything();\n"
+    "        gladioTexDisabled = true;\n"
+    "        return;\n"
+    "    }\n"
+    "    gladioTexCheckGeneration(shadow);\n"
+    "    int unit = gladio_dsaUnit >= 0 ? gladio_dsaUnit : currentGLContext->clientState->activeTexture;\n"
+    "    if (unit < 0 || unit >= GLADIO_TEX_UNITS) return;\n"
+    "    if (target == GL_TEXTURE_2D) shadow->bound2D[unit] = texture;\n"
+    "    else if (target == GL_TEXTURE_CUBE_MAP) shadow->boundCube[unit] = texture;\n"
+    "    else if (target == GL_TEXTURE_1D || target == GL_TEXTURE_RECTANGLE) shadow->bound2D[unit] = GLADIO_TEX_UNKNOWN;\n")
+sub("src/gl_calls.c",
+    "    if (gladio_dsaTexture >= 0) return (GLuint)gladio_dsaTexture;\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    if (!shadow) return GLADIO_TEX_UNKNOWN;\n",
+    "    if (gladio_dsaTexture >= 0) return (GLuint)gladio_dsaTexture;\n"
+    "    GladioShadow* shadow = gladioShadowRaw();\n"
+    "    if (!shadow) return GLADIO_TEX_UNKNOWN;\n"
+    "    gladioTexCheckGeneration(shadow);\n")
+sub("src/gl_calls.c",
+    "static void gladioTexBindingsUnknown(void) {\n"
+    "    if (gladioTexDisabled) return;\n"
+    "    GladioShadow* shadow = gladioShadow();\n",
+    "static void gladioTexBindingsUnknown(void) {\n"
+    "    GladioShadow* shadow = gladioShadowRaw();\n")
+sub("src/gl_calls.c",
+    "static void gladioTexNoteDelete(GLsizei n, const GLuint* textures) {\n"
+    "    if (gladioTexDisabled || !textures) return;\n"
+    "    GladioShadow* shadow = gladioShadow();\n"
+    "    for (GLsizei i = 0; i < n; i++) {\n",
+    "static void gladioTexNoteDelete(GLsizei n, const GLuint* textures) {\n"
+    "    if (!textures) return;\n"
+    "    GladioShadow* shadow = gladioShadowRaw();\n"
+    "    if (shadow) gladioTexCheckGeneration(shadow);\n"
+    "    gladio_texGeneration++;\n"
+    "    if (shadow) shadow->texGeneration = gladio_texGeneration;\n"
+    "    for (GLsizei i = 0; i < n; i++) {\n")
+sub("src/gl_calls.c",
+    "    GL_CALL_LOCK();\n    GladioShadow* gladioSamplerShadow = gladioShadow();\n",
+    "    GL_CALL_LOCK();\n    GladioShadow* gladioSamplerShadow = gladioShadowRaw();\n")
+sub("src/gl_calls.c",
+    "        /* gelöschte Sampler lösen sich von allen Einheiten */\n        GladioShadow* gladioSamplerShadow = gladioShadow();\n",
+    "        /* gelöschte Sampler lösen sich von allen Einheiten */\n        GladioShadow* gladioSamplerShadow = gladioShadowRaw();\n")
+sub("src/gl_calls.c",
+    "    GladioShadow* gladioSamplerShadow = gladioShadowRaw();\n"
+    "    static int gladioFilter = -1;\n",
+    "    GladioShadow* gladioSamplerShadow = gladioShadowRaw();\n"
+    "    if (gladioSamplerShadow && gladioSamplerShadow->samplerGeneration != gladio_samplerGeneration) {\n"
+    "        memset(gladioSamplerShadow->samplerKnown, 0, sizeof(gladioSamplerShadow->samplerKnown));\n"
+    "        gladioSamplerShadow->samplerGeneration = gladio_samplerGeneration;\n"
+    "    }\n"
+    "    static int gladioFilter = -1;\n")
+sub("src/gl_calls.c",
+    "        if (gladioSamplerShadow) memset(gladioSamplerShadow->samplerKnown, 0, sizeof(gladioSamplerShadow->samplerKnown));\n",
+    "        gladio_samplerGeneration++;\n"
+    "        if (gladioSamplerShadow) {\n"
+    "            memset(gladioSamplerShadow->samplerKnown, 0, sizeof(gladioSamplerShadow->samplerKnown));\n"
+    "            gladioSamplerShadow->samplerGeneration = gladio_samplerGeneration;\n"
+    "        }\n")
+
+# Zeigerdatensätze je Vertex-Array-Objekt; Arrays des festen Funktionsmodells machen alle Datensätze ungültig
+sub("include/gl_vao.h",
+    "    uint32_t gladioDivisor[32];\n"
+    "    uint32_t gladioDivisorKnown;\n",
+    "    uint32_t gladioDivisor[32];\n"
+    "    uint32_t gladioDivisorKnown;\n"
+    "    /* zuletzt gesendete Zeiger (glVertexAttribPointer aus einem Puffer); gültig, solange generation stimmt */\n"
+    "    struct { GLuint buffer; GLint size; GLenum type; GLsizei stride; uint64_t offset; uint32_t generation; uint8_t normalized; uint8_t known; } gladioPointer[VERTEX_ATTRIB_COUNT];\n")
+sub("include/gl_vao.h",
+    "#define GL_SEND_VERTEX_ARRAY(requestCode, arrayIdx) \\\n"
+    "    GL_CALL_LOCK(); \\\n",
+    "/* patch-gladio-client.py: Zähler in gl_calls.c; ein Array des festen Funktionsmodells setzt beim Zeichnen Treiberattribute */\n"
+    "extern uint32_t gladio_bufferGeneration;\n"
+    "#define GL_SEND_VERTEX_ARRAY(requestCode, arrayIdx) \\\n"
+    "    GL_CALL_LOCK(); \\\n"
+    "    gladio_bufferGeneration++; \\\n")
+
+# Uniform-Werte: Vorwärtsdeklarationen für die Tabelle der Positionen (steht vor dem neuen Block) und die Gruppe
+sub("src/gl_calls.c", "#define GLADIO_UNIFORM_TABLE_SLOTS 1024\n",
+    "#define GLADIO_UNIFORM_TABLE_SLOTS 1024\n"
+    "static void gladioForgetUniformValues(void* group, GLuint program);\n"
+    "static void gladioForgetUniformValuesOfGroup(void* group);\n")
+sub("src/gl_calls.c",
+    "    void* group = currentGLContext->clientState->buffers;\n"
+    "    GladioUniformTable** link = &gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];\n",
+    "    void* group = currentGLContext->clientState->buffers;\n"
+    "    gladioForgetUniformValues(group, program);\n"
+    "    GladioUniformTable** link = &gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];\n")
+sub("src/gl_calls.c",
+    "    table->next = gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];\n"
+    "    gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS] = table;\n"
+    "    return table;\n",
+    "    table->next = gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS];\n"
+    "    gladioUniformTables[program % GLADIO_UNIFORM_TABLE_SLOTS] = table;\n"
+    "    gladioForgetUniformValues(group, program); /* Werte neu anlegen, jetzt mit den Arraygrenzen */\n"
+    "    return table;\n")
+sub("src/gl_calls.c",
+    "    for (int i = 0; i < GLADIO_UNIFORM_TABLE_SLOTS; i++) {\n"
+    "        GladioUniformTable** link = &gladioUniformTables[i];\n",
+    "    gladioForgetUniformValuesOfGroup(group);\n"
+    "    for (int i = 0; i < GLADIO_UNIFORM_TABLE_SLOTS; i++) {\n"
+    "        GladioUniformTable** link = &gladioUniformTables[i];\n")
+
+sub("src/gl_calls.c", "void glBindTexture(GLenum target, GLuint texture) {\n",
+    r"""/* ---- patch-gladio-client.py: unveränderte Schalter, Farbmasken, Attributwerte, Texturbindungen, Zeiger nicht senden ---- */
+static int gladioStateFilter(void) {
+    static int filter = -1;
+    if (filter < 0) filter = !gladio_envFlag("GLADIO_NO_STATE_FILTER");
+    return filter;
+}
+
+/* Schatten für die Zustandsfilter (unabhängig von der Matrixverfolgung); NULL: nicht filtern */
+static GladioShadow* gladioFilterShadow(void) {
+    return gladioStateFilter() ? gladioShadowRaw() : NULL;
+}
+
+/* der Server behandelt GL_PRIMITIVE_RESTART wie GL_PRIMITIVE_RESTART_FIXED_INDEX */
+static GLenum gladioCapKey(GLenum cap) {
+    return cap == 0x8F9D ? 0x8D69 : cap;
+}
+
+/* Schalter, die der Server je Textureinheit führt */
+static bool gladioCapPerUnit(GLenum cap) {
+    switch (cap) {
+        case GL_TEXTURE_1D: case GL_TEXTURE_2D: case GL_TEXTURE_3D: case GL_TEXTURE_CUBE_MAP: case GL_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_GEN_S: case GL_TEXTURE_GEN_T: case GL_TEXTURE_GEN_R: case GL_TEXTURE_GEN_Q:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* true: Schalter steht schon so, nicht senden */
+static bool gladioCapFilter(GLenum cap, bool state) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow || gladioCapPerUnit(cap)) return false;
+    cap = gladioCapKey(cap);
+    /* glEnable/glDisable gilt für alle Indizes */
+    for (int i = 0; i < shadow->capIndexedCount; i++) {
+        if (shadow->capsIndexed[i].cap == cap) shadow->capsIndexed[i].state = state;
+    }
+    for (int i = 0; i < shadow->capCount; i++) {
+        if (shadow->caps[i].cap != cap) continue;
+        if (shadow->caps[i].state == state) {
+            gladio_clientStats.stateFiltered++;
+            return true;
+        }
+        shadow->caps[i].state = state;
+        return false;
+    }
+    if (shadow->capCount < GLADIO_CAP_SLOTS) {
+        shadow->caps[shadow->capCount].cap = cap;
+        shadow->caps[shadow->capCount].state = state;
+        shadow->capCount++;
+    }
+    return false;
+}
+
+static bool gladioCapIndexedFilter(GLenum cap, GLuint index, bool state) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow || index > 255) return false;
+    cap = gladioCapKey(cap);
+    /* der Schalter ohne Index gilt danach nicht mehr für alle Indizes */
+    for (int i = 0; i < shadow->capCount; i++) {
+        if (shadow->caps[i].cap == cap) {
+            shadow->caps[i] = shadow->caps[--shadow->capCount];
+            break;
+        }
+    }
+    for (int i = 0; i < shadow->capIndexedCount; i++) {
+        if (shadow->capsIndexed[i].cap != cap || shadow->capsIndexed[i].index != index) continue;
+        if (shadow->capsIndexed[i].state == state) {
+            gladio_clientStats.stateFiltered++;
+            return true;
+        }
+        shadow->capsIndexed[i].state = state;
+        return false;
+    }
+    if (shadow->capIndexedCount < GLADIO_CAP_SLOTS) {
+        shadow->capsIndexed[shadow->capIndexedCount].cap = cap;
+        shadow->capsIndexed[shadow->capIndexedCount].index = (uint8_t)index;
+        shadow->capsIndexed[shadow->capIndexedCount].state = state;
+        shadow->capIndexedCount++;
+    }
+    return false;
+}
+
+static uint8_t gladioPackMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    return (r ? 1 : 0) | (g ? 2 : 0) | (b ? 4 : 0) | (a ? 8 : 0);
+}
+
+static bool gladioColorMaskFilter(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow) return false;
+    uint8_t mask = gladioPackMask(r, g, b, a);
+    if (shadow->colorMaskKnown && shadow->colorMask == mask) {
+        gladio_clientStats.stateFiltered++;
+        return true;
+    }
+    shadow->colorMask = mask;
+    shadow->colorMaskKnown = 1;
+    memset(shadow->colorMaskIndexed, mask, sizeof(shadow->colorMaskIndexed));
+    shadow->colorMaskIndexedKnown = (1u << GLADIO_MASK_SLOTS) - 1;
+    return false;
+}
+
+static bool gladioColorMaskIndexedFilter(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow || index >= GLADIO_MASK_SLOTS) return false;
+    uint8_t mask = gladioPackMask(r, g, b, a);
+    if ((shadow->colorMaskIndexedKnown & (1u << index)) && shadow->colorMaskIndexed[index] == mask) {
+        gladio_clientStats.stateFiltered++;
+        return true;
+    }
+    shadow->colorMaskIndexed[index] = mask;
+    shadow->colorMaskIndexedKnown |= 1u << index;
+    shadow->colorMaskKnown = 0;
+    return false;
+}
+
+/* feste Attributwerte (glVertexAttrib4f: 16 Byte, glVertexAttrib4Nubv: 4 Byte) */
+static bool gladioAttribFilter(GLuint index, uint8_t tag, const void* value, size_t bytes) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow || index >= 32 || !value) return false;
+    if (shadow->attribTag[index] == tag && memcmp(shadow->attribValue[index], value, bytes) == 0) {
+        gladio_clientStats.stateFiltered++;
+        return true;
+    }
+    shadow->attribTag[index] = tag;
+    memcpy(shadow->attribValue[index], value, bytes);
+    return false;
+}
+
+/* andere glVertexAttrib*-Aufrufe setzen denselben Wert */
+static void gladioAttribForget(GLuint index) {
+    GladioShadow* shadow = gladioShadowRaw();
+    if (shadow && index < 32) shadow->attribTag[index] = 0;
+}
+
+/* glPopAttrib: Schalter, Masken, Attributwerte und Sampler-Bindungen wieder unbekannt (Texturen: gladioTexBindingsUnknown) */
+static void gladioStateUnknown(void) {
+    GladioShadow* shadow = gladioShadowRaw();
+    if (!shadow) return;
+    shadow->capCount = shadow->capIndexedCount = 0;
+    shadow->colorMaskKnown = 0;
+    shadow->colorMaskIndexedKnown = 0;
+    memset(shadow->attribTag, 0, sizeof(shadow->attribTag));
+    memset(shadow->samplerKnown, 0, sizeof(shadow->samplerKnown));
+}
+
+/* true: dieselbe Textur ist auf der Einheit schon gebunden */
+static bool gladioTexBindFilter(GLenum target, GLuint texture) {
+    GladioShadow* shadow = gladioFilterShadow();
+    if (!shadow || texture == GLADIO_TEX_UNKNOWN) return false;
+    gladioTexCheckGeneration(shadow);
+    int unit = gladio_dsaUnit >= 0 ? gladio_dsaUnit : currentGLContext->clientState->activeTexture;
+    if (unit < 0 || unit >= GLADIO_TEX_FILTER_UNITS) return false;
+    GLuint bound = target == GL_TEXTURE_2D ? shadow->bound2D[unit] : target == GL_TEXTURE_CUBE_MAP ? shadow->boundCube[unit] : GLADIO_TEX_UNKNOWN;
+    if (bound != texture) return false;
+    gladio_clientStats.stateFiltered++;
+    return true;
+}
+
+/* Direktmodus (glEnd), Rasterbild, Anzeigeliste: der Server setzt beim nächsten Ausgeben des Stapels Treiberattribute
+ * (Positionen seiner eigenen Materialprogramme); bis zum nächsten Zeichenaufruf gehen Zeiger ungefiltert hinaus,
+ * danach sind alle Datensätze ungültig */
+static void gladioImmediateNote(void) {
+    GladioShadow* shadow = gladioShadowRaw();
+    if (shadow) shadow->immediatePending = true;
+}
+
+static void gladioPointerAfterImmediate(void) {
+    GladioShadow* shadow = currentGLContext->clientState->shadow;
+    if (!shadow || !shadow->immediatePending) return;
+    shadow->immediatePending = false;
+    gladio_bufferGeneration++;
+}
+
+/* true: Zeiger unverändert, nicht senden. Nur für Attribute aus einem Puffer ohne GL_BGRA (bei Client-Arrays schickt
+ * der Client die Daten mit dem Zeichenaufruf, der Server legt sie selbst an), ohne ARB-Programm (der Server ordnet
+ * die Indizes dann um) und solange kein Array des festen Funktionsmodells gesetzt ist (dafür setzt der Server beim
+ * Zeichnen Treiberattribute). index >= VERTEX_ATTRIB_COUNT: Array des festen Funktionsmodells auf ein Programm
+ * umgelegt (INT32_MAX + i), der Server wählt das Treiberattribut selbst */
+static bool gladioPointerFilter(GLClientState* clientState, GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride,
+                                const void* pointer, GLBuffer* arrayBuffer) {
+    GLVertexArrayObject* vao = clientState->vao;
+    if (!vao) return false;
+    if (index >= VERTEX_ATTRIB_COUNT) {
+        gladio_bufferGeneration++;
+        return false;
+    }
+    typeof(vao->gladioPointer[0])* record = &vao->gladioPointer[index];
+    GladioShadow* shadow = clientState->shadow;
+    bool usable = gladioStateFilter() && arrayBuffer && size != GL_BGRA && !clientState->arbProgram[0] && !(shadow && shadow->immediatePending);
+    for (int i = 0; usable && i < GENERIC_VERTEX_ARRAY_INDEX; i++) {
+        if (vao->attribs[i].state == VERTEX_ATTRIB_LEGACY_ENABLED) usable = false;
+    }
+    if (!usable) {
+        record->known = 0;
+        return false;
+    }
+    uint64_t offset = (uint64_t)(uintptr_t)pointer;
+    if (record->known && record->generation == gladio_bufferGeneration && record->buffer == arrayBuffer->id && record->size == size &&
+        record->type == type && record->normalized == normalized && record->stride == stride && record->offset == offset) {
+        gladio_clientStats.stateFiltered++;
+        return true;
+    }
+    record->buffer = arrayBuffer->id;
+    record->size = size;
+    record->type = type;
+    record->normalized = normalized;
+    record->stride = stride;
+    record->offset = offset;
+    record->generation = gladio_bufferGeneration;
+    record->known = 1;
+    return false;
+}
+
+/* ---- patch-gladio-client.py: Uniform-Werte vergleichen, nur geänderte Läufe senden ---- */
+#define GLADIO_UNIFORM_VALUE_SLOTS 1024
+#define GLADIO_UNIFORM_MAX_LOCATIONS 16384
+#define GLADIO_UNIFORM_GAP 8 /* unveränderte Elemente, über die ein Lauf hinwegreicht (eine Anfrage kostet mehr) */
+
+typedef struct GladioUniformSlot {
+    uint8_t kind; /* 0 unbekannt, sonst 1 + Index in gladioUniformKinds */
+    uint8_t pad[3];
+    uint32_t value[4];
+} GladioUniformSlot;
+
+typedef struct GladioUniformValues {
+    struct GladioUniformValues* next;
+    void* group;
+    GLuint program;
+    int capacity;
+    GladioUniformSlot* slots;
+    uint16_t* remaining; /* je Position: Elemente des Arrays ab hier mit aufeinanderfolgenden Positionen (0: unbekannt); NULL: keine Tabelle */
+    bool tableChecked;
+} GladioUniformValues;
+
+enum { GLADIO_U1FV, GLADIO_U2FV, GLADIO_U3FV, GLADIO_U4FV, GLADIO_U1IV, GLADIO_U2IV, GLADIO_U3IV, GLADIO_U4IV,
+       GLADIO_U1UIV, GLADIO_U2UIV, GLADIO_U3UIV, GLADIO_U4UIV };
+static const struct { short request; uint8_t bytes; } gladioUniformKinds[] = {
+    {REQUEST_CODE_GL_UNIFORM1FV, 4}, {REQUEST_CODE_GL_UNIFORM2FV, 8}, {REQUEST_CODE_GL_UNIFORM3FV, 12}, {REQUEST_CODE_GL_UNIFORM4FV, 16},
+    {REQUEST_CODE_GL_UNIFORM1IV, 4}, {REQUEST_CODE_GL_UNIFORM2IV, 8}, {REQUEST_CODE_GL_UNIFORM3IV, 12}, {REQUEST_CODE_GL_UNIFORM4IV, 16},
+    {REQUEST_CODE_GL_UNIFORM1UIV, 4}, {REQUEST_CODE_GL_UNIFORM2UIV, 8}, {REQUEST_CODE_GL_UNIFORM3UIV, 12}, {REQUEST_CODE_GL_UNIFORM4UIV, 16},
+};
+
+static GladioUniformValues* gladioUniformValueTable[GLADIO_UNIFORM_VALUE_SLOTS];
+static int gladioUniformDiff = -1;
+
+static void gladioFreeUniformValues(GladioUniformValues* values) {
+    free(values->slots);
+    free(values->remaining);
+    free(values);
+}
+
+/* glLinkProgram setzt alle Uniforms zurück, Löschen gibt die Nummer frei */
+static void gladioForgetUniformValues(void* group, GLuint program) {
+    GladioUniformValues** link = &gladioUniformValueTable[program % GLADIO_UNIFORM_VALUE_SLOTS];
+    while (*link) {
+        GladioUniformValues* values = *link;
+        if (values->program == program && values->group == group) {
+            *link = values->next;
+            gladioFreeUniformValues(values);
+        }
+        else link = &values->next;
+    }
+}
+
+static void gladioForgetUniformValuesOfGroup(void* group) {
+    for (int i = 0; i < GLADIO_UNIFORM_VALUE_SLOTS; i++) {
+        GladioUniformValues** link = &gladioUniformValueTable[i];
+        while (*link) {
+            GladioUniformValues* values = *link;
+            if (values->group == group) {
+                *link = values->next;
+                gladioFreeUniformValues(values);
+            }
+            else link = &values->next;
+        }
+    }
+}
+
+/* Arraygrenzen aus der Uniform-Tabelle: ab Position p noch remaining[p] Elemente mit lückenlos folgenden Positionen */
+static void gladioUniformBuildRemaining(GladioUniformValues* values) {
+    values->tableChecked = true;
+    GladioUniformTable* table = NULL;
+    for (GladioUniformTable* t = gladioUniformTables[values->program % GLADIO_UNIFORM_TABLE_SLOTS]; t; t = t->next) {
+        if (t->program == values->program && t->group == values->group) {
+            table = t;
+            break;
+        }
+    }
+    if (!table) return;
+    uint16_t* remaining = calloc(values->capacity, sizeof(uint16_t));
+    if (!remaining) return;
+    for (int i = 0; i < table->count; i++) {
+        GladioUniformEntry* entry = &table->entries[i];
+        int count = entry->arraySize > 0 ? entry->arraySize : 1;
+        for (int k = 0; k < count; k++) {
+            GLint location = entry->locations[k];
+            if (location < 0 || location >= values->capacity) continue;
+            int run = 1;
+            while (k + run < count && entry->locations[k + run] == location + run) run++;
+            remaining[location] = run > 65535 ? 65535 : (uint16_t)run;
+        }
+    }
+    values->remaining = remaining;
+}
+
+static GladioUniformValues* gladioUniformValuesFor(GLuint program, int needed) {
+    void* group = currentGLContext->clientState->buffers;
+    GladioUniformValues** slot = &gladioUniformValueTable[program % GLADIO_UNIFORM_VALUE_SLOTS];
+    GladioUniformValues* values;
+    for (values = *slot; values; values = values->next) {
+        if (values->program == program && values->group == group) break;
+    }
+    if (!values) {
+        values = calloc(1, sizeof(GladioUniformValues));
+        if (!values) return NULL;
+        values->group = group;
+        values->program = program;
+        values->next = *slot;
+        *slot = values;
+    }
+    if (needed > values->capacity) {
+        int capacity = values->capacity ? values->capacity : 256;
+        while (capacity < needed) capacity *= 2;
+        GladioUniformSlot* slots = realloc(values->slots, capacity * sizeof(GladioUniformSlot));
+        if (!slots) return NULL;
+        memset(slots + values->capacity, 0, (capacity - values->capacity) * sizeof(GladioUniformSlot));
+        values->slots = slots;
+        values->capacity = capacity;
+        free(values->remaining);
+        values->remaining = NULL;
+        values->tableChecked = false;
+    }
+    if (!values->tableChecked) gladioUniformBuildRemaining(values);
+    return values;
+}
+
+static void gladioUniformSlotsForget(GladioUniformValues* values, GLint location, GLsizei count) {
+    for (GLint i = location; i < location + count && i < values->capacity; i++) values->slots[i].kind = 0;
+}
+
+static void gladioUniformSend(int kind, GLint location, GLsizei count, const void* value) {
+    ArrayBuffer_rewind(&outputBuffer);
+    ArrayBuffer_putInt(&outputBuffer, location);
+    ArrayBuffer_putInt(&outputBuffer, count);
+    ArrayBuffer_putBytes(&outputBuffer, value, count * gladioUniformKinds[kind].bytes);
+    gl_send(currentGLContext->serverRing, gladioUniformKinds[kind].request, outputBuffer.buffer, outputBuffer.size);
+    gladio_clientStats.uniformCallsSent++;
+}
+
+/* true: erledigt (nichts oder nur die geänderten Läufe gesendet); false: wie bisher senden */
+static bool gladioUniformFilter(int kind, GLint location, GLsizei count, const void* value) {
+    if (gladioUniformDiff < 0) gladioUniformDiff = !gladio_envFlag("GLADIO_NO_UNIFORM_DIFF");
+    if (!gladioUniformDiff || !value || count <= 0 || location < 0) return false;
+    GLuint program = currentGLContext->clientState->program;
+    if (!program || (int64_t)location + count > GLADIO_UNIFORM_MAX_LOCATIONS) return false;
+    GladioUniformValues* values = gladioUniformValuesFor(program, location + count);
+    if (!values) return false;
+    if (count > 1) {
+        /* Werte hinter dem Ende des Arrays ignoriert GL; ohne Tabelle ist das Ende unbekannt */
+        if (!values->remaining || !values->remaining[location]) {
+            gladioUniformSlotsForget(values, location, count);
+            return false;
+        }
+        if (count > values->remaining[location]) count = values->remaining[location];
+    }
+    int bytes = gladioUniformKinds[kind].bytes;
+    uint8_t tag = (uint8_t)(kind + 1);
+    GladioUniformSlot* slots = values->slots + location;
+    const char* data = value;
+    gladio_clientStats.uniformCalls++;
+    gladio_clientStats.uniformBytes += (uint32_t)count * bytes;
+    int runStart = -1, runEnd = -1, sent = 0;
+    for (int i = 0; i <= count; i++) {
+        bool changed = i < count && (slots[i].kind != tag || memcmp(slots[i].value, data + (size_t)i * bytes, bytes) != 0);
+        if (changed) {
+            if (runStart < 0) runStart = i;
+            runEnd = i;
+        }
+        else if (runStart >= 0 && (i == count || i - runEnd > GLADIO_UNIFORM_GAP)) {
+            gladioUniformSend(kind, location + runStart, runEnd - runStart + 1, data + (size_t)runStart * bytes);
+            sent += runEnd - runStart + 1;
+            runStart = -1;
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        slots[i].kind = tag;
+        memcpy(slots[i].value, data + (size_t)i * bytes, bytes);
+    }
+    gladio_clientStats.uniformBytesSent += (uint32_t)sent * bytes;
+    return true;
+}
+
+/* glUniformMatrix*: andere Werte an diesen Positionen */
+static void gladioUniformForget(GLint location, GLsizei count) {
+    GLuint program = currentGLContext->clientState->program;
+    if (!program || location < 0 || count <= 0) return;
+    void* group = currentGLContext->clientState->buffers;
+    for (GladioUniformValues* values = gladioUniformValueTable[program % GLADIO_UNIFORM_VALUE_SLOTS]; values; values = values->next) {
+        if (values->program == program && values->group == group) {
+            gladioUniformSlotsForget(values, location, count);
+            return;
+        }
+    }
+}
+
+void glBindTexture(GLenum target, GLuint texture) {
+""")
+
+# Einbau: Texturen
+sub("src/gl_calls.c",
+    "void glBindTexture(GLenum target, GLuint texture) {\n    GL_CALL_LOCK();\n    gladioTexNoteBind(target, texture);\n",
+    "void glBindTexture(GLenum target, GLuint texture) {\n"
+    "    GL_CALL_LOCK();\n"
+    "    if (gladioTexBindFilter(target, texture)) {\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n"
+    "    gladioTexNoteBind(target, texture);\n")
+# Schalter, Masken, feste Attributwerte
+hook("src/gl_calls.c", r"glEnable", "if (gladioCapFilter(cap, true)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glDisable", "if (gladioCapFilter(cap, false)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glEnablei", "if (gladioCapIndexedFilter(target, index, true)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glDisablei", "if (gladioCapIndexedFilter(target, index, false)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glColorMask", "if (gladioColorMaskFilter(red, green, blue, alpha)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glColorMaski", "if (gladioColorMaskIndexedFilter(index, r, g, b, a)) { GL_CALL_UNLOCK(); return; }", 1)
+hook("src/gl_calls.c", r"glVertexAttrib4f",
+     "{ GLfloat gladioValue[4] = {x, y, z, w}; if (gladioAttribFilter(index, 1, gladioValue, sizeof(gladioValue))) { GL_CALL_UNLOCK(); return; } }", 1)
+hook("src/gl_calls.c", r"glVertexAttrib4Nubv", "if (gladioAttribFilter(index, 2, v, 4)) { GL_CALL_UNLOCK(); return; }", 1)
+# alle anderen glVertexAttrib*-Aufrufe (ohne Pointer/Divisor) setzen den Wert anders: vergessen
+hook("src/gl_calls.c", r"glVertexAttrib(?!4f\b|4Nubv\b|Pointer|Divisor|Format|Binding)\w*", "gladioAttribForget(index);")
+# glPopAttrib: alles unbekannt
+sub("src/gl_calls.c",
+    "    gladioTexBindingsUnknown();\n"
+    "    if (shadow) memset(shadow->samplerKnown, 0, sizeof(shadow->samplerKnown));\n",
+    "    gladioTexBindingsUnknown();\n"
+    "    gladioStateUnknown();\n")
+# Zeiger
+sub("src/gl_calls.c",
+    "    ArrayBuffer_rewind(&outputBuffer);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, index);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, type);\n"
+    "    ArrayBuffer_put(&outputBuffer, normalized);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, stride);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, (uint64_t)pointer);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_VERTEX_ATTRIB_POINTER, outputBuffer.buffer, outputBuffer.size);\n",
+    "    if (gladioPointerFilter(clientState, index, size, type, normalized, stride, pointer, arrayBuffer)) {\n"
+    "        GL_CALL_UNLOCK();\n"
+    "        return;\n"
+    "    }\n"
+    "    ArrayBuffer_rewind(&outputBuffer);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, index);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, size);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, type);\n"
+    "    ArrayBuffer_put(&outputBuffer, normalized);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, stride);\n"
+    "    ArrayBuffer_putInt(&outputBuffer, (uint64_t)pointer);\n"
+    "    gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_VERTEX_ATTRIB_POINTER, outputBuffer.buffer, outputBuffer.size);\n")
+hook("src/gl_calls.c", r"glDeleteBuffers|glEnableClientState|glPopClientAttrib", "gladio_bufferGeneration++;", 3)
+hook("src/gl_calls.c", r"glEnd|glDrawPixels|glCallList", "gladioImmediateNote();", 3)
+hook("src/gl_calls.c", r"glDrawArrays|glDrawArraysInstanced|glDrawElements|glDrawElementsBaseVertex|glDrawElementsInstanced|glDrawElementsInstancedBaseVertex|glDrawRangeElements|glDrawRangeElementsBaseVertex",
+     "gladioPointerAfterImmediate();", 8)
+# Uniforms: Vektorformen vergleichen, Skalarformen als Vektor mit einem Element, Matrizen vergessen
+for n in "1234":
+    for suffix, kind, ctype in (("fv", "FV", "GLfloat"), ("iv", "IV", "GLint"), ("uiv", "UIV", "GLuint")):
+        hook("src/gl_calls.c", rf"glUniform{n}{suffix}", f"if (gladioUniformFilter(GLADIO_U{n}{kind}, location, count, value)) {{ GL_CALL_UNLOCK(); return; }}", 1)
+        values = ", ".join(f"v{i}" for i in range(int(n)))
+        hook("src/gl_calls.c", rf"glUniform{n}{suffix[:-1]}",
+             f"{{ {ctype} gladioValue[{n}] = {{{values}}}; if (gladioUniformFilter(GLADIO_U{n}{kind}, location, 1, gladioValue)) {{ GL_CALL_UNLOCK(); return; }} }}", 1)
+hook("src/gl_calls.c", r"glUniformMatrix\w+", "gladioUniformForget(location, count);", 9)
 
 if align64:
     sub("src/ring_buffer.c", "        uint32_t status; \\\n        void* buffer; \\",

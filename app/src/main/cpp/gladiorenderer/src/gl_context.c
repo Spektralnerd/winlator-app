@@ -159,6 +159,11 @@ static void printStats(GLContext* context, int64_t now) {
                 "ohne Rundreise: %u Abfragen (%u zurückgestellt), %u Uniform-Positionen, %u Texturen gelesen",
                 st->client.replyWaitNs / 1e6 / cf, st->client.replies / cf, st->client.ringWaitNs / 1e6 / cf, st->client.swapWaitNs / 1e6 / cf,
                 st->client.localQueries / cf, st->client.deferredQueries / cf, st->client.localUniforms / cf, st->client.localTexReads / cf);
+        if (st->client.stateFiltered || st->client.uniformCalls) {
+            println("gladio: Client je Bild: %u gleiche Zustände nicht gesendet; Uniforms: %u Aufrufe mit %u KB verglichen, davon %u Aufrufe mit %u KB gesendet",
+                    st->client.stateFiltered / cf, st->client.uniformCalls / cf, (uint32_t)(st->clientUniformBytes / cf / 1024),
+                    st->client.uniformCallsSent / cf, (uint32_t)(st->clientUniformBytesSent / cf / 1024));
+        }
     }
     GladioDiag_printStats();
 }
@@ -302,8 +307,13 @@ static void setCurrentRenderWindow(GLContext* context, int windowId) {
     GLTexture* texture = GLTexture_getBound(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, texture ? texture->id : 0);
 
-    glViewport(0, 0, width, height);
-    glScissor(0, 0, width, height);
+    /* Ansicht und Schere nur beim ersten Fenster des Kontexts und nach einer Größenänderung auf das ganze Fenster: der
+     * Anzeigepuffer wird auch neu angelegt, wenn der Kontext nach einem anderen wieder aktuell wird – dann gelten in GL
+     * die Werte des Programms weiter (vorher stand die Ansicht danach wieder auf dem ganzen Fenster) */
+    if (resized) {
+        glViewport(0, 0, width, height);
+        glScissor(0, 0, width, height);
+    }
 }
 
 /*
@@ -548,7 +558,7 @@ static bool deferStateChange(GLContext* context, GLRenderer* renderer, short req
                 case GL_COMBINE_RGB: case GL_COMBINE_ALPHA: case GL_SOURCE0_RGB: case GL_SOURCE1_RGB:
                 case GL_SOURCE0_ALPHA: case GL_SOURCE1_ALPHA: case GL_OPERAND0_RGB: case GL_OPERAND1_RGB:
                 case GL_OPERAND0_ALPHA: case GL_OPERAND1_ALPHA:
-                    return deferRegion(&renderer->state.texEnv[renderer->clientState.activeTexture], sizeof(TexEnv));
+                    return deferRegion(&renderer->state.texEnv[MIN(renderer->clientState.activeTexture, MAX_TEXTURES-1)], sizeof(TexEnv));
                 default:
                     return false;
             }
@@ -570,7 +580,7 @@ static bool deferStateChange(GLContext* context, GLRenderer* renderer, short req
                 case GL_TEXTURE_3D:
                 case GL_TEXTURE_CUBE_MAP:
                 case GL_TEXTURE_RECTANGLE:
-                    return deferRegion(&renderer->state.enabledTextures[renderer->clientState.activeTexture], sizeof(uint8_t));
+                    return deferRegion(&renderer->state.enabledTextures[MIN(renderer->clientState.activeTexture, MAX_TEXTURES-1)], sizeof(uint8_t));
                 case GL_LINE_SMOOTH:
                 case GL_LINE_STIPPLE:
                 case GL_POLYGON_STIPPLE:
@@ -718,9 +728,11 @@ static void* requestHandlerThread(void* param) {
             }
             case REQUEST_CODE_SWAP_DISPLAY_BUFFERS: {
                 int drawableId = ArrayBuffer_getInt(&context->inputBuffer);
-                if (context->inputBuffer.size >= (int)(sizeof(int) + sizeof(GladioClientStats))) {
-                    GladioClientStats clientStats;
-                    memcpy(&clientStats, (char*)context->inputBuffer.buffer + sizeof(int), sizeof(clientStats));
+                int statsSize = context->inputBuffer.size - (int)sizeof(int);
+                if (statsSize >= (int)GLADIO_CLIENT_STATS_MIN_SIZE) {
+                    /* ein älterer Client schickt weniger Felder: der Rest bleibt 0 */
+                    GladioClientStats clientStats = {0};
+                    memcpy(&clientStats, (char*)context->inputBuffer.buffer + sizeof(int), MIN(statsSize, (int)sizeof(clientStats)));
                     if (clientStats.magic == GLADIO_CLIENT_STATS_MAGIC) {
                         context->stats.client.replies += clientStats.replies;
                         context->stats.client.replyWaitNs += clientStats.replyWaitNs;
@@ -730,6 +742,11 @@ static void* requestHandlerThread(void* param) {
                         context->stats.client.localUniforms += clientStats.localUniforms;
                         context->stats.client.localTexReads += clientStats.localTexReads;
                         context->stats.client.deferredQueries += clientStats.deferredQueries;
+                        context->stats.client.stateFiltered += clientStats.stateFiltered;
+                        context->stats.client.uniformCalls += clientStats.uniformCalls;
+                        context->stats.client.uniformCallsSent += clientStats.uniformCallsSent;
+                        context->stats.clientUniformBytes += clientStats.uniformBytes;
+                        context->stats.clientUniformBytesSent += clientStats.uniformBytesSent;
                         context->stats.clientFrames++;
                     }
                 }

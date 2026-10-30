@@ -92,6 +92,12 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 
 * `glrender2.c` – festes Funktionsmodell: Textur mit Mipmaps, Alphatest, Licht, Nebel
   (`./glrender2 MODUS out.ppm FILTER`, Modus 0–3).
+* `statetest.c` – Zustandsfilter und Uniform-Wertevergleich des Clients (`patch-gladio-client.py`): 50 Zellen, in
+  denen ein unveränderter Zustand noch einmal gesetzt wird oder sich hinter dem Rücken des Filters ändern könnte
+  (glPopAttrib, gelöschte und neu angelegte Objekte mit derselben Nummer, Werte hinter dem Arrayende, neu gebundene
+  Programme, Arrays des festen Funktionsmodells, Direktmodus, zweiter Kontext). Das Bild muss mit
+  `GLADIO_NO_STATE_FILTER=1 GLADIO_NO_UNIFORM_DIFF=1` dasselbe sein wie ohne (und wie Mesa nativ). Bauen:
+  `gcc -O1 -o statetest statetest.c -lX11 -lGL -ldl`.
 * `glsltest.c` – Shader im wined3d-Stil: GLSL 1.20 mit gl_Vertex/gl_TexCoord/gl_FragData/
   gl_Fog, GLSL 1.30 mit in/out und texture(), VBO/IBO, D3DCOLOR-Attribute, Framebuffer-
   Objekt (EXT), Alphatest, Blending, BGRA-Rücklesen (`./glsltest out.ppm`).
@@ -170,6 +176,11 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   abgeholt (wie die Unreal Engine 3); gibt Bilder/s aus, die Rundreisen je Bild stehen in der Server-Statistik
   (`wine d3d9occlmany.exe [sekunden] [ausgabe.txt]`). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9occlmany.exe
   d3d9occlmany.c -ld3d9 -luser32`.
+* `d3d9const.c` – Shader-Konstanten wie die Unreal Engine 3: 100 Zeichenaufrufe je Bild mit je 118 Pixel- und 96
+  Vertexshader-Konstanten, von denen sich nur wenige ändern; gibt Bilder/s aus und schreibt ein Bild (gleich mit
+  `GLADIO_NO_UNIFORM_DIFF=1`), die Statistik des Servers zeigt die verglichenen und gesendeten Uniform-Bytes
+  (`wine d3d9const64.exe [sekunden] [bild.ppm] [ausgabe.txt]`). Bauen: `x86_64-w64-mingw32-gcc -O1 -o
+  d3d9const64.exe d3d9const.c -ld3d9 -luser32` (32 Bit entsprechend mit i686).
 * `d3d9link.c` – ein Vertex-Shader (vs_3_0) mit drei Pixel-Shadern (ps_3_0), die verschiedene Ausgaben lesen
   (TEXCOORD0/1/2); erwartet rot/grün/blau. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9link.exe d3d9link.c -ld3d9
   -luser32`.

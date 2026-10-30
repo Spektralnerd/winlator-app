@@ -63,6 +63,7 @@
 #ifndef GLADIO_CLIENT_STATS_DEFINED
 #define GLADIO_CLIENT_STATS_DEFINED
 #include <stdint.h>
+#include <stddef.h>
 typedef struct GladioClientStats {
     uint32_t magic;
     uint32_t replies;
@@ -73,11 +74,23 @@ typedef struct GladioClientStats {
     uint32_t localUniforms;   /* glGetUniformLocation */
     uint32_t localTexReads;   /* glGetCompressedTexImage */
     uint32_t deferredQueries; /* „nicht fertig“, weil der Server noch viel abzuarbeiten hatte */
+    /* ab hier neuer: ein älterer Client schickt nur die Felder davor (GLADIO_CLIENT_STATS_MIN_SIZE) */
+    uint32_t stateFiltered;    /* unveränderte Zustandsanfragen nicht gesendet */
+    uint32_t uniformCalls;     /* glUniform*-Aufrufe mit Wertevergleich ... */
+    uint32_t uniformCallsSent; /* ... davon gesendet (als Läufe geänderter Werte) */
+    uint32_t uniformBytes;     /* Wertebytes der Aufrufe ... */
+    uint32_t uniformBytesSent; /* ... davon gesendet */
 } GladioClientStats;
+#define GLADIO_CLIENT_STATS_MIN_SIZE offsetof(GladioClientStats, stateFiltered)
 #endif
 
 #define MAX_LIGHTS 4
 #define MAX_TEXTURES 8
+/* Textureinheiten mit eigener Bindungsbuchführung (wined3d: bis 16 Sampler des Pixelshaders und darüber die des
+ * Vertexshaders); vorher teilten sich alle Einheiten ab 7 den Platz 7, und ein DSA-Aufruf oder glDeleteTextures
+ * konnte auf solchen Einheiten die falsche Textur zurückbinden. Die Zustände des festen Funktionsmodells (texEnv,
+ * enabledTextures, texCoords) gibt es weiterhin nur für die ersten MAX_TEXTURES Einheiten */
+#define MAX_TEXTURE_UNITS 32
 #define MAX_TEXTURE_TARGETS 4
 #define MAX_FRAMEBUFFER_TARGETS 3
 #define MAX_BUFFER_TARGETS 8 /* mit GL_COPY_READ_BUFFER/GL_COPY_WRITE_BUFFER (6, 7) */

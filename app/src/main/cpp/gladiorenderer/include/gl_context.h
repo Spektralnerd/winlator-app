@@ -62,6 +62,7 @@ typedef struct GLContext {
         uint64_t repliesAtStart, texBytesAtStart, programsAtStart;
         GladioBatchStats batchAtStart;
         GladioClientStats client; /* Wartezeiten, die der Client mit glXSwapBuffers meldet */
+        uint64_t clientUniformBytes, clientUniformBytesSent; /* Summen über die Periode (je Bild mehrere MB) */
         uint32_t clientFrames;
     } stats;
 
