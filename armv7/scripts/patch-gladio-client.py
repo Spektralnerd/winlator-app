@@ -113,6 +113,12 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   Kennung des Fensters)
 - Zum Vergleichen am Gerät lassen sich die vier Neuerungen über Umgebungsvariablen abschalten: GLADIO_NO_QUERY_BATCH=1,
   GLADIO_NO_UNIFORM_TABLE=1, GLADIO_NO_TEXCACHE=1, GLADIO_NO_STATE_FILTER=1
+- Bildwechsel-Takt (GLX_EXT_swap_control, GLX_SGI_swap_control, GLX_MESA_swap_control): Wine gibt jedem Fenster
+  Intervall 1 vor (Vsync an), wined3d setzt 0 nur bei D3DPRESENT_INTERVAL_IMMEDIATE. Ohne die Erweiterung sah winex11
+  keinen Weg, das weiterzugeben, und jedes Bild ging sofort hinaus – 2D-Spiele, die je Bild weiterzählen, liefen so
+  schnell wie der Server annahm (Tiny Tiger: der Abspann rast). Jetzt hält glXSwapBuffers bei Intervall n höchstens
+  Bildrate/n Bilder je Sekunde ein (Bildrate GLADIO_REFRESH_HZ, Standard 60; GLADIO_NO_VSYNC=1 schaltet den Takt ab).
+  Der Server (Java, GLXExtension) muss die Erweiterungen dazu in seiner GLX-Liste nennen.
 """
 import pathlib
 import shutil
@@ -2333,5 +2339,79 @@ if align64:
     sub("src/gl_calls.c", "int64_t syncValue = (int64_t)(intptr_t)sync;", "int64_t syncValue = syncToServer(sync);", 2)
     sub("src/gl_calls.c", "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));",
         "gl_send(currentGLContext->serverRing, REQUEST_CODE_GL_DELETE_SYNC, &syncValue, sizeof(int64_t));\n    syncRelease(sync);")
+
+# ---- Bildwechsel-Takt: GLX_EXT_swap_control / GLX_SGI_swap_control / GLX_MESA_swap_control ----
+# winex11 lädt die Funktionen über glXGetProcAddressARB (dlsym auf diese Bibliothek) und ruft bei jedem
+# Bildwechsel set_swap_interval, sobald sich das Intervall des Fensters ändert (Vorgabe von win32u: 1).
+sub("src/glx_calls.c", "void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {\n    GL_CALL_LOCK();\n",
+    r"""/* patch-gladio-client.py: Bildwechsel-Takt. Intervall je Fenster (glXSwapIntervalEXT) oder für alle
+ * (SGI/MESA); bei Intervall n wartet glXSwapBuffers, bis seit dem vorigen Bild n Bildperioden vergangen sind.
+ * Bildrate aus GLADIO_REFRESH_HZ (Standard 60), GLADIO_NO_VSYNC=1 lässt jedes Bild sofort hinaus. */
+#define GLADIO_SWAP_SLOTS 16
+static struct { GLXDrawable drawable; int interval; } gladioSwapSlots[GLADIO_SWAP_SLOTS];
+static int gladioSwapIntervalAll = 1;
+static int gladioSwapIntervalFor(GLXDrawable drawable) {
+    for (int i = 0; i < GLADIO_SWAP_SLOTS; i++) if (gladioSwapSlots[i].drawable == drawable) return gladioSwapSlots[i].interval;
+    return gladioSwapIntervalAll;
+}
+void glXSwapIntervalEXT(Display* dpy, GLXDrawable drawable, int interval) {
+    if (interval < 0) interval = -interval; /* GLX_EXT_swap_control_tear bieten wir nicht an */
+    GLX_CALL_LOCK();
+    int free = -1;
+    for (int i = 0; i < GLADIO_SWAP_SLOTS; i++) {
+        if (gladioSwapSlots[i].drawable == drawable) { gladioSwapSlots[i].interval = interval; GLX_CALL_UNLOCK(); return; }
+        if (free < 0 && !gladioSwapSlots[i].drawable) free = i;
+    }
+    if (free < 0) free = 0;
+    gladioSwapSlots[free].drawable = drawable;
+    gladioSwapSlots[free].interval = interval;
+    GLX_CALL_UNLOCK();
+}
+int glXSwapIntervalSGI(int interval) {
+    if (interval < 0) return GLX_BAD_VALUE;
+    GLX_CALL_LOCK();
+    gladioSwapIntervalAll = interval;
+    memset(gladioSwapSlots, 0, sizeof(gladioSwapSlots));
+    GLX_CALL_UNLOCK();
+    return 0;
+}
+int glXSwapIntervalMESA(unsigned int interval) { return glXSwapIntervalSGI((int)interval); }
+int glXGetSwapIntervalMESA(void) { return gladioSwapIntervalAll; }
+static void gladioSwapPace(GLXDrawable drawable) {
+    static int noVsync = -1, refreshHz = 0;
+    if (noVsync < 0) {
+        noVsync = gladio_envFlag("GLADIO_NO_VSYNC");
+        const char* hz = getenv("GLADIO_REFRESH_HZ");
+        refreshHz = hz ? atoi(hz) : 0;
+        if (refreshHz < 1 || refreshHz > 1000) refreshHz = 60;
+    }
+    if (noVsync) return;
+    int interval = gladioSwapIntervalFor(drawable);
+    if (interval <= 0) return;
+    static _Thread_local int64_t next = 0;
+    int64_t period = (int64_t)interval * 1000000000LL / refreshHz;
+    int64_t now = gladio_nowNs();
+    if (next <= now - period) next = now; /* zu spät oder erstes Bild: neu ansetzen, nicht aufholen */
+    if (next > now) {
+        int64_t wait = next - now;
+        struct timespec ts = { (time_t)(wait / 1000000000LL), (long)(wait % 1000000000LL) };
+        while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {}
+    }
+    next += period;
+}
+
+void glXSwapBuffers(Display* dpy, GLXDrawable drawable) {
+    gladioSwapPace(drawable);
+    GL_CALL_LOCK();
+""")
+sub("src/glx_calls.c", "#define _GNU_SOURCE\n#include <dlfcn.h>\n#include \"gladio.h\"\n",
+    "#define _GNU_SOURCE\n#include <dlfcn.h>\n#include <errno.h>\n#include <string.h>\n#include <stdlib.h>\n#include \"gladio.h\"\n")
+# glXQueryDrawable: Intervall und Höchstwert der EXT-Erweiterung beantworten
+sub("src/glx_calls.c", "void glXQueryDrawable(Display* dpy, GLXDrawable draw, int attribute, unsigned int* value) {\n    println(MSG_DEBUG_UNIMPLEMENTED_GLXCALL, \"glXQueryDrawable\");\n}",
+    "static int gladioSwapIntervalFor(GLXDrawable drawable);\n"
+    "void glXQueryDrawable(Display* dpy, GLXDrawable draw, int attribute, unsigned int* value) {\n"
+    "    if (attribute == 0x20F1 /* GLX_SWAP_INTERVAL_EXT */) { if (value) *value = (unsigned)gladioSwapIntervalFor(draw); return; }\n"
+    "    if (attribute == 0x20F2 /* GLX_MAX_SWAP_INTERVAL_EXT */) { if (value) *value = 8; return; }\n"
+    "    println(MSG_DEBUG_UNIMPLEMENTED_GLXCALL, \"glXQueryDrawable\");\n}")
 
 print(f"Gladio-Client in {dst} gepatcht{' (Ringpuffer 64-Bit-Ausrichtung)' if align64 else ''}{' (FBConfig-Vorgabewerte)' if fbconfigDefaults else ''}")

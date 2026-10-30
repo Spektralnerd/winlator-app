@@ -120,7 +120,8 @@ typedef struct Client {
 } Client;
 
 static pthread_mutex_t clientMutex = PTHREAD_MUTEX_INITIALIZER;
-static const char* glxExtensions = "GLX_ARB_create_context GLX_ARB_get_proc_address";
+/* Bildwechsel-Takt (glXSwapInterval*) beantwortet der Client selbst, der Server muss die Erweiterungen nur nennen */
+static const char* glxExtensions = "GLX_ARB_create_context GLX_ARB_get_proc_address GLX_EXT_swap_control GLX_SGI_swap_control GLX_MESA_swap_control";
 static Display* xDisplay = NULL;
 static int fallbackWidth = 640, fallbackHeight = 480;
 static const char* dumpDir = NULL;

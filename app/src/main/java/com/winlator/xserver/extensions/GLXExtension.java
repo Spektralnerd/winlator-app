@@ -32,7 +32,9 @@ public class GLXExtension extends Extension {
     private static final byte DEFAULT_FBCONFIG_ID = 1;
     private final SparseArray<SparseLongArray> clientGLXContexts = new SparseArray<>();
     private final SparseArray<SparseLongArray> clientGLContexts = new SparseArray<>();
-    private final String glxExtensions = "GLX_ARB_create_context GLX_ARB_get_proc_address";
+    // Bildwechsel-Takt (glXSwapInterval*) beantwortet der Gladio-Client selbst (patch-gladio-client.py); winex11 fragt nur,
+    // ob die Erweiterungen genannt werden, sonst gibt es das Intervall des Fensters (Vorgabe 1 = Vsync) nicht weiter
+    private final String glxExtensions = "GLX_ARB_create_context GLX_ARB_get_proc_address GLX_EXT_swap_control GLX_SGI_swap_control GLX_MESA_swap_control";
     private final Callback<XClient> onDestroyClientListener = (client) -> {
         destroyAllGLContexts(client.fd);
         destroyAllGLXContexts(client.fd);

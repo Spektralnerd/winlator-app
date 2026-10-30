@@ -281,6 +281,17 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   das letzte zeichnet (`GLADIO_SYNC_SWAP=1` in den Umgebungsvariablen des Containers: wieder auf
   jedes Bild warten). Nebenbei: `glGetDoublev` schrieb Matrizen (16 Werte) in eine einzelne
   Variable, `glGetIntegerv(GL_MATRIX_MODE)` lieferte unbestimmte Werte (ES kennt die Abfrage nicht).
+- Bildwechsel-Takt (Vsync-Nachbildung): Wine gibt jedem Fenster Swap-Intervall 1 vor, wined3d setzt 0
+  nur bei `D3DPRESENT_INTERVAL_IMMEDIATE`; winex11 gibt das aber nur weiter, wenn GLX
+  `GLX_EXT_swap_control` (oder SGI/MESA) nennt. Der Gladio-Server nannte keine davon, jedes Bild
+  ging sofort hinaus – 2D-Spiele, die je Bild weiterzählen, liefen so schnell wie die GPU hergab
+  (Tiny Tiger: der Abspann rast). Jetzt nennt der Server (`GLXExtension.java`, PC: `server_main.c`)
+  die drei Erweiterungen, der Client beantwortet `glXSwapIntervalEXT/SGI/MESA` selbst und hält in
+  `glXSwapBuffers` bei Intervall n höchstens Bildrate/n Bilder je Sekunde ein (`GLADIO_REFRESH_HZ`,
+  Standard 60; `GLADIO_NO_VSYNC=1` in den Umgebungsvariablen des Containers lässt wieder jedes Bild
+  sofort hinaus). Spiele, die Vsync selbst abschalten, bleiben ungebremst. PC-Geschirr: Direct3D-9-
+  Testprogramm mit `D3DPRESENT_INTERVAL_ONE` 60 Bilder/s (30 mit `GLADIO_REFRESH_HZ=30`, 209 mit
+  `GLADIO_NO_VSYNC=1`), mit `INTERVAL_IMMEDIATE` unverändert 200+; Regressionslauf gleich.
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens
