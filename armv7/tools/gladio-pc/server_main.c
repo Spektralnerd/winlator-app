@@ -45,6 +45,7 @@
 #include <jni.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 #include <X11/Xlib.h>
 
 #include "gl_context.h"
@@ -108,6 +109,15 @@ typedef struct {
     void* ptr;
 } IdEntry;
 
+/* Fenstertextur der Anzeige-Seite (Nachbildung von Texture.java: allocateTexture, copyFromReadBuffer, destroy) */
+#define MAX_WINDOW_TEXTURES 8
+typedef struct WindowTexture {
+    int drawableId;
+    GLuint texture;
+    short copiedWidth, copiedHeight;
+    GLsync copyFence;
+} WindowTexture;
+
 typedef struct Client {
     int fd;
     uint16_t sequence;
@@ -117,6 +127,7 @@ typedef struct Client {
     int frames;
     struct timeval lastFpsTime;
     int lastFpsFrames;
+    WindowTexture windowTextures[MAX_WINDOW_TEXTURES];
 } Client;
 
 static pthread_mutex_t clientMutex = PTHREAD_MUTEX_INITIALIZER;
@@ -232,8 +243,76 @@ static jshort* stub_GetShortArrayElements(JNIEnv* env, jshortArray array, jboole
 static void stub_ReleaseShortArrayElements(JNIEnv* env, jshortArray array, jshort* elems, jint mode) {
 }
 
+/* Die Fenstertextur der Anzeige-Seite im Kontext des Servers, byteidentisch zu den GL-Aufrufen von Texture.java auf
+ * dem Gerät: clearWindowContent (glXMakeCurrent, neue Fenstergröße) wirft sie weg, updateWindowContent legt sie dann
+ * neu an (allocateTexture: Einheit 0, UNPACK_ALIGNMENT 1) und kopiert jedes Bild aus dem Lesepuffer hinein
+ * (copyFromReadBuffer: Bindung auf der aktiven Einheit, Fence, glFlush). Diese Aufrufe treffen den Kontext des
+ * Programms – der Server muss danach dessen Zustand wiederherstellen (d3d9units.c). */
+static WindowTexture* windowTextureFor(Client* client, int drawableId, bool create) {
+    WindowTexture* empty = NULL;
+    for (int i = 0; i < MAX_WINDOW_TEXTURES; i++) {
+        WindowTexture* wt = &client->windowTextures[i];
+        if (wt->drawableId == drawableId) return wt;
+        if (!wt->drawableId && !empty) empty = wt;
+    }
+    if (create && empty) {
+        memset(empty, 0, sizeof(*empty));
+        empty->drawableId = drawableId;
+    }
+    return create ? empty : NULL;
+}
+
+static void windowTextureDestroy(WindowTexture* wt) {
+    if (wt->texture) glDeleteTextures(1, &wt->texture);
+    wt->texture = 0;
+    wt->copiedWidth = wt->copiedHeight = 0;
+    if (wt->copyFence) glDeleteSync(wt->copyFence);
+    wt->copyFence = NULL;
+}
+
+static void windowTextureAllocate(WindowTexture* wt) {
+    glGenTextures(1, &wt->texture);
+    wt->copiedWidth = wt->copiedHeight = 0;
+    glActiveTexture(GL_TEXTURE0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, wt->texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+static void windowTextureCopyFromReadBuffer(WindowTexture* wt, short width, short height, bool withFence) {
+    if (!wt->texture) windowTextureAllocate(wt);
+    glBindTexture(GL_TEXTURE_2D, wt->texture);
+    if (wt->copiedWidth == width && wt->copiedHeight == height) {
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);
+    }
+    else {
+        glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 0, 0, width, height, 0);
+        wt->copiedWidth = width;
+        wt->copiedHeight = height;
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    if (withFence) {
+        if (wt->copyFence) glDeleteSync(wt->copyFence);
+        wt->copyFence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
+    glFlush();
+}
+
 static void stub_CallVoidMethod(JNIEnv* env, jobject obj, jmethodID mid, ...) {
-    /* clearWindowContent/releaseWindowTexture: auf dem Gerät wird die Fenstertextur verworfen, hier nichts zu tun */
+    Client* client = (Client*)obj;
+    va_list ap;
+    va_start(ap, mid);
+    if ((intptr_t)mid == M_CLEAR_WINDOW_CONTENT || (intptr_t)mid == M_RELEASE_WINDOW_TEXTURE) {
+        /* clearWindowContent: die Fenstertextur wird verworfen (Texture.destroy im Kontext des Servers) */
+        int windowId = va_arg(ap, int);
+        WindowTexture* wt = windowTextureFor(client, windowId, false);
+        if (wt && (intptr_t)mid == M_CLEAR_WINDOW_CONTENT) windowTextureDestroy(wt);
+    }
+    va_end(ap);
 }
 
 static bool wantDump(int frame) {
@@ -321,6 +400,11 @@ static jboolean stub_CallBooleanMethod(JNIEnv* env, jobject obj, jmethodID mid, 
         }
         else {
             client->frames++;
+            if (!present) {
+                /* wie Texture.copyFromReadBuffer auf dem Gerät (ES 3: mit Fence) */
+                WindowTexture* wt = windowTextureFor(client, drawableId, true);
+                if (wt) windowTextureCopyFromReadBuffer(wt, width, height, true);
+            }
             if (wantDump(client->frames)) dumpFrame(client, width, height, flipY, texture);
             { /* GLADIO_PC_CAPTURE_AT=N: das Bild nach Bild N aufzeichnen (gl_diag.c), nach GLADIO_PC_CAPTURE_DIR bzw. ins Ablageverzeichnis */
                 const char* at = getenv("GLADIO_PC_CAPTURE_AT");

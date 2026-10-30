@@ -363,8 +363,32 @@ static void swapDisplayBuffers(GLContext* context, int drawableId) {
         GLuint oldDisplay = currentRenderer->displayBuffer;
         if (savedRead != oldDisplay) GLFramebuffer_bind(GL_READ_FRAMEBUFFER, oldDisplay);
 
+        /* Die Java-Seite (Texture.java) bindet ihre Fenstertextur im Kontext des Programms. Legt sie sie gerade erst
+         * an (erstes Bild nach glXMakeCurrent, neue Fenstergröße), schaltet sie dazu auf Textureinheit 0 um, bindet
+         * dort und löst die Bindung und stellt GL_UNPACK_ALIGNMENT auf 1 – alles galt danach weiter: die Bindung der
+         * vermeintlich aktiven Einheit (unten) landete auf Einheit 0, deren eigene war weg, und seit der Client gleiche
+         * Bindungen nicht mehr schickt, blieb das so (Outlast-Intro grau: die Y-Ebene des Videos durch eine andere
+         * Textur ersetzt; d3d9units.c). Deshalb Einheit und Ausrichtung merken, wiederherstellen und die Bindung der
+         * Einheit 0 aus der Buchführung neu setzen; die Bindung der aktiven Einheit stellt die Java-Seite auf 0 zurück,
+         * danach gilt wieder die des Programms. */
+        GLint savedActiveTexture = GL_TEXTURE0, savedUnpackAlignment = 4;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &savedActiveTexture);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &savedUnpackAlignment);
+
         JMethods* jmethods = &context->jmethods;
         result = (*jmethods->env)->CallBooleanMethod(jmethods->env, jmethods->obj, jmethods->updateWindowContent, drawableId, currentRenderer->displaySize[0], currentRenderer->displaySize[1], JNI_TRUE);
+
+        GLint activeTexture = savedActiveTexture, unpackAlignment = savedUnpackAlignment;
+        glGetIntegerv(GL_ACTIVE_TEXTURE, &activeTexture);
+        glGetIntegerv(GL_UNPACK_ALIGNMENT, &unpackAlignment);
+        if (activeTexture != savedActiveTexture) {
+            GLTexture* unit0 = currentRenderer->clientState.texture[0][indexOfGLTarget(GL_TEXTURE_2D)];
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, unit0 ? unit0->id : 0);
+            glActiveTexture(savedActiveTexture);
+        }
+        if (unpackAlignment != savedUnpackAlignment) glPixelStorei(GL_UNPACK_ALIGNMENT, savedUnpackAlignment);
+
         if (!result) {
             destroyDisplayBuffer();
             destroyDisplayBufAttachment(context);

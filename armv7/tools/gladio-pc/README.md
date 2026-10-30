@@ -17,8 +17,11 @@ Server ohne Gerät testen und umbauen kann – insbesondere für den GLES-2.0-Pf
 * beantwortet die X11-Verbindungsaufnahme und die GLX-Anfragen byteidentisch zu
   `GLXExtension.java`,
 * stellt dem Server die JNI-Rückrufe bereit (`getWindowSize` fragt den echten X-Server
-  unter `$DISPLAY`, `updateWindowContent` liest das Bild mit `glReadPixels` aus und
-  schreibt auf Wunsch PPM-Dateien, `getGLXContextPtr`),
+  unter `$DISPLAY`, `clearWindowContent`/`updateWindowContent` führen die Fenstertextur der
+  Anzeige-Seite wie `Texture.java` auf dem Gerät – anlegen auf Einheit 0 mit
+  `UNPACK_ALIGNMENT 1`, je Bild Bindung, `glCopyTexSubImage2D`, Fence, `glFlush` im Kontext des
+  Programms –, lesen das Bild mit `glReadPixels` aus und schreiben auf Wunsch PPM-Dateien,
+  `getGLXContextPtr`),
 * legt den „App-Kontext“ an, mit dem die GLX-Kontexte ihre Objekte teilen (auf dem Gerät
   der Kontext der `GLSurfaceView`).
 
@@ -181,6 +184,12 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   `GLADIO_NO_UNIFORM_DIFF=1`), die Statistik des Servers zeigt die verglichenen und gesendeten Uniform-Bytes
   (`wine d3d9const64.exe [sekunden] [bild.ppm] [ausgabe.txt]`). Bauen: `x86_64-w64-mingw32-gcc -O1 -o
   d3d9const64.exe d3d9const.c -ld3d9 -luser32` (32 Bit entsprechend mit i686).
+* `d3d9units.c` – drei Sampler wie der YUV-Shader der Bink-Videos: s0, s1, s2 bekommen jedes Bild dieselben Texturen
+  (Rot, Grün, Blau), das Bild zeigt nur s0; wined3d lässt Einheit 2 aktiv, und die Anzeige-Seite legt bei der
+  Bildausgabe ihre Fenstertextur auf Einheit 0 an (erstes Bild nach `glXMakeCurrent`). Erwartet in jedem Bild
+  Rot (ff0000); mit dem Bindungsfilter des Clients blieb vorher ab dem zweiten Bild die falsche Textur auf Einheit 0
+  (Outlast-Intro grau). `wine d3d9units64.exe [bilder] [ausgabe.txt]`, Rückgabe 2 bei falschen Bildern. Bauen:
+  `x86_64-w64-mingw32-gcc -O1 -o d3d9units64.exe d3d9units.c -ld3d9 -luser32`.
 * `d3d9link.c` – ein Vertex-Shader (vs_3_0) mit drei Pixel-Shadern (ps_3_0), die verschiedene Ausgaben lesen
   (TEXCOORD0/1/2); erwartet rot/grün/blau. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9link.exe d3d9link.c -ld3d9
   -luser32`.

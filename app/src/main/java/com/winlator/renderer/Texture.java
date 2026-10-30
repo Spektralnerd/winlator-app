@@ -183,7 +183,20 @@ public class Texture {
      * ordnet z. B. der Adreno-Treiber die Befehle der beiden Kontexte nicht: die Anzeige las die Textur, bevor die
      * Kopie fertig war, und zeigte ein älteres Bild (das Bild sprang zurück und wieder vor). */
     public void copyFromReadBuffer(short width, short height, boolean withFence) {
-        if (!isAllocated()) allocateTexture(width, height, null);
+        if (!isAllocated()) {
+            /* im Kontext des Gladio-Servers: allocateTexture schaltet auf Einheit 0, bindet dort und löst die Bindung
+             * und stellt UNPACK_ALIGNMENT auf 1 – alles gehört dem Programm (der Server stellt es ebenfalls wieder
+             * her, gl_context.c swapDisplayBuffers) */
+            int[] saved = new int[3];
+            GLES20.glGetIntegerv(GLES20.GL_ACTIVE_TEXTURE, saved, 0);
+            GLES20.glGetIntegerv(GLES20.GL_UNPACK_ALIGNMENT, saved, 1);
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+            GLES20.glGetIntegerv(GLES20.GL_TEXTURE_BINDING_2D, saved, 2);
+            allocateTexture(width, height, null);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, saved[2]);
+            GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, saved[1]);
+            GLES20.glActiveTexture(saved[0]);
+        }
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId);
         if (copiedWidth == width && copiedHeight == height) {
             GLES20.glCopyTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height);

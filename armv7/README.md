@@ -315,6 +315,18 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   Platz 7, ein DSA-Aufruf oder `glDeleteTextures` konnte dort die falsche Textur zurückbinden), und
   Ansicht/Schere stehen nach einem Kontextwechsel nicht mehr auf dem ganzen Fenster (der
   Anzeigepuffer wird dann neu angelegt; in GL gelten die Werte des Programms weiter).
+- Outlast-Intro grau (Bink-Videos, Unreal-Logo) mit dem Bindungsfilter: Bei der Bildausgabe bindet die
+  Anzeige-Seite (`Texture.java`) ihre Fenstertextur im Kontext des Programms. Legt sie sie gerade
+  erst an (erstes Bild nach `glXMakeCurrent`, neue Fenstergröße), schaltet sie dazu auf
+  Textureinheit 0 um, bindet dort und löst die Bindung und stellt `GL_UNPACK_ALIGNMENT` auf 1 – das
+  galt danach weiter: der Server band die Textur der vermeintlich aktiven Einheit (bei den Videos
+  die Chroma-Ebene der Einheit 2) auf Einheit 0, deren eigene (die Y-Ebene) war weg, und weil
+  wined3d sie jedes Bild gleich bindet, schickte der Client die Bindung nicht mehr. Vorher deckten
+  die unnötigen `glBindTexture` je Zeichenaufruf das ab. `Texture.copyFromReadBuffer` stellt
+  Einheit, Ausrichtung und die Bindung der Einheit 0 jetzt selbst wieder her, und der Server
+  (`swapDisplayBuffers`) ebenso aus seiner Buchführung. Das PC-Geschirr führt die Fenstertextur
+  seither wie das Gerät (`server_main.c`), Testprogramm `d3d9units.c` (drei Sampler wie der
+  YUV-Shader, erwartet jedes Bild Rot).
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens
