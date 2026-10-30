@@ -336,7 +336,16 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   Server wie vor den Abkürzungen (verschwinden sie dann nicht mehr, steckt es in der Abkürzung).
   Der Server sieht vor `GL_QUERY_RESULT` jetzt selbst nach, ob das Ergebnis vorliegt (höchstens
   50 ms), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch aktiv, fremder
-  Kontext), gilt als sichtbar statt als 0.
+  Kontext), gilt als sichtbar statt als 0. Ergebnis der Schalter auf dem CMF Phone 1 (Mali-G615):
+  mit `GLADIO_QUERY_ALWAYS_VISIBLE=1` verschwindet nichts mehr, mit `GLADIO_NO_QUERY_SHORTCUT=1`
+  die Tore nicht mehr, aber einmal der Scheinwerfer – der Treiber meldet eine Abfrage als fertig
+  und liefert, wenn man das Ergebnis sofort liest, ab und zu 0 statt des echten Werts; mit einer
+  Rundreise Abstand (wie vor den gesammelten Antworten) seltener, aber noch. Deshalb gilt ein
+  Ergebnis im Server erst 2 ms, nachdem der Treiber es zuerst als fertig meldete, als lesbar
+  (`OCCLUSION_RESULT_GRACE_NS`, `gl_query.c`); bis dahin heißt es „noch nicht fertig“, der Client
+  fragt ~1 ms später wieder. Die Wartezeit beginnt für alle beendeten Abfragen zugleich (sie werden
+  je Durchgang zusammen fertig), kostet also je Bild einmal ~2 ms, nicht je Abfrage (PC,
+  `d3d9occlmany`: 135 statt 200 Bilder/s bei 5 ms je Bild – auf dem Gerät bei 100 ms je Bild 2 %).
 - Mausbewegungen: Jedes MotionNotify/RawMotion kostet unter Box86 Umläufe zum wineserver (alle
   emuliert); bei 100+ Ereignissen je Sekunde wurde Worms 3D im Menü deutlich langsamer („Warten
   auf den Client“ 6 → 40 ms). Die 32-Bit-Variante fasst Bewegungen im X-Server auf höchstens

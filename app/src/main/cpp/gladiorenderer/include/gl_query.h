@@ -11,6 +11,7 @@ typedef struct GLQuery {
     uint32_t counter;
     GLuint clientId;    /* Kennung beim Client */
     uint32_t endSerial; /* Nummer des letzten Endes (endedQueries im Renderer), 0: läuft oder nie beendet */
+    uint64_t availableSinceNs; /* wann der Treiber das Ergebnis zuerst als fertig meldete (0: noch nicht) */
 } GLQuery;
 
 extern GLuint GLQuery_create();

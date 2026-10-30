@@ -1,5 +1,6 @@
 #include "gl_context.h"
 #include "gl_es2.h"
+#include "time_utils.h"
 #include <unistd.h>
 
 static GLuint maxQueryId = 1;
@@ -84,18 +85,42 @@ static void rememberEndedQuery(GLRenderer* renderer, GLQuery* query) {
     fifo->count++;
 }
 
-/* Ergebnis einer beendeten Verdeckungsabfrage. GL_QUERY_RESULT wartet laut Spezifikation, bis es vorliegt; sicherheits-
- * halber vorher nachsehen (höchstens ~50 ms), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch
- * aktiv, fremder Kontext – params bleibt unverändert), gilt als „sichtbar“: ein zu Unrecht sichtbares Objekt fällt nicht
- * auf, ein zu Unrecht unsichtbares verschwindet ein Bild lang (Outlast: Tore, Mauern). */
+/* Mali-G615 (CMF Phone 1): meldet der Treiber eine Abfrage als fertig und der Server liest das Ergebnis sofort, kommt
+ * ab und zu 0 statt des echten Werts – die Unreal Engine 3 lässt das Objekt dann ein Bild lang weg (Outlast: Torflügel,
+ * Mauern, der Scheinwerfer des Wagens). Mit einer Rundreise Abstand zwischen „fertig?“ und dem Lesen (wie vor den
+ * gesammelten Antworten) passierte es viel seltener, aber noch. Deshalb gilt ein Ergebnis erst diese Zeit, nachdem der
+ * Treiber es zuerst als fertig meldete, als lesbar; bis dahin heißt es „noch nicht fertig“ (der Client fragt ~1 ms
+ * später wieder). Das kostet je Bild etwa diese Zeit einmal, nicht je Abfrage: die Abfragen eines Durchgangs werden
+ * zusammen fertig. */
+#define OCCLUSION_RESULT_GRACE_NS 2000000ULL
+
+static bool queryReadable(GLQuery* query) {
+    return !query->active && query->id > 0 && query->ownerId == currentRenderer->contextId;
+}
+
+/* fertig und seit OCCLUSION_RESULT_GRACE_NS fertig gemeldet */
+static bool occlusionAvailable(GLQuery* query, bool* driverAvailable) {
+    GLuint available = GL_FALSE;
+    glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
+    if (driverAvailable) *driverAvailable = available;
+    if (!available) {
+        query->availableSinceNs = 0;
+        return false;
+    }
+    uint64_t now = nanoTime();
+    if (!query->availableSinceNs) query->availableSinceNs = now;
+    return now - query->availableSinceNs >= OCCLUSION_RESULT_GRACE_NS;
+}
+
+/* Ergebnis einer beendeten Verdeckungsabfrage: erst lesen, wenn es nach obiger Regel lesbar ist (höchstens ~50 ms
+ * warten), und ein Ergebnis, das der Treiber nicht liefert (Fehler: Abfrage noch aktiv, fremder Kontext – params bleibt
+ * unverändert), gilt als „sichtbar“: ein zu Unrecht sichtbares Objekt fällt nicht auf, ein zu Unrecht unsichtbares
+ * verschwindet ein Bild lang. */
 static uint32_t occlusionResult(GLQuery* query) {
     GLuint result = UINT32_MAX;
-    bool readable = !query->active && query->id > 0 && query->ownerId == currentRenderer->contextId;
-    if (readable) {
-        GLuint available = GL_FALSE;
+    if (queryReadable(query)) {
         for (int i = 0; i < 500; i++) {
-            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
-            if (available) break;
+            if (occlusionAvailable(query, NULL)) break;
             if (i == 0) glFlush();
             usleep(100);
         }
@@ -123,13 +148,19 @@ int GLQuery_collectResults(GLuint* pairs, int maxPairs, GLuint* firstPendingId) 
         GLuint clientId = fifo->clientIds[fifo->head];
         uint32_t serial = fifo->serials[fifo->head];
         GLQuery* query = SparseArray_get(currentRenderer->clientState.queries, clientId);
-        bool current = query && query != &nullQuery && query->endSerial == serial && !query->active && query->id > 0 &&
-                       query->ownerId == currentRenderer->contextId;
+        bool current = query && query != &nullQuery && query->endSerial == serial && queryReadable(query);
         if (current) {
-            GLuint available = GL_FALSE;
-            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
-            if (!available) {
+            bool driverAvailable = false;
+            if (!occlusionAvailable(query, &driverAvailable)) {
                 *firstPendingId = clientId;
+                /* Die Wartezeit der folgenden Abfragen beginnt jetzt, nicht erst, wenn die Reihe an sie kommt (sonst
+                 * käme je Abfrage eine Wartezeit hinzu: d3d9occlmany 41 statt 200 Bilder/s) */
+                for (uint32_t i = 1; driverAvailable && i < fifo->count; i++) {
+                    uint32_t pos = (fifo->head + i) % fifo->capacity;
+                    GLQuery* later = SparseArray_get(currentRenderer->clientState.queries, fifo->clientIds[pos]);
+                    if (!later || later == &nullQuery || later->endSerial != fifo->serials[pos] || !queryReadable(later)) continue;
+                    occlusionAvailable(later, &driverAvailable);
+                }
                 break;
             }
             pairs[2 * n] = clientId;
@@ -150,6 +181,7 @@ void GLQuery_begin(GLenum target, GLuint id) {
     query->active = true;
     query->counter = 0;
     query->endSerial = 0; /* ein gemerktes früheres Ende gilt nicht mehr */
+    query->availableSinceNs = 0;
     currentRenderer->activeQuery = query;
 
     switch(target) {
@@ -172,6 +204,7 @@ void GLQuery_end(GLenum target) {
     GLQuery* query = useActiveQuery ? currentRenderer->activeQuery : findQueryWithTarget(target);
     if (!query) return;
     query->active = false;
+    query->availableSinceNs = 0;
 
     if (query->target == GL_TIME_ELAPSED) {
         query->counter = (nanoTime() - currentRenderer->queriesStartTime) - query->counter;
@@ -226,10 +259,7 @@ void GLQuery_getObjectParamsv(GLuint id, GLenum pname, GLint* params) {
          * Eine noch nie begonnene oder gerade laufende Abfrage lässt glGetQueryObjectuiv
          * unverändert (GL_INVALID_OPERATION), dann bleibt es bei GL_TRUE. */
         GLuint available = GL_TRUE;
-        if (!GLES2 && query->id > 0 && query->target != GL_TIME_ELAPSED && !query->active &&
-            query->ownerId == currentRenderer->contextId) {
-            glGetQueryObjectuiv(query->id, GL_QUERY_RESULT_AVAILABLE, &available);
-        }
+        if (!GLES2 && query->target != GL_TIME_ELAPSED && queryReadable(query)) available = occlusionAvailable(query, NULL);
         *params = available;
     }
     else if (pname == GL_QUERY_RESULT) {
