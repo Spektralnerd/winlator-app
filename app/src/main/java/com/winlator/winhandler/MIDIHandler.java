@@ -8,6 +8,8 @@ import android.media.midi.MidiReceiver;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.system.ErrnoException;
+import android.system.Os;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -35,10 +38,19 @@ public class MIDIHandler {
     public static final short CMD_PITCH_BEND = 0xe0;
     private final ByteBuffer receiveData = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN);
     private final DatagramPacket receivePacket = new DatagramPacket(receiveData.array(), 16);
-    private DatagramSocket socket;
-    private long nativePtr;
-    private boolean opened = false;
-    private ExecutorService executorService;
+    private volatile DatagramSocket socket;
+    private volatile long nativePtr;
+    private volatile boolean opened = false;
+    // Ein fester Thread für alle MIDI-Sitzungen (statt je midiOutOpen ein neuer Executor, dessen Thread erst mit der
+    // Speicherbereinigung endete): FluidSynth lädt die SoundFont mit OpenMP, und libomp meldet einen Thread, der
+    // OpenMP benutzt hat, bei dessen Ende ab und gibt seinen Speicher frei – Verweise der OpenMP-Arbeitsthreads auf
+    // diesen Speicher bleiben stehen und beim nächsten Laden stürzte die App in __kmp_fast_free ab.
+    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "MIDIHandler");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private Future<?> receiveTask;
     private final List<Integer> midiInClients = new CopyOnWriteArrayList<>();
     private final WinHandler winHandler;
     private MidiOutputPort outputPort;
@@ -57,6 +69,14 @@ public class MIDIHandler {
 
     static {
         boolean available;
+        try {
+            // OpenMP (SoundFont-Laden in FluidSynth) ohne Arbeitsthreads: die Aufgaben werden dann von dem Thread
+            // freigegeben, der sie angelegt hat, und libomp hält keine Verweise mehr zwischen den Threads (siehe
+            // EXECUTOR). Muss vor dem Laden von libomp gesetzt sein.
+            Os.setenv("OMP_NUM_THREADS", "1", true);
+            Os.setenv("OMP_THREAD_LIMIT", "1", true);
+        }
+        catch (ErrnoException e) {}
         try {
             System.loadLibrary("midihandler");
             available = true;
@@ -139,13 +159,14 @@ public class MIDIHandler {
         close();
         opened = true;
 
-        executorService = Executors.newSingleThreadExecutor();
-        executorService.execute(() -> {
+        receiveTask = EXECUTOR.submit(() -> {
+            DatagramSocket socket = null;
             try {
                 socket = new DatagramSocket(null);
                 socket.setReuseAddress(true);
                 socket.setSoTimeout(1000);
                 socket.bind(new InetSocketAddress((InetAddress)null, MIDI_DATA_PORT));
+                this.socket = socket;
 
                 if (callback != null) callback.run();
 
@@ -160,7 +181,11 @@ public class MIDIHandler {
                     catch (SocketTimeoutException e) {}
                 }
             }
-            catch (IOException e) {}
+            catch (IOException e) {} // auch das Schließen des Sockets durch close()
+            finally {
+                this.socket = null;
+                if (socket != null) socket.close();
+            }
         });
     }
 
@@ -169,17 +194,17 @@ public class MIDIHandler {
         if (!opened) return;
         opened = false;
 
-        if (executorService != null) {
-            try {
-                executorService.awaitTermination(2, TimeUnit.SECONDS);
-            }
-            catch (InterruptedException e) {}
-            executorService = null;
-        }
+        // das Schließen des Sockets beendet receive() sofort; danach auf das Ende der Schleife warten (sie kann noch
+        // in callback stecken, also beim Laden der SoundFont)
+        DatagramSocket socket = this.socket;
+        if (socket != null) socket.close();
 
-        if (socket != null) {
-            socket.close();
-            socket = null;
+        if (receiveTask != null) {
+            try {
+                receiveTask.get(5, TimeUnit.SECONDS);
+            }
+            catch (Exception e) {}
+            receiveTask = null;
         }
     }
 
