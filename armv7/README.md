@@ -361,6 +361,17 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   `xserver: … Bilder zusammengesetzt …, Mausbewegungen … (davon … ohne Neuzeichnen)`.
 - Beim Ende einer Client-Verbindung (auch nach einem Absturz des Programms) stehen die letzten
   64 GL-Anfragen im Protokoll (`gladio: letzte Anfragen …`).
+- Sampler jenseits von s7 (Outlast: Nachtsicht ohne Rauschen und überstrahlt – große, flache
+  grüne Flächen statt Körnung und Zeichnung): Der Server beantwortete `GL_MAX_TEXTURE_IMAGE_UNITS` und
+  `GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS` fest mit 8 (der Zahl seiner Einheiten im festen
+  Funktionsmodell). wined3d meldete darauf „OpenGL implementation supports 16 vertex samplers and 8
+  total samplers“ und ließ die Direct3D-9-Pixel-Sampler s8..s15 ungebunden („Trying to load sampler
+  ps_sampler8 on unsupported unit 8“) – die Shader lasen dort die Textur von Einheit 0. Die Unreal
+  Engine 3 legt die Eingänge ihrer Nachbearbeitung (Rauschtextur, Farbtabellen) auf hohe Sampler;
+  `SetTexture` auf einer Stufe ≥ 8 brachte wined3d sogar zum Absturz. Jetzt antwortet der Server mit
+  den Werten des Treibers (Mali-G615: 16 Fragment-Einheiten), begrenzt auf die 32 Einheiten seines
+  Zustands; ES 2.0 meldet weiter die 8 der Mali-400. `d3d9samplers` (gladio-pc) liest s0, s7, s8, s12
+  und s15: vorher Absturz bzw. falsche Farben, jetzt die fünf erwarteten.
 - Stürzt der Server selbst ab (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT in der App), schreibt er vorher
   einen Bericht ins Protokoll (`gladio-crash: …`, landet in `logcat.txt`): Fehleradresse, Register,
   Bibliothek+Versatz von PC/LR mit dem nächsten exportierten Symbol, Rücksprungadressen vom Stack,

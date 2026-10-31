@@ -1076,10 +1076,28 @@ int GLRenderer_getParamsv(GLRenderer* renderer, GLenum pname, GLenum type, void*
             break;
         case GL_MAX_TEXTURE_UNITS:
         case GL_MAX_TEXTURE_COORDS:
-        case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
-        case GL_MAX_TEXTURE_IMAGE_UNITS:
+            /* festes Funktionsmodell: so viele Einheiten führt der Server mit Texturumgebung und Koordinaten */
             putParami(params, type, 0, MAX_TEXTURES);
             break;
+        case GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS:
+        case GL_MAX_TEXTURE_IMAGE_UNITS: {
+            /* Sampler der Shader: wined3d bindet die 16 Pixel-Sampler von Direct3D 9 (s0..s15) auf die GL-Einheiten
+             * 0..15 und die Vertex-Sampler dahinter. Mit der festen Antwort MAX_TEXTURES (8) blieben s8..s15 ungebunden
+             * („Trying to load sampler ps_sampler8 on unsupported unit 8“) und lasen die Textur von Einheit 0 –
+             * Outlast: Nachtsicht ohne Rauschen und überstrahlt (Rausch- und Farbtabellen der Nachbearbeitung liegen
+             * dort); SetTexture auf Stufe >= 8 ließ wined3d sogar abstürzen. Darum die Werte des Treibers, begrenzt
+             * auf die MAX_TEXTURE_UNITS Einheiten, die der Server im Zustand führt (ES 2.0: Werte aus gles, damit
+             * GLADIO_GLES_LIMITS sie ersetzen kann). */
+            int value;
+            if (GLES2) value = pname == GL_MAX_TEXTURE_IMAGE_UNITS ? gles.maxTextureUnits : gles.maxTextureUnits + gles.maxVertexTextureUnits;
+            else {
+                GLint driverValue = 0;
+                glGetIntegerv(pname, &driverValue);
+                value = driverValue;
+            }
+            putParami(params, type, 0, MAX(MIN(value, MAX_TEXTURE_UNITS), MAX_TEXTURES));
+            break;
+        }
         case GL_MAX_RECTANGLE_TEXTURE_SIZE:
         case GL_MAX_TEXTURE_SIZE:
             putParami(params, type, 0, 4096);

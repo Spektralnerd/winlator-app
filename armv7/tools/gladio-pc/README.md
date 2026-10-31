@@ -193,6 +193,10 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
 * `d3d9link.c` – ein Vertex-Shader (vs_3_0) mit drei Pixel-Shadern (ps_3_0), die verschiedene Ausgaben lesen
   (TEXCOORD0/1/2); erwartet rot/grün/blau. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9link.exe d3d9link.c -ld3d9
   -luser32`.
+* `d3d9samplers.c` – Pixel-Shader (ps_3_0), die je einen der Sampler s0, s7, s8, s12, s15 lesen, auf allen anderen
+  Einheiten eine weiße Textur; erwartet rot/grün/blau/gelb/cyan. Mit nur 8 gemeldeten Textureinheiten ließ wined3d
+  s8..s15 ungebunden (Outlast-Nachtsicht) und stürzte bei `SetTexture` auf Stufe ≥ 8 ab. Bauen:
+  `x86_64-w64-mingw32-gcc -O1 -o d3d9samplers64.exe d3d9samplers.c -ld3d9 -luser32`.
 * `d3d9depth.c` – Tiefe aus einer INTZ-Textur lesen (Tiefenpuffer-Textur, die die Unreal Engine 3 und andere
   abtasten), mit Punktfilter und bilinear; erwartet 64/191. Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9depth.exe
   d3d9depth.c -ld3d9 -luser32`.
@@ -443,6 +447,13 @@ Zeichenziele, Shader-Fehler) steht im Server-Protokoll.
   sRGB-Textur roh über `glReadPixels`/`glTexSubImage2D`. Dabei behoben: `glGetTexImage`/`glGetCompressedTexImage` lasen
   immer Stufe 0 in deren Größe (eine kleinere Stufe schrieb über das Pufferende) und konnten aus dem Lesecache das
   Bild einer anderen Textur liefern. `d3d9srgb`: vorher alles 132, jetzt 132/59.
+* Textureinheiten (Outlast: Nachtsicht ohne Rauschen und überstrahlt): `GL_MAX_TEXTURE_IMAGE_UNITS` und
+  `GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS` beantwortete der Server fest mit 8 (MAX_TEXTURES, die Einheiten seines
+  festen Funktionsmodells); wined3d bindet damit nur die Pixel-Sampler s0..s7 („Trying to load sampler ps_sampler8
+  on unsupported unit 8“), s8..s15 lesen Einheit 0, und `SetTexture` auf einer Stufe ≥ 8 stürzt in wined3d ab.
+  Jetzt die Werte des Treibers, begrenzt auf die 32 Einheiten des Serverzustands (ES 2.0 aus `gles`, damit
+  `GLADIO_GLES_LIMITS` greift). `d3d9samplers`: vorher Absturz nach s7, jetzt alle fünf Farben; die übrigen
+  d3d9-Tests unverändert.
 * Rundreisen (Outlast nach dem sRGB-Umbau: ~160 je Bild – Verdeckungsabfragen, sRGB-Kopien der DXT-Texturen über
   `glGetCompressedTexImage`, dazu ~730 `glGetUniformLocation` je neuem Shader-Programm): Der Server merkt sich beendete
   Verdeckungsabfragen in der Reihenfolge ihres Endes und schickt mit jeder Frage die Ergebnisse aller inzwischen
