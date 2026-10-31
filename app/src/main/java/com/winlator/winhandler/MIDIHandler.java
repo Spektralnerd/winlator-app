@@ -210,8 +210,9 @@ public class MIDIHandler {
         }
 
         // midiOutClose: Wines MCI-Sequenzer verlässt sich davor auf midiOutReset, das Winlators midimap.dll nicht
-        // weitergibt – ohne das hier klangen die letzten Noten eines Stücks endlos weiter
-        if (nativePtr != 0) allSoundsOff(nativePtr);
+        // weitergibt – ohne das hier klangen die letzten Noten eines Stücks endlos weiter. Die Noten klingen aus
+        // (Note-Off), abgeschnitten wird erst beim nächsten midiOutOpen (reset).
+        if (nativePtr != 0) notesOff(nativePtr);
     }
 
     private void processData(byte status, byte param1, byte param2) {
@@ -293,7 +294,7 @@ public class MIDIHandler {
 
     private native void loadSoundFont(long nativePtr, String soundfontPath);
 
-    private native void allSoundsOff(long nativePtr);
+    private native void notesOff(long nativePtr);
 
     private native void reset(long nativePtr);
 

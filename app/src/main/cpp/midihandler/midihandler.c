@@ -100,9 +100,15 @@ static void MIDIHandler_pitchBend(MIDIHandler* midiHandler, int channel, int val
     fluid_synth_pitch_bend(midiHandler->synth, channel, value);
 }
 
-static void MIDIHandler_allSoundsOff(MIDIHandler* midiHandler) {
+// alle Noten loslassen (Ausklingen wie bei einem Note-Off); Halte- und Sostenuto-Pedal vorher lösen, sonst
+// klängen gehaltene Noten weiter
+static void MIDIHandler_notesOff(MIDIHandler* midiHandler) {
     if (!midiHandler) return;
-    fluid_synth_all_sounds_off(midiHandler->synth, -1);
+    for (int i = 0; i < 16; i++) {
+        fluid_synth_cc(midiHandler->synth, i, 64, 0);
+        fluid_synth_cc(midiHandler->synth, i, 66, 0);
+    }
+    fluid_synth_all_notes_off(midiHandler->synth, -1);
 }
 
 static void MIDIHandler_reset(MIDIHandler* midiHandler) {
@@ -160,8 +166,8 @@ Java_com_winlator_winhandler_MIDIHandler_loadSoundFont(JNIEnv *env, jobject obj,
 }
 
 JNIEXPORT void JNICALL
-Java_com_winlator_winhandler_MIDIHandler_allSoundsOff(JNIEnv *env, jobject obj, jlong nativePtr) {
-    MIDIHandler_allSoundsOff((MIDIHandler*)nativePtr);
+Java_com_winlator_winhandler_MIDIHandler_notesOff(JNIEnv *env, jobject obj, jlong nativePtr) {
+    MIDIHandler_notesOff((MIDIHandler*)nativePtr);
 }
 
 JNIEXPORT void JNICALL

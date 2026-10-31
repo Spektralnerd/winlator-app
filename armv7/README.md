@@ -551,8 +551,9 @@ Die MIDI-Ausgabe läuft über Brunos `midimap.dll` (UDP an die App) und FluidSyn
 - Die SoundFont wird nur einmal geladen (vorher bei jedem `midiOutOpen` erneut und dazu ohne die
   vorige zu entladen: je Musikstück eine Kopie im Speicher); die Kopie aus den Assets wird nur
   angelegt, wenn sie fehlt.
-- `midiOutClose` schaltet alle Stimmen ab, `midiOutOpen` setzt den Synthesizer zurück. Wines
-  MCI-Sequenzer (Tiny Tiger 2 spielt seine `.mid` darüber) ruft vor dem Schließen `midiOutReset`,
+- `midiOutClose` lässt alle Noten ausklingen (Pedale gelöst, Note-Off), `midiOutOpen` setzt den
+  Synthesizer zurück. Wines MCI-Sequenzer (Tiny Tiger 2 spielt seine `.mid` darüber) ruft vor dem
+  Schließen `midiOutReset`,
   das Brunos `midimap.dll` nicht weitergibt (MODM_RESET löscht nur den Running Status) – die
   letzten Noten eines Stücks klangen deshalb endlos weiter. Ein `midiOutReset` ohne folgendes
   `midiOutClose` (Pause über die MIDI-Schnittstelle) kommt weiterhin nicht an.
