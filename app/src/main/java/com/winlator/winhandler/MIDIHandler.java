@@ -268,12 +268,18 @@ public class MIDIHandler {
         programChange(nativePtr, channel, program);
     }
 
+    /* auf dem MIDI-Thread, damit es nicht in ein laufendes loadSoundFont hineinfährt */
     public void destroy() {
-        if (nativePtr != 0) {
-            destroy(nativePtr);
-            nativePtr = 0;
-            loadedSoundFont = null;
+        try {
+            EXECUTOR.submit(() -> {
+                if (nativePtr != 0) {
+                    destroy(nativePtr);
+                    nativePtr = 0;
+                    loadedSoundFont = null;
+                }
+            }).get(5, TimeUnit.SECONDS);
         }
+        catch (Exception e) {}
     }
 
     private native long nativeAllocate();
