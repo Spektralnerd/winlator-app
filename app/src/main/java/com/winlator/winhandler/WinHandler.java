@@ -371,7 +371,7 @@ public class WinHandler {
                 if (isMidiOut) {
                     midiHandler.open(() -> {
                         if (midiHandler.init()) {
-                            String soundfont = activity.getPreferences().getString("soundfont", DefaultVersion.SOUNDFONT);
+                            String soundfont = GeneralComponents.selectedSoundFont(activity.getPreferences());
                             midiHandler.loadSoundFont(GeneralComponents.getDefinitivePath(GeneralComponents.Type.SOUNDFONT, activity, soundfont));
                         }
                     });

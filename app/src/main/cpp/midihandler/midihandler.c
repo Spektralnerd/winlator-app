@@ -29,6 +29,11 @@ static MIDIHandler* MIDIHandler_allocate() {
     if (!settings) return NULL;
     fluid_settings_setint(settings, "synth.cpu-cores", 4);
     fluid_settings_setnum(settings, "synth.gain", 0.6f);
+    // Chorus wie vom Autor von GeneralUser GS für FluidSynth empfohlen (Hall: Vorgaben von FluidSynth 2.4)
+    fluid_settings_setint(settings, "synth.chorus.nr", 4);
+    fluid_settings_setnum(settings, "synth.chorus.level", 0.55);
+    fluid_settings_setnum(settings, "synth.chorus.speed", 0.36);
+    fluid_settings_setnum(settings, "synth.chorus.depth", 3.6);
     fluid_settings_setstr(settings, "audio.oboe.performance-mode", "LowLatency");
     fluid_settings_setstr(settings, "audio.oboe.sharing-mode", "Exclusive");
     fluid_settings_setnum(settings, "synth.sample-rate", FLUIDSYNTH_SAMPLE_RATE);
@@ -95,10 +100,24 @@ static void MIDIHandler_pitchBend(MIDIHandler* midiHandler, int channel, int val
     fluid_synth_pitch_bend(midiHandler->synth, channel, value);
 }
 
+static void MIDIHandler_allSoundsOff(MIDIHandler* midiHandler) {
+    if (!midiHandler) return;
+    fluid_synth_all_sounds_off(midiHandler->synth, -1);
+}
+
+static void MIDIHandler_reset(MIDIHandler* midiHandler) {
+    if (!midiHandler) return;
+    fluid_synth_system_reset(midiHandler->synth);
+}
+
 static void MIDIHandler_loadSoundFont(MIDIHandler* midiHandler, const char* path) {
     if (!midiHandler) return;
-    midiHandler->soundfontId = -1;
-    int id = fluid_synth_sfload(midiHandler->synth, path, 0);
+    // die vorige SoundFont entladen (sonst bleibt sie im Speicher, je midiOutOpen eine Kopie)
+    if (midiHandler->soundfontId != -1) {
+        fluid_synth_sfunload(midiHandler->synth, midiHandler->soundfontId, 1);
+        midiHandler->soundfontId = -1;
+    }
+    int id = fluid_synth_sfload(midiHandler->synth, path, 1);
     if (id != FLUID_FAILED) {
         midiHandler->soundfontId = id;
         for (int i = 0; i < 16; i++) {
@@ -137,6 +156,17 @@ Java_com_winlator_winhandler_MIDIHandler_loadSoundFont(JNIEnv *env, jobject obj,
                                                        jstring soundfontPath) {
     const char* path = (*env)->GetStringUTFChars(env, soundfontPath, NULL);
     MIDIHandler_loadSoundFont((MIDIHandler*)nativePtr, path);
+    (*env)->ReleaseStringUTFChars(env, soundfontPath, path);
+}
+
+JNIEXPORT void JNICALL
+Java_com_winlator_winhandler_MIDIHandler_allSoundsOff(JNIEnv *env, jobject obj, jlong nativePtr) {
+    MIDIHandler_allSoundsOff((MIDIHandler*)nativePtr);
+}
+
+JNIEXPORT void JNICALL
+Java_com_winlator_winhandler_MIDIHandler_reset(JNIEnv *env, jobject obj, jlong nativePtr) {
+    MIDIHandler_reset((MIDIHandler*)nativePtr);
 }
 
 JNIEXPORT void JNICALL

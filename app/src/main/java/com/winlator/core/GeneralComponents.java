@@ -2,6 +2,7 @@ package com.winlator.core;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.Intent;
 import android.os.Build;
 import android.view.View;
@@ -19,6 +20,8 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Locale;
@@ -142,7 +145,7 @@ public abstract class GeneralComponents {
                 items = new String[]{DefaultVersion.WINED3D};
                 break;
             case SOUNDFONT:
-                items = new String[]{DefaultVersion.SOUNDFONT};
+                items = new String[]{DefaultVersion.SOUNDFONT, DefaultVersion.SOUNDFONT_SMALL};
                 break;
             case ADRENOTOOLS_DRIVER:
                 items = new String[]{"System"};
@@ -169,6 +172,16 @@ public abstract class GeneralComponents {
         return result;
     }
 
+    /* gespeicherte SoundFont; die frühere Vorgabe (SONiVOX EAS) wird einmalig auf die neue (GeneralUser GS) umgestellt */
+    public static String selectedSoundFont(SharedPreferences preferences) {
+        String soundfont = preferences.getString("soundfont", DefaultVersion.SOUNDFONT);
+        if (soundfont.equals(DefaultVersion.SOUNDFONT_SMALL) && !preferences.getBoolean("soundfont_chosen", false)) {
+            soundfont = DefaultVersion.SOUNDFONT;
+            preferences.edit().putString("soundfont", soundfont).apply();
+        }
+        return soundfont;
+    }
+
     public static boolean isBuiltinComponent(Type type, String identifier) {
         for (String builtinComponentName : getBuiltinComponentNames(type)) {
             if (builtinComponentName.equalsIgnoreCase(identifier)) return true;
@@ -179,12 +192,20 @@ public abstract class GeneralComponents {
     public static String getDefinitivePath(Type type, Context context, String identifier) {
         if (identifier.isEmpty()) return null;
         if (type == Type.SOUNDFONT && isBuiltinComponent(type, identifier)) {
-            File destination = type.getDestination(context);
-            FileUtils.clear(destination);
-
+            File destinationDir = type.getDestination(context);
             String filename = identifier+".sf2";
-            destination = new File(destination, filename);
-            FileUtils.copy(context, type.assetFolder()+"/"+filename, destination);
+            File destination = new File(destinationDir, filename);
+            // die SoundFont wird bei jedem midiOutOpen angefordert: die Kopie aus den Assets (GeneralUser GS: 31 MB)
+            // nur anlegen, wenn sie fehlt oder eine andere Größe hat
+            long assetSize = -1;
+            try (InputStream is = context.getAssets().open(type.assetFolder()+"/"+filename)) {
+                assetSize = is.available();
+            }
+            catch (IOException e) {}
+            if (!destination.isFile() || destination.length() != assetSize) {
+                FileUtils.clear(destinationDir);
+                FileUtils.copy(context, type.assetFolder()+"/"+filename, destination);
+            }
             return destination.getPath();
         }
         else if (type == Type.ADRENOTOOLS_DRIVER) {

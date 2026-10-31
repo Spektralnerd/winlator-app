@@ -538,6 +538,29 @@ Beide APKs haben dieselbe Paketkennung und lassen sich übereinander installiere
 der Variante entpackt die App ihr Root-FS neu; Container aus der anderen Variante (WoW64- statt
 Win32-Präfix) funktionieren dann nicht mehr und sollten neu angelegt werden.
 
+## MIDI (alle Varianten)
+
+Die MIDI-Ausgabe läuft über Brunos `midimap.dll` (UDP an die App) und FluidSynth 2.4.5 in der App
+(`MIDIHandler`, `cpp/midihandler`). Änderungen gegenüber dem Original:
+
+- SoundFont-Vorgabe ist GeneralUser GS 2.0.3 (S. Christian Collins, `assets/soundfont`, Lizenz
+  daneben; GS-kompatibel, 31 MB) statt SONiVOX EAS (1,3 MB, bleibt wählbar). Eine gespeicherte
+  Einstellung „SONiVOX“ wird einmalig umgestellt, solange der Nutzer nicht selbst eine SoundFont
+  gewählt hat (`soundfont_chosen`). Eigene `.sf2` lassen sich wie bisher in den Einstellungen
+  (SoundFont → aus Datei) einspielen.
+- Die SoundFont wird nur einmal geladen (vorher bei jedem `midiOutOpen` erneut und dazu ohne die
+  vorige zu entladen: je Musikstück eine Kopie im Speicher); die Kopie aus den Assets wird nur
+  angelegt, wenn sie fehlt.
+- `midiOutClose` schaltet alle Stimmen ab, `midiOutOpen` setzt den Synthesizer zurück. Wines
+  MCI-Sequenzer (Tiny Tiger 2 spielt seine `.mid` darüber) ruft vor dem Schließen `midiOutReset`,
+  das Brunos `midimap.dll` nicht weitergibt (MODM_RESET löscht nur den Running Status) – die
+  letzten Noten eines Stücks klangen deshalb endlos weiter. Ein `midiOutReset` ohne folgendes
+  `midiOutClose` (Pause über die MIDI-Schnittstelle) kommt weiterhin nicht an.
+- FluidSynth lädt die SoundFont mit OpenMP; `OMP_NUM_THREADS=1` (vor dem Laden von libomp
+  gesetzt) und ein fester MIDI-Thread verhindern einen Absturz von libomp, wenn der Thread einer
+  früheren MIDI-Sitzung beendet wurde (Freilisten der OpenMP-Arbeitsthreads zeigten in dessen
+  freigegebenen Speicher).
+
 ## Grenzen
 
 - Nur 32-Bit-Windows-Programme (es gibt kein 64-Bit-Wine auf 32-Bit-ARM)

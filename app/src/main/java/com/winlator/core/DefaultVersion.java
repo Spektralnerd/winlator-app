@@ -17,7 +17,8 @@ public abstract class DefaultVersion {
     public static final String VKD3D = "2.14.1";
     public static final String WINED3D = WineInfo.MAIN_WINE_VERSION;
     public static final String CNC_DDRAW = "6.6";
-    public static final String SOUNDFONT = "SONiVOX-EAS-GM-Wavetable";
+    public static final String SOUNDFONT = "GeneralUser-GS";  // GeneralUser GS 2.0.3 (S. Christian Collins), GS-kompatibel; vorher SONiVOX EAS
+    public static final String SOUNDFONT_SMALL = "SONiVOX-EAS-GM-Wavetable";
     public static final String MINOR_DXVK = "1.10.3";
     public static final String MAJOR_DXVK = "2.4.1";
 
