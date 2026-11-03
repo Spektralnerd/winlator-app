@@ -676,7 +676,7 @@ void gd_handle_glCompressedTexImage2D(GLContext* context) {
         else {
             void* imageData = NULL;
             RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-            if (!proxy) decompressedData = decompressTexImage2D(internalformat, width, height, imageData, context->threadPool);
+            if (!proxy && imageData) decompressedData = decompressTexImage2D(internalformat, width, height, imageData, context->threadPool);   /* NULL: Client weg */
             RING_READ_END(context->serverRing);
         }
     }
@@ -727,7 +727,7 @@ void gd_handle_glCompressedTexSubImage2D(GLContext* context) {
         else {
             void* imageData = NULL;
             RING_READ_BEGIN(context->serverRing, imageData, imageSize);
-            decompressedData = decompressTexImage2D(format, width, height, imageData, context->threadPool);
+            if (imageData) decompressedData = decompressTexImage2D(format, width, height, imageData, context->threadPool);   /* NULL: Client weg */
             RING_READ_END(context->serverRing);
         }
     }

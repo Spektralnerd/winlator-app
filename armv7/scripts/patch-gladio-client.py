@@ -23,6 +23,8 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   (Worms 3D ruft sie in jedem Bild auf)
 - glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA) überträgt alle vier Werte (wined3d: L8-Texturen
   als GL_R8 mit Swizzle)
+- glCompressedTexImage2D/3D mit data = NULL (nur Speicher anlegen) schickt die Größe 0 statt imageSize
+  Byte ab Adresse 0 (Absturz; Gladio-Commit 3861b0a)
 - indizierte Zeichenaufrufe mit Client-Arrays des festen Funktionsmodells schicken den
   Vertexbereich einmal statt je Index einen Vertex (Kennung GLADIO_DRAW_RANGED im Modus; der
   Server der armv7-App versteht beides, siehe gl_context.c)
@@ -179,6 +181,16 @@ sub("src/gl_calls.c", "GL_SEND_CHECKED(REQUEST_CODE_GL_IS_SYNC, &sync, sizeof(lo
 # ---- glTexParameteriv(GL_TEXTURE_SWIZZLE_RGBA): vier Werte statt einem übertragen ----
 sub("include/gladio.h", "        case GL_POSITION:\n        case GL_PATCH_DEFAULT_OUTER_LEVEL:\n            return 4;",
     "        case GL_POSITION:\n        case GL_PATCH_DEFAULT_OUTER_LEVEL:\n        case GL_TEXTURE_SWIZZLE_RGBA:\n            return 4;")
+
+# ---- glCompressedTexImage2D/3D ohne Daten (data = NULL, wie wined3d beim Anlegen einer DXT-Textur ohne Startinhalt):
+#      vorher schickte GL_SEND_TEXIMAGE imageSize Byte ab Adresse 0 in den Ring (Absturz des Programms). Wie Gladio-
+#      Commit 3861b0a (brunodev85, für Issue #18): ohne Daten und ohne Unpack-Puffer geht die Größe 0 hinaus, der Server
+#      legt die Textur dann leer an. ----
+sub("include/gladio.h", "        else ArrayBuffer_putInt(&outputBuffer, compressedSize); \\\n",
+    "        else { \\\n"
+    "            if (!imageData && !pixelUnpackBuffer) dataSize = 0; \\\n"
+    "            ArrayBuffer_putInt(&outputBuffer, dataSize); \\\n"
+    "        } \\\n")
 
 # ---- Socket-Pfad ----
 sub("src/main.c", "strncpy(server_addr.sun_path, X11_SERVER_PATH,",
