@@ -25,6 +25,8 @@ PC-Testgeschirr (armv7/tools/gladio-pc).
   als GL_R8 mit Swizzle)
 - glCompressedTexImage2D/3D mit data = NULL (nur Speicher anlegen) schickt die Größe 0 statt imageSize
   Byte ab Adresse 0 (Absturz; Gladio-Commit 3861b0a)
+- glTextureBarrier/glTextureBarrierNV als leere Funktionen (GL_ARB_texture_barrier, das der Server meldet;
+  wined3d zeichnet sonst nicht, wenn eine Textur zugleich Quelle und – andere Stufe – Renderziel ist)
 - indizierte Zeichenaufrufe mit Client-Arrays des festen Funktionsmodells schicken den
   Vertexbereich einmal statt je Index einen Vertex (Kennung GLADIO_DRAW_RANGED im Modus; der
   Server der armv7-App versteht beides, siehe gl_context.c)
@@ -191,6 +193,14 @@ sub("include/gladio.h", "        else ArrayBuffer_putInt(&outputBuffer, compress
     "            if (!imageData && !pixelUnpackBuffer) dataSize = 0; \\\n"
     "            ArrayBuffer_putInt(&outputBuffer, dataSize); \\\n"
     "        } \\\n")
+
+# ---- GL_ARB_texture_barrier: der Server meldet die Erweiterung (sonst lässt wined3d jeden Zeichenaufruf weg, der eine
+#      Textur liest, die zugleich in einer anderen Stufe Renderziel ist – Outlast: Mipmap-Kette des Laptop-Bildschirms,
+#      aus der Ferne schwarz); wined3d holt glTextureBarrier über glXGetProcAddress und ruft es vor solchen Aufrufen.
+#      Auf ES gibt es keine Sperre; Quelle und Ziel sind verschiedene Stufen, die Quelle stammt aus einem früheren
+#      Durchgang – also ohne Wirkung. ----
+sub("src/gl_calls.c", "void glDrawArraysEXT(GLenum mode, GLint first, GLsizei count) {",
+    "void glTextureBarrier(void) {\n}\n\nvoid glTextureBarrierNV(void) {\n}\n\nvoid glDrawArraysEXT(GLenum mode, GLint first, GLsizei count) {")
 
 # ---- Socket-Pfad ----
 sub("src/main.c", "strncpy(server_addr.sun_path, X11_SERVER_PATH,",

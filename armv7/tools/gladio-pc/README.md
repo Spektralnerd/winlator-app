@@ -179,6 +179,14 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   abgeholt (wie die Unreal Engine 3); gibt Bilder/s aus, die Rundreisen je Bild stehen in der Server-Statistik
   (`wine d3d9occlmany.exe [sekunden] [ausgabe.txt]`). Bauen: `i686-w64-mingw32-gcc -O1 -o d3d9occlmany.exe
   d3d9occlmany.c -ld3d9 -luser32`.
+* `d3d9mips.c` – Mipmap-Kette eines Render-Targets Stufe für Stufe zeichnen wie Outlast für den Laptop-Bildschirm:
+  Stufe N ist Renderziel, dieselbe Textur mit `D3DSAMP_MAXMIPLEVEL = N−1` Quelle. Ohne `GL_ARB_texture_barrier` lässt
+  wined3d diese Zeichenaufrufe weg („Sampling attached render targets is not supported“), die Stufen bleiben schwarz;
+  liest alle Stufen zurück (`wine d3d9mips64.exe [ausgabe.txt]`, erwartet überall 255,128,64). Bauen:
+  `x86_64-w64-mingw32-gcc -O1 -o d3d9mips64.exe d3d9mips.c -ld3d9 -lgdi32 -luser32`.
+* `ctexnull.c` – komprimierte Textur ohne Daten anlegen (`glCompressedTexImage2D` mit `data = NULL`, wie wined3d), dann
+  füllen und ein Pixel lesen; vor dem Gladio-Commit 3861b0a stürzten Client und Server ab (`gcc -o ctexnull ctexnull.c
+  -lGL -lX11; run.sh -- ./ctexnull`, erwartet 255 0 0).
 * `d3d9const.c` – Shader-Konstanten wie die Unreal Engine 3: 100 Zeichenaufrufe je Bild mit je 118 Pixel- und 96
   Vertexshader-Konstanten, von denen sich nur wenige ändern; gibt Bilder/s aus und schreibt ein Bild (gleich mit
   `GLADIO_NO_UNIFORM_DIFF=1`), die Statistik des Servers zeigt die verglichenen und gesendeten Uniform-Bytes

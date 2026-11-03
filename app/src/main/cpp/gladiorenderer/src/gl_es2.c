@@ -284,7 +284,7 @@ const char* GLES_clientExtensions(int* outNumExtensions) {
             "GL_ARB_framebuffer_object GL_EXT_framebuffer_object GL_EXT_framebuffer_blit GL_ARB_draw_buffers GL_ARB_internalformat_query GL_ARB_internalformat_query2 GL_ARB_map_buffer_range "
             "GL_ARB_multitexture GL_ARB_texture_env_combine GL_EXT_texture_env_combine GL_ARB_texture_env_dot3 GL_EXT_texture_env_dot3 "
             "GL_ARB_shader_objects GL_ARB_occlusion_query GL_ARB_occlusion_query2 "
-            "GL_EXT_direct_state_access GL_ARB_timer_query GL_EXT_timer_query";
+            "GL_EXT_direct_state_access GL_ARB_timer_query GL_EXT_timer_query GL_ARB_texture_barrier";
 
         ArrayBuffer buffer = {0};
         ArrayBuffer_putBytes(&buffer, base, strlen(base));
