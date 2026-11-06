@@ -44,7 +44,11 @@ void DecalBias_polygonOffset(GLRenderer* renderer, float factor, float units) {
 bool DecalBias_begin(GLRenderer* renderer) {
     if (!renderer) return false;
     ShaderProgram* program = renderer->clientState.program;
-    if (!program || !program->fragmentDiscards || !renderer->state.decal.depthTest || renderer->state.decal.offsetFill) return false;
+    if (!program || !renderer->state.decal.depthTest || renderer->state.decal.offsetFill) return false;
+    /* verwirft der Shader selbst (discard) oder der feste Alphatest, den der Server in ihn einfügt (GL_ALPHA_TEST –
+     * wined3d nimmt ihn, wenn der Kontext kein Core-Profil ist, so im ES-2.0-Pfad)? */
+    bool alphaTest = renderer->state.alphaTest.enabled && renderer->state.alphaTest.func != GL_ALWAYS && renderer->state.alphaTest.func != GL_NEVER;
+    if (!program->fragmentDiscards && !alphaTest) return false;
     if (decal.enabled < 0) readSettings();
     if (!decal.enabled) return false;
     glPolygonOffset(decal.biasFactor, decal.biasUnits);

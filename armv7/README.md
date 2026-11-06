@@ -384,14 +384,16 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   auf die Bodenfläche und verlässt sich mit `ZFUNC LESSEQUAL` darauf, dass gleiche Tiefe gewinnt.
   Die Mali rastert die Tiefe zweier deckungsgleicher Flächen mit verschiedenen Eckpunkten nicht
   bitgleich, je Bild gewinnt mal der Boden, mal der Aufkleber. Der Server gibt Zeichenaufrufen,
-  deren Fragment-Shader Pixel verwirft (`discard` – so setzt wined3d Farbschlüssel und Alphatest um),
+  deren Fragment-Shader Pixel verwirft (`discard` – so setzt wined3d Farbschlüssel und, auf dem
+  ES-3-Pfad, den Alphatest um) oder die den festen Alphatest nutzen (`GL_ALPHA_TEST`, ES-2.0-Pfad),
   bei eingeschaltetem Tiefentest einen kleinen Versatz zur Kamera hin (`glPolygonOffset(-0.5, -2)`,
   `decal_bias.c`); setzt das Programm selbst `GL_POLYGON_OFFSET_FILL`, bleibt sein Wert. Die
   Laufstatistik zeigt „Tiefenversatz für Aufkleber: N Zeichenaufrufe je Bild“. `GLADIO_DECAL_BIAS=0`
   in den Umgebungsvariablen des Containers schaltet ab, `GLADIO_DECAL_BIAS=-1,-4` stellt Faktor und
   Einheiten ein (die `GLADIO_*`-Variablen des Containers gelten seither auch für den Server in der
   App). Testprogramm `d3d9decal.c` (gladio-pc): Aufkleber 1,5 Tiefeneinheiten hinter dem Boden,
-  ohne Versatz grün, mit Versatz rot.
+  ohne Versatz grün, mit Versatz rot – auf beiden Pfaden (ES 2.0 mit dem 32-Bit-Wine, dessen
+  `0002-wined3d-legacy-alpha-test.patch` den festen Alphatest überhaupt erst einschaltet).
 - Stürzt der Server selbst ab (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT in der App), schreibt er vorher
   einen Bericht ins Protokoll (`gladio-crash: …`, landet in `logcat.txt`): Fehleradresse, Register,
   Bibliothek+Versatz von PC/LR mit dem nächsten exportierten Symbol, Rücksprungadressen vom Stack,

@@ -191,7 +191,10 @@ weiter an den echten X-Server unter `$DISPLAY`, nur die GL-Befehle laufen durch 
   rechnerisch 1,5 Tiefeneinheiten (24 Bit) hinter dem Boden – so weit daneben, wie ein Rasterer bei deckungsgleichen
   Flächen rundet. Mit dem Tiefenversatz des Servers für verwerfende Shader (`decal_bias.c`) gewinnt der Aufkleber
   (Mitte rot, Rand grün), mit `GLADIO_DECAL_BIAS=0` der Boden (`wine d3d9decal64.exe [ausgabe.txt]`). Bauen:
-  `x86_64-w64-mingw32-gcc -O1 -o d3d9decal64.exe d3d9decal.c -ld3d9 -lgdi32 -luser32`.
+  `x86_64-w64-mingw32-gcc -O1 -o d3d9decal64.exe d3d9decal.c -ld3d9 -lgdi32 -luser32` (32 Bit entsprechend mit
+  i686). Auf dem ES-2.0-Pfad (GL 2.1, Legacy-Kontext) setzt wined3d den Alphatest über `glAlphaFunc` um und
+  schaltet `GL_ALPHA_TEST` in Wine 10.10 nie ein – mit dem unveränderten 64-Bit-Wine bleibt die Mitte dort in
+  beiden Fällen grün; das 32-Bit-Wine der Root-FS hat dafür `patches/wine/0002-wined3d-legacy-alpha-test.patch`.
 * `d3d9const.c` – Shader-Konstanten wie die Unreal Engine 3: 100 Zeichenaufrufe je Bild mit je 118 Pixel- und 96
   Vertexshader-Konstanten, von denen sich nur wenige ändern; gibt Bilder/s aus und schreibt ein Bild (gleich mit
   `GLADIO_NO_UNIFORM_DIFF=1`), die Statistik des Servers zeigt die verglichenen und gesendeten Uniform-Bytes

@@ -7,8 +7,9 @@
 
 /*
  * Tiefenversatz für „Aufkleber“: Zeichenaufrufe mit einem Fragment-Shader, der Pixel verwirft (discard – wined3d
- * setzt so Alphatest und Farbschlüssel um), bekommen beim Tiefentest einen kleinen Versatz zur Kamera hin
- * (glPolygonOffset). Alte Direct3D-Spiele legen Blumen, Schatten, Flecken als farbgeschlüsselte Vierecke genau auf
+ * setzt so Farbschlüssel und, auf Core-Kontexten wie dem ES-3-Pfad, den Alphatest um) oder mit eingeschaltetem
+ * festen Alphatest (GL_ALPHA_TEST, den der Server in den Shader einfügt – wined3d auf dem ES-2.0-Pfad), bekommen
+ * beim Tiefentest einen kleinen Versatz zur Kamera hin (glPolygonOffset). Alte Direct3D-Spiele legen Blumen, Schatten, Flecken als farbgeschlüsselte Vierecke genau auf
  * den Boden und verlassen sich mit ZFUNC LESSEQUAL darauf, dass gleiche Tiefe gewinnt; Mali rastert die Tiefe
  * zweier deckungsgleicher Flächen mit verschiedenen Eckpunkten nicht bitgleich, die Blume flackert (Tiny Tiger,
  * sobald sich die Kamera bewegt). Der Versatz ist kleiner als alles, was ein Spiel absichtlich staffelt.

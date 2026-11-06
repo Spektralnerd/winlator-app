@@ -1116,7 +1116,9 @@ void gd_handle_glDrawElements(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0, 0);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, 0);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
@@ -1138,7 +1140,9 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, 0);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, basevertex);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
@@ -1160,7 +1164,9 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0, instancecount);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, 0);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
@@ -1183,7 +1189,9 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, instancecount);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, basevertex);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
@@ -1219,7 +1227,9 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, 0, 0);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, 0);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
@@ -1243,7 +1253,9 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArraysIndexed(count, type, indices, basevertex, 0);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         GLES_drawElements(mode, count, type, indices, basevertex);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
