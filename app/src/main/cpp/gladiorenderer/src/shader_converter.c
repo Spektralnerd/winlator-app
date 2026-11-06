@@ -1,4 +1,5 @@
 #include "shader_converter.h"
+#include "decal_bias.h"
 #include "string_utils.h"
 #include "shader_material.h"
 #include "gl_context.h"
@@ -1931,8 +1932,14 @@ void ShaderConverter_linkProgram(GLuint programId) {
     int count = program->attachedShaders.size;
     GLuint linked[count > 0 ? count : 1];
     int linkedCount = 0;
+    program->fragmentDiscards = false;
     for (int i = 0; i < count; i++) {
         ShaderObject* shader = program->attachedShaders.elements[i];
+        if (shader->type == GL_FRAGMENT_SHADER && shader->source) {
+            int total = 0;
+            for (int k = 0; k < shader->sourceSizes.size; k++) total += shader->sourceSizes.values[k];
+            if (ShaderSource_hasDiscard(shader->source, total)) program->fragmentDiscards = true;
+        }
         if (countMainFunctions(shader) == 0) continue;
 
         ShaderObject* target = shader;

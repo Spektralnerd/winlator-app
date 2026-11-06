@@ -372,6 +372,26 @@ Geschwindigkeit auf der Mali-400 (ES-2.0-Pfad):
   den Werten des Treibers (Mali-G615: 16 Fragment-Einheiten), begrenzt auf die 32 Einheiten seines
   Zustands; ES 2.0 meldet weiter die 8 der Mali-400. `d3d9samplers` (gladio-pc) liest s0, s7, s8, s12
   und s15: vorher Absturz bzw. falsche Farben, jetzt die fünf erwarteten.
+- 16-Bit-Tiefenpuffer (Tiny Tiger: Wasser fraß sich durch den Hang an der Palme): Das Spiel legt
+  einen DDraw-Z-Puffer mit 16 Bit an und rechnet seine Eckpunkte selbst (D3DTLVERTEX, Nahebene weit
+  vor der Szene) – bei 16 Bit Tiefe liegen nahe Flächen in derselben Stufe. Auf Windows
+  (dgVoodoo/D3D11) hat der Tiefenpuffer 24 oder 32 Bit, darum fällt es dort nicht auf. Der Server
+  legt `GL_DEPTH_COMPONENT16` (glTexImage2D, glRenderbufferStorage) jetzt als
+  `GL_DEPTH_COMPONENT24` an (ES 2.0 über `OES_depth24`, wenn der Treiber es hat); wined3d merkt
+  davon nichts.
+- Aufkleber auf dem Boden flackern (Tiny Tiger: Blumen und Blätter neben der Palme verschwinden und
+  erscheinen, solange sich die Kamera bewegt): Das Spiel legt sie als farbgeschlüsselte Vierecke genau
+  auf die Bodenfläche und verlässt sich mit `ZFUNC LESSEQUAL` darauf, dass gleiche Tiefe gewinnt.
+  Die Mali rastert die Tiefe zweier deckungsgleicher Flächen mit verschiedenen Eckpunkten nicht
+  bitgleich, je Bild gewinnt mal der Boden, mal der Aufkleber. Der Server gibt Zeichenaufrufen,
+  deren Fragment-Shader Pixel verwirft (`discard` – so setzt wined3d Farbschlüssel und Alphatest um),
+  bei eingeschaltetem Tiefentest einen kleinen Versatz zur Kamera hin (`glPolygonOffset(-0.5, -2)`,
+  `decal_bias.c`); setzt das Programm selbst `GL_POLYGON_OFFSET_FILL`, bleibt sein Wert. Die
+  Laufstatistik zeigt „Tiefenversatz für Aufkleber: N Zeichenaufrufe je Bild“. `GLADIO_DECAL_BIAS=0`
+  in den Umgebungsvariablen des Containers schaltet ab, `GLADIO_DECAL_BIAS=-1,-4` stellt Faktor und
+  Einheiten ein (die `GLADIO_*`-Variablen des Containers gelten seither auch für den Server in der
+  App). Testprogramm `d3d9decal.c` (gladio-pc): Aufkleber 1,5 Tiefeneinheiten hinter dem Boden,
+  ohne Versatz grün, mit Versatz rot.
 - Stürzt der Server selbst ab (SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT in der App), schreibt er vorher
   einen Bericht ins Protokoll (`gladio-crash: …`, landet in `logcat.txt`): Fehleradresse, Register,
   Bibliothek+Versatz von PC/LR mit dem nächsten exportierten Symbol, Rücksprungadressen vom Stack,

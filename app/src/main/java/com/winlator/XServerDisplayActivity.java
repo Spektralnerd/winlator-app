@@ -601,6 +601,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             if (shortcut != null) envVars.putAll(shortcut.getExtra("envVars"));
             if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
 
+            // GLADIO_*-Variablen des Containers (bzw. der Verknüpfung) auch dem Gladio-Server geben: der läuft in
+            // diesem Prozess und liest sie mit getenv (z. B. GLADIO_DECAL_BIAS, GLADIO_GLES_LIMITS); sonst
+            // erreichten sie nur die Wine-Seite.
+            for (String name : envVars) {
+                if (!name.startsWith("GLADIO_")) continue;
+                try { android.system.Os.setenv(name, envVars.get(name), true); } catch (android.system.ErrnoException e) {}
+            }
+
             guestProgramLauncherComponent.setBox64Preset(shortcut != null ? shortcut.getExtra("box64Preset", container.getBox64Preset()) : container.getBox64Preset());
         }
 

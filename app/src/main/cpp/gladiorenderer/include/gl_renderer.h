@@ -97,6 +97,13 @@ typedef struct GLState {
         float ref;
     } alphaTest;
 
+    /* Tiefenversatz für Aufkleber (decal_bias.c): GL_DEPTH_TEST, GL_POLYGON_OFFSET_FILL und glPolygonOffset des Programms */
+    struct {
+        bool depthTest;
+        bool offsetFill;
+        float factor, units;
+    } decal;
+
     struct {
         float color[4];
         float density;

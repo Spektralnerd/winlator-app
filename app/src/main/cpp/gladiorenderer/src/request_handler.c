@@ -1,4 +1,5 @@
 #include "request_handler.h"
+#include "decal_bias.h"
 #include "gl_es2.h"
 #include "shader_converter.h"
 #include "gl_formats.h"
@@ -1062,7 +1063,9 @@ void gd_handle_glDrawArrays(GLContext* context) {
     if (readUnboundVertexArrays(context, mode, count, NULL, GL_NONE)) return;
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArrays(first, count, 0);
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawArrays(mode, first, count);
+    DecalBias_end(currentRenderer, decalBias);
     GLES_finishStreamingArrays();
 }
 
@@ -1077,11 +1080,15 @@ void gd_handle_glDrawArraysInstanced(GLContext* context) {
     GLES_prepareStreamingArrays();
     GLContext_prepareBgraArrays(first, count, instancecount);
     if (GLES2) {
+        bool decalBias = DecalBias_begin(currentRenderer);
         glDrawArrays(mode, first, count);
+        DecalBias_end(currentRenderer, decalBias);
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawArraysInstanced(mode, first, count, instancecount);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawBuffer(GLContext* context) {
@@ -1113,7 +1120,9 @@ void gd_handle_glDrawElements(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawElements(mode, count, type, indices);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
@@ -1133,7 +1142,9 @@ void gd_handle_glDrawElementsBaseVertex(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawElementsBaseVertex(mode, count, type, indices, basevertex);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawElementsInstanced(GLContext* context) {
@@ -1153,7 +1164,9 @@ void gd_handle_glDrawElementsInstanced(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawElementsInstanced(mode, count, type, indices, instancecount);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
@@ -1174,7 +1187,9 @@ void gd_handle_glDrawElementsInstancedBaseVertex(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawElementsInstancedBaseVertex(mode, count, type, indices, instancecount, basevertex);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawPixels(GLContext* context) {
@@ -1208,7 +1223,9 @@ void gd_handle_glDrawRangeElements(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawRangeElements(mode, start, end, count, type, indices);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
@@ -1230,7 +1247,9 @@ void gd_handle_glDrawRangeElementsBaseVertex(GLContext* context) {
         GLES_finishStreamingArrays();
         return;
     }
+    bool decalBias = DecalBias_begin(currentRenderer);
     glDrawRangeElementsBaseVertex(mode, start, end, count, type, indices, basevertex);
+    DecalBias_end(currentRenderer, decalBias);
 }
 
 void gd_handle_glEdgeFlag(GLContext* context) {
@@ -2715,6 +2734,7 @@ void gd_handle_glPolygonOffset(GLContext* context) {
     GLfloat factor = ArrayBuffer_getFloat(&context->inputBuffer);
     GLfloat units = ArrayBuffer_getFloat(&context->inputBuffer);
 
+    DecalBias_polygonOffset(currentRenderer, factor, units);
     glPolygonOffset(factor, units);
 }
 

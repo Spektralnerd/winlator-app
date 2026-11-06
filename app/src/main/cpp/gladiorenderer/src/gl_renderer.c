@@ -1,5 +1,6 @@
 #include "gladio.h"
 #include "gl_renderer.h"
+#include "decal_bias.h"
 #include "shader_material.h"
 #include "gl_context.h"
 #include "arb_program.h"
@@ -655,6 +656,7 @@ static bool isDepthFormat(GLint format) {
 }
 
 void GLRenderer_setCapabilityState(GLRenderer* renderer, GLenum cap, bool state, int index) {
+    DecalBias_capability(renderer, cap, state);
     switch (cap) {
         case GL_LIGHTING:
             renderer->state.lighting = state;

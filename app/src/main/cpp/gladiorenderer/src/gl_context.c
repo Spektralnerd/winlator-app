@@ -1,4 +1,5 @@
 #include "gl_context.h"
+#include "decal_bias.h"
 #include "gl_renderer.h"
 #include "gl_dsa.h"
 #include "sysvshared_memory.h"
@@ -165,6 +166,7 @@ static void printStats(GLContext* context, int64_t now) {
                     st->client.uniformCallsSent / cf, (uint32_t)(st->clientUniformBytesSent / cf / 1024));
         }
     }
+    DecalBias_printStats(frames);
     GladioDiag_printStats();
 }
 

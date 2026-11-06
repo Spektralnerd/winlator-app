@@ -79,6 +79,7 @@ typedef struct ShaderProgram {
     ArrayList attachedShaders;
     bool hasBuiltinUniforms;
     bool hasBuiltinColor;
+    bool fragmentDiscards; /* Fragment-Shader verwirft Pixel (discard: Alphatest, Farbschlüssel) – Tiefenversatz, siehe decal_bias.h */
 
     struct {
         int attributes[VERTEX_ATTRIB_COUNT];
