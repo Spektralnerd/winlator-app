@@ -2868,7 +2868,7 @@ void gd_handle_glRenderbufferStorage(GLContext* context) {
     GLsizei width = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
+    if (internalformat == GL_DEPTH_COMPONENT || internalformat == GL_DEPTH_COMPONENT16) internalformat = GL_DEPTH_COMPONENT24;   /* 16 Bit → 24, siehe texture_utils.h */
     if (GLES2) {
         internalformat = GLES_renderbufferFormat(internalformat);
         GLint renderbuffer = 0;
@@ -2885,7 +2885,7 @@ void gd_handle_glRenderbufferStorageMultisample(GLContext* context) {
     GLsizei width = ArrayBuffer_getInt(&context->inputBuffer);
     GLsizei height = ArrayBuffer_getInt(&context->inputBuffer);
 
-    if (internalformat == GL_DEPTH_COMPONENT) internalformat = GL_DEPTH_COMPONENT24;
+    if (internalformat == GL_DEPTH_COMPONENT || internalformat == GL_DEPTH_COMPONENT16) internalformat = GL_DEPTH_COMPONENT24;
     if (GLES2) {
         GLint renderbuffer = 0;
         glGetIntegerv(GL_RENDERBUFFER_BINDING, &renderbuffer);

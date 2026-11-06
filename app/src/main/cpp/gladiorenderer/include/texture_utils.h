@@ -383,11 +383,28 @@ static inline void convertTexImageFormat(uint32_t target, int* internalformat, u
             }
             break;
         case GL_DEPTH_COMPONENT:
-            if (*internalformat == GL_DEPTH_COMPONENT || *internalformat == GL_DEPTH_COMPONENT32) {
+            /* 16-Bit-Tiefe wird 24 Bit: alte Direct3D-Spiele legen 16-Bit-Z-Puffer an (Tiny Tiger: DDraw-Z-Puffer mit 16
+             * Bit, Projektion mit kleiner Nahebene) – bei 16 Bit fressen sich nahe Flächen ineinander (Wasser durch den
+             * Hang), auf Windows liefern die Treiber/dgVoodoo längst 24 oder 32 Bit. wined3d merkt davon nichts
+             * (liest Tiefe als UNSIGNED_SHORT zurück, der Treiber rechnet um). Daten in UNSIGNED_SHORT werden auf
+             * UNSIGNED_INT gestreckt, weil ES 3 zu DEPTH_COMPONENT24 nur UNSIGNED_INT erlaubt. */
+            if (*internalformat == GL_DEPTH_COMPONENT || *internalformat == GL_DEPTH_COMPONENT32 ||
+                *internalformat == GL_DEPTH_COMPONENT16) {
                 *internalformat = GL_DEPTH_COMPONENT24;
-                *type = GL_UNSIGNED_INT;
             }
-            else if (*internalformat == GL_DEPTH_COMPONENT24 && *type != GL_UNSIGNED_INT) {
+            if ((*internalformat == GL_DEPTH_COMPONENT24 || *internalformat == GL_NONE) && *type != GL_UNSIGNED_INT) {
+                if (*type == GL_UNSIGNED_SHORT && imageSize > 0 && imageData && *imageData) {
+                    static uint32_t* depthScratch = NULL;
+                    static int depthScratchSize = 0;
+                    int count = imageSize / 2;
+                    if (count * 4 > depthScratchSize) {
+                        depthScratch = realloc(depthScratch, count * 4);
+                        depthScratchSize = count * 4;
+                    }
+                    const uint16_t* src = *imageData;
+                    for (int i = 0; i < count; i++) depthScratch[i] = (uint32_t)src[i] << 16;
+                    *imageData = depthScratch;
+                }
                 *type = GL_UNSIGNED_INT;
             }
             break;

@@ -541,7 +541,20 @@ bool GLES_convertTexImageFormat(uint32_t target, int* internalformat, uint32_t* 
         }
         case GL_DEPTH_COMPONENT:
             if (!gles.depthTexture) return false;
-            if (*type != GL_UNSIGNED_SHORT) *type = GL_UNSIGNED_INT;
+            /* 16 Bit → 24 (OES_depth24: Tiefentexturen mit UNSIGNED_INT haben 24 Bit); Daten gestreckt */
+            if (*type == GL_UNSIGNED_SHORT && gles.depth24 && (ownsData || !data)) {
+                if (data && dataSize > 0) {
+                    int count = dataSize / 2;
+                    uint32_t* converted = malloc(count * 4);
+                    if (!converted) return false;
+                    const uint16_t* src = data;
+                    for (int i = 0; i < count; i++) converted[i] = (uint32_t)src[i] << 16;
+                    if (*ownsData) free(data);
+                    data = converted; dataSize = count * 4; *ownsData = true;
+                }
+                *type = GL_UNSIGNED_INT;
+            }
+            else if (*type != GL_UNSIGNED_SHORT) *type = GL_UNSIGNED_INT;
             break;
         case GL_DEPTH_STENCIL:
             if (!gles.depthTexture || !gles.packedDepthStencil) return false;
@@ -565,12 +578,11 @@ bool GLES_convertTexImageFormat(uint32_t target, int* internalformat, uint32_t* 
 GLenum GLES_renderbufferFormat(GLenum internalformat) {
     switch (internalformat) {
         case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:   /* 16 Bit → 24, wenn der Treiber kann (siehe texture_utils.h) */
         case GL_DEPTH_COMPONENT24:
         case GL_DEPTH_COMPONENT32:
         case GL_DEPTH_COMPONENT32F:
             return gles.depth24 ? GL_DEPTH_COMPONENT24_OES : GL_DEPTH_COMPONENT16;
-        case GL_DEPTH_COMPONENT16:
-            return GL_DEPTH_COMPONENT16;
         case GL_DEPTH_STENCIL:
         case GL_DEPTH24_STENCIL8:
         case GL_DEPTH32F_STENCIL8:
